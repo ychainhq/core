@@ -10,6 +10,7 @@ export interface LedgerAccount {
   customer_id: string | null;
   chain_id: string;
   asset_id: string;
+  account_type: string;
   name: string;
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -55,6 +56,7 @@ export const ledgerService = {
     customerId?: string;
     chainId: string;
     assetId: string;
+    accountType?: string;
     name: string;
     metadata?: Record<string, unknown>;
   }): LedgerAccount {
@@ -63,8 +65,8 @@ export const ledgerService = {
     const now = new Date().toISOString();
 
     db.prepare(`
-      INSERT INTO ledger_accounts (id, tenant_id, wallet_id, customer_id, chain_id, asset_id, name, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO ledger_accounts (id, tenant_id, wallet_id, customer_id, chain_id, asset_id, account_type, name, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       tenantId,
@@ -72,6 +74,7 @@ export const ledgerService = {
       input.customerId ?? null,
       input.chainId,
       input.assetId,
+      input.accountType ?? 'customer_available',
       input.name,
       input.metadata ? JSON.stringify(input.metadata) : null,
       now,
@@ -289,6 +292,19 @@ export const ledgerService = {
     const row = db
       .prepare('SELECT * FROM ledger_accounts WHERE wallet_id = ? AND asset_id = ? LIMIT 1')
       .get(walletId, assetId);
+    return row ? mapAccount(row) : null;
+  },
+
+  /**
+   * Find ledger account for a customer and asset (account_type = customer_available).
+   */
+  findAccountByCustomerAndAsset(tenantId: string, customerId: string, assetId: string): LedgerAccount | null {
+    const db = getDb();
+    const row = db
+      .prepare(
+        "SELECT * FROM ledger_accounts WHERE tenant_id = ? AND customer_id = ? AND asset_id = ? AND account_type = 'customer_available' LIMIT 1"
+      )
+      .get(tenantId, customerId, assetId);
     return row ? mapAccount(row) : null;
   },
 };

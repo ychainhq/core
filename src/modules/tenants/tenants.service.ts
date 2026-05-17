@@ -1,8 +1,11 @@
 import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
-import { NotFoundError, ConflictError } from '../../shared/errors/index';
+import { NotFoundError, ConflictError, ValidationError } from '../../shared/errors/index';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { logger } from '../../shared/logging/index';
+import { walletsService } from '../wallets/wallets.service';
+import { addressesService } from '../addresses/addresses.service';
+import { ledgerService } from '../ledger/ledger.service';
 
 export interface Tenant {
   id: string;
@@ -21,6 +24,9 @@ export interface TenantConfig {
   withdrawal_mode: string;
   daily_withdrawal_limit_sats: string | null;
   per_tx_limit_sats: string | null;
+  btc_xpub: string | null;
+  btc_next_derivation_index: number;
+  btc_sweep_threshold_sats: string;
   updated_at: string;
 }
 
@@ -50,19 +56,153 @@ function withConfig(tenant: Tenant): TenantWithConfig {
   };
 }
 
+// Asset config types — add new chain types here when additional chains are supported.
+export interface BtcAssetConfig {
+  chain: 'bitcoin';
+  hotAddress?: string;
+  coldAddress?: string;
+  xpub?: string;
+}
+
+// Union type — extend with EthAssetConfig etc. when ETH is added.
+export type AssetConfig = BtcAssetConfig;
+
 export const tenantsService = {
   /**
-   * Provision the Bitcoin Core watch-only wallet for a tenant.
-   * Must be called after create() completes. Idempotent.
+   * Provision FWallet + LWallets for all enabled assets.
+   * Call after create() completes. Idempotent per-step.
+   * BTC is always provisioned in MVP regardless of the assets array.
+   */
+  async provision(tenantId: string, assets: AssetConfig[]): Promise<void> {
+    const btcAsset = assets.find((a): a is BtcAssetConfig => a.chain === 'bitcoin') ?? { chain: 'bitcoin' as const };
+
+    // BTC: provision FWallet first (addresses are imported into it below)
+    await tenantsService.provisionBitcoinWallet(tenantId);
+    await tenantsService.provisionBtcLWallets(tenantId, btcAsset);
+
+    // Store xpub in config if provided at onboarding time
+    if (btcAsset.xpub) {
+      tenantsService.updateConfig(tenantId, { btcXpub: btcAsset.xpub });
+    }
+
+    // Future: for ETH — no FWallet, only LWallets
+  },
+
+  /**
+   * Provision the Bitcoin Core watch-only FWallet for a tenant.
+   * Idempotent: loads the existing wallet if it was already created.
+   * Non-fatal: logs a warning if Bitcoin Core is unavailable so that the DB
+   * tenant record is always created. The FWallet will be re-provisioned on
+   * next startup or via the adapter directly.
    */
   async provisionBitcoinWallet(tenantId: string): Promise<void> {
     const adapter = new BitcoinAdapter();
     try {
       await adapter.provisionTenantWallet(tenantId);
     } catch (err) {
-      logger.error('Failed to provision Bitcoin Core wallet for tenant', { tenantId, err });
-      throw err;
+      logger.warn('Could not provision Bitcoin Core FWallet for tenant (Bitcoin Core may be unavailable)', { tenantId, err });
     }
+  },
+
+  /**
+   * Provision LWallets in the chain-api DB for the BTC chain.
+   * Always creates customer_deposits. Creates tenant_hot / tenant_cold when
+   * the respective address is provided, and imports them into the FWallet.
+   */
+  async provisionBtcLWallets(tenantId: string, asset: BtcAssetConfig): Promise<void> {
+    const adapter = new BitcoinAdapter();
+
+    // Validate addresses upfront before any DB writes
+    if (asset.hotAddress && !adapter.isValidAddress(asset.hotAddress)) {
+      throw new ValidationError(`Invalid bitcoin hotAddress: ${asset.hotAddress}`);
+    }
+    if (asset.coldAddress && !adapter.isValidAddress(asset.coldAddress)) {
+      throw new ValidationError(`Invalid bitcoin coldAddress: ${asset.coldAddress}`);
+    }
+
+    const chainId = 'bitcoin';
+    const assetId = 'bitcoin:BTC';
+
+    // Always create the customer_deposits LWallet (needed for deposit acceptance)
+    const depositsWallet = walletsService.create(tenantId, {
+      name: 'Customer Deposits (BTC)',
+      type: 'watch_only',
+      walletRole: 'customer_deposits',
+    });
+    // Aggregate ledger account for the customer_deposits wallet
+    ledgerService.createAccount(tenantId, {
+      walletId: depositsWallet.id,
+      chainId,
+      assetId,
+      accountType: 'customer_available',
+      name: 'Customer Deposits Aggregate (BTC)',
+    });
+
+    if (asset.hotAddress) {
+      const hotWallet = walletsService.create(tenantId, {
+        name: 'Tenant Hot Wallet (BTC)',
+        type: 'external_signer',
+        walletRole: 'tenant_hot',
+      });
+      addressesService.addToWallet(tenantId, hotWallet.id, {
+        chain: 'bitcoin',
+        address: asset.hotAddress,
+        label: 'tenant_hot',
+        addressRole: 'treasury_hot',
+      });
+      ledgerService.createAccount(tenantId, {
+        walletId: hotWallet.id,
+        chainId,
+        assetId,
+        accountType: 'tenant_hot_control',
+        name: 'Tenant Hot Control (BTC)',
+      });
+      try {
+        await adapter.importAddressForTenant(asset.hotAddress, tenantId, 'tenant_hot');
+      } catch (err) {
+        logger.warn('Failed to import hot address into BTC Core FWallet (non-fatal)', { tenantId, address: asset.hotAddress, err });
+      }
+    }
+
+    if (asset.coldAddress) {
+      const coldWallet = walletsService.create(tenantId, {
+        name: 'Tenant Cold Wallet (BTC)',
+        type: 'external_signer',
+        walletRole: 'tenant_cold',
+      });
+      addressesService.addToWallet(tenantId, coldWallet.id, {
+        chain: 'bitcoin',
+        address: asset.coldAddress,
+        label: 'tenant_cold',
+        addressRole: 'treasury_cold',
+      });
+      ledgerService.createAccount(tenantId, {
+        walletId: coldWallet.id,
+        chainId,
+        assetId,
+        accountType: 'tenant_cold_control',
+        name: 'Tenant Cold Control (BTC)',
+      });
+      try {
+        await adapter.importAddressForTenant(asset.coldAddress, tenantId, 'tenant_cold');
+      } catch (err) {
+        logger.warn('Failed to import cold address into BTC Core FWallet (non-fatal)', { tenantId, address: asset.coldAddress, err });
+      }
+    }
+
+    // Tenant-level operational accounts (not linked to specific wallets)
+    ledgerService.createAccount(tenantId, {
+      chainId,
+      assetId,
+      accountType: 'sweep_in_transit',
+      name: 'Sweep In Transit (BTC)',
+    });
+    ledgerService.createAccount(tenantId, {
+      chainId,
+      assetId,
+      accountType: 'network_fee_expense',
+      name: 'Network Fee Expense (BTC)',
+    });
   },
 
   create(input: { name: string; metadata?: Record<string, unknown> }): TenantWithConfig {
@@ -145,6 +285,8 @@ export const tenantsService = {
       withdrawalMode?: string;
       dailyWithdrawalLimitSats?: string | null;
       perTxLimitSats?: string | null;
+      btcXpub?: string | null;
+      btcSweepThresholdSats?: string;
     }
   ): TenantConfig {
     const db = getDb();
@@ -158,8 +300,9 @@ export const tenantsService = {
     if (!existing) {
       db.prepare(`
         INSERT INTO tenant_configs (tenant_id, btc_confirmations_required, btc_finality_confirmations,
-          custody_mode, withdrawal_mode, daily_withdrawal_limit_sats, per_tx_limit_sats, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          custody_mode, withdrawal_mode, daily_withdrawal_limit_sats, per_tx_limit_sats,
+          btc_xpub, btc_sweep_threshold_sats, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         tenantId,
         input.btcConfirmationsRequired ?? 1,
@@ -168,6 +311,8 @@ export const tenantsService = {
         input.withdrawalMode ?? 'external_signer',
         input.dailyWithdrawalLimitSats ?? null,
         input.perTxLimitSats ?? null,
+        input.btcXpub ?? null,
+        input.btcSweepThresholdSats ?? '100000',
         now
       );
     } else {
@@ -180,6 +325,8 @@ export const tenantsService = {
       if (input.withdrawalMode !== undefined) { sets.push('withdrawal_mode = ?'); params.push(input.withdrawalMode); }
       if ('dailyWithdrawalLimitSats' in input) { sets.push('daily_withdrawal_limit_sats = ?'); params.push(input.dailyWithdrawalLimitSats ?? null); }
       if ('perTxLimitSats' in input) { sets.push('per_tx_limit_sats = ?'); params.push(input.perTxLimitSats ?? null); }
+      if ('btcXpub' in input) { sets.push('btc_xpub = ?'); params.push(input.btcXpub ?? null); }
+      if (input.btcSweepThresholdSats !== undefined) { sets.push('btc_sweep_threshold_sats = ?'); params.push(input.btcSweepThresholdSats); }
 
       if (sets.length > 0) {
         sets.push('updated_at = ?');

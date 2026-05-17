@@ -22,6 +22,7 @@ const configSchema = z.object({
   DEPOSIT_MONITOR_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   WEBHOOK_DELIVERY_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
   TX_STATUS_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  SWEEP_WORKER_INTERVAL_MS: z.coerce.number().int().positive().default(300000),
   RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(100),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });

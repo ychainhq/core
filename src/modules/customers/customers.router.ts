@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { customersService } from './customers.service';
+import { depositAddressService } from './deposit-address.service';
 
 export const customersRouter = Router();
 
@@ -119,6 +120,22 @@ customersRouter.get('/:customerId/addresses', (req: Request, res: Response, next
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /v1/customers/:customerId/deposit-address
+// Derives the next BTC deposit address from the tenant's xpub using BIP32.
+// Requires btcXpub to be configured on the tenant (PATCH /admin/v1/tenants/:id/config).
+customersRouter.post('/:customerId/deposit-address', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    customersService.getById(tenantId(req), req.params['customerId']!); // 404 guard
+    const result = await depositAddressService.generateForCustomer(
+      tenantId(req),
+      req.params['customerId']!
+    );
+    res.status(201).json({ data: result });
   } catch (err) {
     next(err);
   }

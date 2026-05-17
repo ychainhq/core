@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError, ConflictError } from '../../shared/errors/index';
 import { addSatoshi } from '../../shared/money/index';
+import { ledgerService } from '../ledger/ledger.service';
 
 export interface Customer {
   id: string;
@@ -54,6 +55,24 @@ export const customersService = {
       now,
       now
     );
+
+    // Auto-provision per-customer ledger accounts for BTC (MVP: always bitcoin:BTC)
+    const chainId = 'bitcoin';
+    const assetId = 'bitcoin:BTC';
+    ledgerService.createAccount(tenantId, {
+      customerId: id,
+      chainId,
+      assetId,
+      accountType: 'customer_available',
+      name: 'Available Balance (BTC)',
+    });
+    ledgerService.createAccount(tenantId, {
+      customerId: id,
+      chainId,
+      assetId,
+      accountType: 'customer_pending',
+      name: 'Pending Balance (BTC)',
+    });
 
     return customersService.getById(tenantId, id);
   },

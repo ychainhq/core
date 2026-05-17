@@ -4,9 +4,22 @@ import { tenantsService } from './tenants.service';
 
 export const tenantsAdminRouter = Router();
 
+// Per-chain asset configuration schemas.
+// Add new chain schemas here when additional chains are supported.
+const btcAssetSchema = z.object({
+  chain: z.literal('bitcoin'),
+  hotAddress: z.string().min(1).optional(),
+  coldAddress: z.string().min(1).optional(),
+  xpub: z.string().min(1).optional(),
+});
+
+// Discriminated union on 'chain' — extend with z.union([btcAssetSchema, ethAssetSchema, ...]) when ETH is added.
+const assetConfigSchema = btcAssetSchema;
+
 const createSchema = z.object({
   name: z.string().min(1).max(200),
   metadata: z.record(z.unknown()).optional(),
+  assets: z.array(assetConfigSchema).optional(),
 });
 
 const updateSchema = z.object({
@@ -22,6 +35,8 @@ const configSchema = z.object({
   withdrawalMode: z.enum(['external_signer', 'automatic', 'manual_approval', 'threshold_based']).optional(),
   dailyWithdrawalLimitSats: z.string().nullable().optional(),
   perTxLimitSats: z.string().nullable().optional(),
+  btcXpub: z.string().min(1).nullable().optional(),
+  btcSweepThresholdSats: z.string().regex(/^\d+$/, 'Must be a numeric string').optional(),
 });
 
 const listQuerySchema = z.object({
@@ -39,7 +54,7 @@ tenantsAdminRouter.post('/', async (req: Request, res: Response, next: NextFunct
   try {
     const body = createSchema.parse(req.body);
     const tenant = tenantsService.create(body);
-    await tenantsService.provisionBitcoinWallet(tenant.id);
+    await tenantsService.provision(tenant.id, body.assets ?? []);
     res.status(201).json({ data: tenant });
   } catch (err) {
     next(err);

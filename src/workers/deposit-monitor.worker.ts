@@ -85,6 +85,14 @@ export class DepositMonitorWorker {
     }
   }
 
+  private getCustomerIdForAddress(address: string, chainId: string): string | null {
+    const db = require('../db/sqlite').getDb();
+    const row = db
+      .prepare('SELECT customer_id FROM addresses WHERE chain_id = ? AND address = ? LIMIT 1')
+      .get(chainId, address) as { customer_id: string | null } | undefined;
+    return row?.customer_id ?? null;
+  }
+
   private async processAddress(
     address: string,
     tenantId: string,
@@ -94,6 +102,7 @@ export class DepositMonitorWorker {
   ): Promise<void> {
     const adapter = adapterRegistry.get(chainId);
     const assetId = 'bitcoin:BTC';
+    const customerId = this.getCustomerIdForAddress(address, chainId);
 
     // Get UTXOs for address (0 confirmations = includes mempool)
     let utxos: any[];
@@ -176,9 +185,11 @@ export class DepositMonitorWorker {
           }
         }
 
-        // Create ledger entry if ledger account exists for this wallet
-        if (walletId) {
-          const ledgerAccount = ledgerService.findAccountByWalletAndAsset(walletId, assetId);
+        // Create ledger entry — prefer per-customer account, fall back to wallet aggregate
+        {
+          const ledgerAccount = customerId
+            ? ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId)
+            : (walletId ? ledgerService.findAccountByWalletAndAsset(walletId, assetId) : null);
           if (ledgerAccount) {
             try {
               ledgerService.addEntry({
@@ -232,9 +243,11 @@ export class DepositMonitorWorker {
               }, chainId, walletId, tenantId);
             }
 
-            // Settle ledger entry
-            if (walletId) {
-              const ledgerAccount = ledgerService.findAccountByWalletAndAsset(walletId, assetId);
+            // Settle ledger entry — prefer per-customer account
+            {
+              const ledgerAccount = customerId
+                ? ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId)
+                : (walletId ? ledgerService.findAccountByWalletAndAsset(walletId, assetId) : null);
               if (ledgerAccount) {
                 try {
                   ledgerService.addEntry({

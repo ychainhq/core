@@ -4,28 +4,35 @@ A production-grade REST API for building Bitcoin payment processing, crypto bank
 
 **Key capabilities:** multi-tenant architecture, address monitoring, deposit detection, payment requests with BIP-21 QR payloads, PSBT/raw transaction preparation, fee estimation, UTXO management, HMAC-signed webhooks, minimal ledger.
 
-## How it works: Tenant, Customer, Wallet, and Address
+## How it works: FWallet, LWallet, Tenant, Customer
+
+Two types of wallets exist in the system:
+
+- **FWallet** (Physical Wallet) — a watch-only wallet in the Bitcoin Core node, named `btc_{tenantId}`. One per tenant, BTC only. Not exposed via API — pure monitoring infrastructure.
+- **LWallet** (Logical Wallet) — a wallet record in the chain-api database representing a business role. All `/v1/wallets` endpoints operate on LWallets.
 
 ```
-Bitcoin Core node
-  └── Watch-only wallet: btc_{tenantId}   ← one per tenant, provisioned automatically
-        └── Imported addresses             ← deposit addresses belonging to this tenant
+Bitcoin Core node (BTC only)
+  └── FWallet: btc_{tenantId}         ← one per tenant, watch-only, auto-provisioned
+        └── Imported addresses         ← all deposit addresses belonging to this tenant
 
 chain-api platform
   └── Tenant (API key owner)
-        └── Customer (ledger identity — NOT a Bitcoin Core wallet)
+        ├── LWallet: tenant_hot        ← operational hot wallet (tenant-provided address)
+        ├── LWallet: tenant_cold       ← cold storage (tenant-provided address)
+        └── Customer (ledger identity — NOT an FWallet, NOT a Bitcoin Core construct)
+              ├── LWallet: customer_deposits  ← namespace for deposit addresses
               ├── LedgerAccount (available / pending / hold per asset)
-              ├── DepositAddress (assigned from tenant's wallet namespace)
               └── TransactionHistory
 ```
 
 **Key rules:**
 
-- Each **Tenant** gets a dedicated watch-only Bitcoin Core wallet named `btc_{tenantId}` (e.g., `btc_tenant_default`). This wallet is created automatically when the tenant is provisioned.
-- Each **Customer** is a ledger construct only — no node wallet. Customers have ledger accounts and deposit addresses tracked in the platform database.
-- Deposit addresses are imported into the **tenant's** Bitcoin Core wallet using `importaddress`. The deposit monitor uses `listunspent` on `btc_{tenantId}` to find incoming UTXOs.
+- Each **Tenant** gets one **FWallet** in Bitcoin Core (`btc_{tenantId}`) and three **LWallets** in the chain-api DB (`customer_deposits`, `tenant_hot`, `tenant_cold`). All are provisioned automatically when the tenant is created.
+- **Ethereum has no FWallet.** ETH addresses are monitored directly via node RPC — no `createwallet` or `importaddress` needed.
+- Each **Customer** is a ledger construct only — no node wallet. Deposit addresses belong to the tenant's `customer_deposits` LWallet and are imported into the FWallet (BTC) for monitoring.
 - The **ledger is the source of truth** for balances; Bitcoin Core is chain infrastructure.
-- UTXOs are never shared between tenants: Bitcoin Core enforces wallet-level isolation, and the platform enforces SQL-level isolation (`WHERE tenant_id = ?`).
+- UTXOs are never shared between tenants: the FWallet namespace enforces node-level isolation, and `WHERE tenant_id = ?` enforces SQL-level isolation.
 
 ## Prerequisites
 
@@ -71,13 +78,12 @@ rpcallowip=127.0.0.1
 # testnet=1
 ```
 
-**Tenant wallets are provisioned automatically.** When the engine starts or a new tenant is created, it calls:
+**FWallet and LWallets are provisioned automatically.** When a new tenant is created via the admin API, the engine:
 
-```bash
-bitcoin-cli createwallet "btc_{tenantId}" true   # disablePrivateKeys=true, watch-only
-```
+1. Creates the **FWallet** in Bitcoin Core: `bitcoin-cli createwallet "btc_{tenantId}" true` (watch-only)
+2. Creates **LWallets** in the chain-api database: `customer_deposits`, and optionally `tenant_hot` / `tenant_cold` when addresses are provided.
 
-You do not need to create wallets manually. The seed script (`npm run db:seed`) provisions the wallet for the default tenant. Subsequent tenant creations via the admin API provision their wallets automatically.
+You do not need to create wallets manually. The seed script (`npm run db:seed`) provisions the default tenant. Subsequent tenants are provisioned via `POST /admin/v1/tenants`.
 
 ## API Authentication
 
@@ -89,6 +95,56 @@ Authorization: Bearer <your-api-key>
 The `/health` endpoint is public.
 
 ## Endpoints Reference
+
+### Admin: Tenant Management
+
+All admin endpoints require `X-Admin-Key: <admin-key>`.
+
+```bash
+# Create tenant — provisions FWallet + LWallets automatically
+curl -X POST /admin/v1/tenants \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Acme Fintech",
+    "assets": [
+      {
+        "chain": "bitcoin",
+        "hotAddress": "bc1q...",   // optional — creates tenant_hot LWallet + imports into FWallet
+        "coldAddress": "bc1q..."   // optional — creates tenant_cold LWallet + imports into FWallet
+      }
+    ]
+  }'
+# → always creates: FWallet btc_{tenantId} (Bitcoin Core) + LWallet customer_deposits (DB)
+# → if hotAddress: LWallet tenant_hot + address registered and imported into FWallet
+# → if coldAddress: LWallet tenant_cold + address registered and imported into FWallet
+
+GET  /admin/v1/tenants
+GET  /admin/v1/tenants/:tenantId
+PATCH /admin/v1/tenants/:tenantId          # update name, status, metadata
+GET  /admin/v1/tenants/:tenantId/config
+PATCH /admin/v1/tenants/:tenantId/config   # btcConfirmationsRequired, custodyMode, limits...
+
+# Generate API key for tenant
+curl -X POST /admin/v1/tenants/:tenantId/api-keys \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{"name": "primary-key"}'
+# → returns apiKey (cak_...) — store securely, shown only once
+```
+
+**`assets` field structure** (designed to be extended per chain):
+```json
+{
+  "assets": [
+    {
+      "chain": "bitcoin",       // required — chain identifier
+      "hotAddress": "bc1q...", // optional — tenant operational hot wallet
+      "coldAddress": "bc1q..."  // optional — tenant cold storage address
+    }
+    // future: { "chain": "ethereum", "hotAddress": "0x..." }
+  ]
+}
+```
 
 ### Health
 ```bash

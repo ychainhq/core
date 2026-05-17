@@ -1,5 +1,4 @@
 import express, { Request, Response } from 'express';
-import { config } from './config/index';
 import { authMiddleware } from './shared/auth/middleware';
 import { adminAuthMiddleware } from './shared/admin-auth/middleware';
 import { rateLimitMiddleware } from './shared/rate-limit/middleware';
@@ -22,6 +21,7 @@ import { ledgerRouter } from './modules/ledger/ledger.router';
 import { webhooksRouter, webhookDeliveriesRouter } from './modules/webhooks/webhooks.router';
 import { tenantsAdminRouter } from './modules/tenants/tenants.router';
 import { customersRouter } from './modules/customers/customers.router';
+import { sweepsRouter } from './modules/sweeps/sweeps.router';
 import { assetsService } from './modules/assets/assets.service';
 
 export function createApp(): express.Application {
@@ -117,6 +117,9 @@ export function createApp(): express.Application {
 
   // ---- Ledger ----
   app.use('/v1/ledger', ledgerRouter);
+
+  // ---- Sweeps ----
+  app.use('/v1/sweeps', sweepsRouter);
 
   // ---- Webhooks ----
   app.use('/v1/webhooks', webhooksRouter);
