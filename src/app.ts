@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import { authMiddleware } from './shared/auth/middleware';
 import { adminAuthMiddleware } from './shared/admin-auth/middleware';
+import { customerAuthMiddleware } from './shared/customer-auth/middleware';
 import { rateLimitMiddleware } from './shared/rate-limit/middleware';
 import { errorHandler } from './shared/errors/index';
 
@@ -22,6 +23,8 @@ import { webhooksRouter, webhookDeliveriesRouter } from './modules/webhooks/webh
 import { tenantsAdminRouter } from './modules/tenants/tenants.router';
 import { customersRouter } from './modules/customers/customers.router';
 import { sweepsRouter } from './modules/sweeps/sweeps.router';
+import { meRouter } from './modules/me/me.router';
+import { withdrawalsRouter } from './modules/withdrawals/withdrawals.router';
 import { assetsService } from './modules/assets/assets.service';
 
 export function createApp(): express.Application {
@@ -48,7 +51,12 @@ export function createApp(): express.Application {
   app.use('/admin/v1', adminAuthMiddleware);
   app.use('/admin/v1/tenants', tenantsAdminRouter);
 
-  // Apply auth and rate limiting to all /v1/* routes
+  // ---- Customer self-service — must be registered BEFORE the tenant authMiddleware
+  //      so that customer JWTs are handled by customerAuthMiddleware, not rejected
+  //      by the tenant API-key lookup. ----
+  app.use('/v1/me', customerAuthMiddleware, rateLimitMiddleware, meRouter);
+
+  // Apply tenant auth and rate limiting to all other /v1/* routes
   app.use('/v1', authMiddleware);
   app.use('/v1', rateLimitMiddleware);
 
@@ -120,6 +128,9 @@ export function createApp(): express.Application {
 
   // ---- Sweeps ----
   app.use('/v1/sweeps', sweepsRouter);
+
+  // ---- Customer withdrawals (tenant-facing: list + submit-signed) ----
+  app.use('/v1/withdrawals', withdrawalsRouter);
 
   // ---- Webhooks ----
   app.use('/v1/webhooks', webhooksRouter);

@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { customersService } from './customers.service';
 import { depositAddressService } from './deposit-address.service';
+import { issueCustomerToken } from '../../shared/customer-auth/jwt.service';
 
 export const customersRouter = Router();
 
@@ -136,6 +137,25 @@ customersRouter.post('/:customerId/deposit-address', async (req: Request, res: R
       req.params['customerId']!
     );
     res.status(201).json({ data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /v1/customers/:customerId/sessions
+// Issues a short-lived customer session token (JWT). Requires tenant API key.
+// The returned token is passed to the customer's frontend to call /v1/me/* directly.
+customersRouter.post('/:customerId/sessions', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const customer = customersService.getById(tenantId(req), req.params['customerId']!); // 404 guard
+    if (customer.status !== 'active') {
+      res.status(403).json({
+        error: { code: 'FORBIDDEN', message: `Customer account is ${customer.status}` },
+      });
+      return;
+    }
+    const { accessToken, expiresAt } = issueCustomerToken(tenantId(req), customer.id);
+    res.status(201).json({ data: { accessToken, expiresAt, customerId: customer.id } });
   } catch (err) {
     next(err);
   }

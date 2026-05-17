@@ -5,5 +5,6 @@ declare module 'express-serve-static-core' {
     tenantId?: string;
     apiKeyId?: string;
     apiKeyName?: string;
+    customerId?: string;
   }
 }
