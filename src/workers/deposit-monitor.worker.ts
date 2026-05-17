@@ -98,7 +98,7 @@ export class DepositMonitorWorker {
     // Get UTXOs for address (0 confirmations = includes mempool)
     let utxos: any[];
     try {
-      utxos = await adapter.getUtxosForAddress(address, 0);
+      utxos = await adapter.getUtxosForAddress(address, 0, tenantId);
     } catch (err) {
       logger.warn('Failed to get UTXOs', { address, error: String(err) });
       return;

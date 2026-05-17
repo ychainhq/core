@@ -15,11 +15,15 @@ import { logger } from '../../shared/logging/index';
 
 // Convert BTC float to satoshi string (use string math to avoid float issues)
 function btcFloatToSatoshi(btcFloat: number): string {
-  // Round to 8 decimal places and convert to satoshi
   const btcStr = btcFloat.toFixed(8);
   const [intPart, fracPart = ''] = btcStr.split('.');
   const fracPadded = fracPart.padEnd(8, '0').slice(0, 8);
   return (BigInt(intPart) * BigInt(100_000_000) + BigInt(fracPadded)).toString();
+}
+
+/** Returns the Bitcoin Core wallet name for a given tenant. */
+export function btcWalletName(tenantId: string): string {
+  return `btc_${tenantId}`;
 }
 
 export class BitcoinAdapter implements IChainAdapter {
@@ -30,6 +34,34 @@ export class BitcoinAdapter implements IChainAdapter {
   constructor() {
     this.rpc = new BitcoinRpcClient();
     this.network = config.BITCOIN_NETWORK;
+  }
+
+  /**
+   * Provision a watch-only Bitcoin Core wallet for a tenant.
+   * Called once when a tenant is created. Idempotent: loads existing wallet if already present.
+   */
+  async provisionTenantWallet(tenantId: string): Promise<void> {
+    const walletName = btcWalletName(tenantId);
+    try {
+      await this.rpc.createWatchOnlyWallet(walletName);
+      logger.info('Bitcoin Core watch-only wallet created', { tenantId, walletName });
+    } catch (err: any) {
+      // -4 = wallet already exists on disk; load it instead
+      if (err?.message?.includes('-4') || err?.message?.includes('already exists')) {
+        try {
+          await this.rpc.loadWallet(walletName);
+          logger.info('Bitcoin Core wallet loaded (already existed)', { tenantId, walletName });
+        } catch (loadErr: any) {
+          // -35 = wallet already loaded — that's fine
+          if (!loadErr?.message?.includes('-35') && !loadErr?.message?.includes('already loaded')) {
+            throw loadErr;
+          }
+          logger.debug('Bitcoin Core wallet already loaded', { tenantId, walletName });
+        }
+      } else {
+        throw err;
+      }
+    }
   }
 
   async getBlockchainInfo(): Promise<BlockchainInfo> {
@@ -84,7 +116,6 @@ export class BitcoinAdapter implements IChainAdapter {
   async getTransactionStatus(txHash: string): Promise<TransactionStatus> {
     try {
       const tx = await this.rpc.getRawTransaction(txHash, true);
-      const blockCount = tx.blockhash ? await this.rpc.getBlockCount() : 0;
       const blockHeight = tx.blockheight ?? null;
       const confirmations = tx.confirmations ?? 0;
 
@@ -99,7 +130,6 @@ export class BitcoinAdapter implements IChainAdapter {
       };
     } catch (err: any) {
       if (err?.code === 'TX_NOT_FOUND') {
-        // Check if it's in the mempool
         try {
           await this.rpc.getMempoolEntry(txHash);
           return {
@@ -128,105 +158,50 @@ export class BitcoinAdapter implements IChainAdapter {
   }
 
   /**
-   * Get address balance.
-   *
-   * Strategy:
-   * 1. If a watch-only wallet is configured, use getreceivedbyaddress (fast).
-   * 2. Otherwise, use scantxoutset (slow, blocking — for production use electrs/mempool.space).
-   *
-   * NOTE: scantxoutset is a heavy blocking operation. In production environments,
-   * use an external indexer (electrs, mempool.space API) or a watch-only wallet
-   * with proper address import for much better performance.
+   * Get address balance using the tenant's watch-only wallet.
    */
-  async getAddressBalance(address: string): Promise<AddressBalance> {
-    if (config.BITCOIN_RPC_WALLET) {
-      // Watch-only wallet path — fast
-      try {
-        const confirmed = await this.rpc.getReceivedByAddress(address, 1);
-        const total = await this.rpc.getReceivedByAddress(address, 0);
-        const unconfirmed = total - confirmed;
-
-        return {
-          address,
-          confirmed: btcFloatToSatoshi(confirmed),
-          unconfirmed: btcFloatToSatoshi(Math.max(0, unconfirmed)),
-          total: btcFloatToSatoshi(total),
-        };
-      } catch (err) {
-        logger.warn('Failed to get balance via wallet, falling back to scantxoutset', { address });
-      }
-    }
-
-    // Fallback: scantxoutset (slow, blocking)
-    // WARNING: This is a heavy operation. Use only if no watch-only wallet is available.
-    logger.warn('Using scantxoutset for address balance — this is slow. Configure BITCOIN_RPC_WALLET for production.', { address });
-    const descriptor = `addr(${address})`;
-    const result = await this.rpc.scanTxOutSet(descriptor);
-
-    const confirmedSat = result.unspents
-      ? result.unspents.reduce((sum: bigint, utxo: any) => sum + BigInt(btcFloatToSatoshi(utxo.amount)), BigInt(0))
-      : BigInt(0);
+  async getAddressBalance(address: string, tenantId: string): Promise<AddressBalance> {
+    const walletName = btcWalletName(tenantId);
+    const confirmed = await this.rpc.getReceivedByAddress(address, 1, walletName);
+    const total = await this.rpc.getReceivedByAddress(address, 0, walletName);
+    const unconfirmed = total - confirmed;
 
     return {
       address,
-      confirmed: confirmedSat.toString(),
-      unconfirmed: '0',
-      total: confirmedSat.toString(),
+      confirmed: btcFloatToSatoshi(confirmed),
+      unconfirmed: btcFloatToSatoshi(Math.max(0, unconfirmed)),
+      total: btcFloatToSatoshi(total),
     };
   }
 
   /**
-   * Get UTXOs for an address.
-   *
-   * Strategy:
-   * 1. If watch-only wallet configured: use listunspent (fast).
-   * 2. Otherwise: use scantxoutset (slow, blocking).
-   *
-   * NOTE: Same caveat as getAddressBalance — prefer watch-only wallet or external indexer.
+   * Get UTXOs for an address using the tenant's watch-only wallet.
    */
-  async getUtxosForAddress(address: string, minConfirmations = 0): Promise<Utxo[]> {
-    if (config.BITCOIN_RPC_WALLET) {
-      // Watch-only wallet path
-      try {
-        const unspent = await this.rpc.listUnspent(minConfirmations, 9999999, [address]);
-        return unspent.map((u: any) => ({
-          txHash: u.txid,
-          vout: u.vout,
-          address: u.address,
-          amount: btcFloatToSatoshi(u.amount),
-          scriptPubKey: u.scriptPubKey,
-          confirmations: u.confirmations,
-          height: u.height ?? null,
-        }));
-      } catch (err) {
-        logger.warn('Failed to list UTXOs via wallet, falling back to scantxoutset', { address });
-      }
-    }
+  async getUtxosForAddress(address: string, minConfirmations = 0, tenantId: string): Promise<Utxo[]> {
+    const walletName = btcWalletName(tenantId);
+    const unspent = await this.rpc.listUnspent(minConfirmations, 9999999, [address], walletName);
+    return unspent.map((u: any) => ({
+      txHash: u.txid,
+      vout: u.vout,
+      address: u.address,
+      amount: btcFloatToSatoshi(u.amount),
+      scriptPubKey: u.scriptPubKey,
+      confirmations: u.confirmations,
+      height: u.height ?? null,
+    }));
+  }
 
-    // Fallback: scantxoutset
-    // WARNING: Heavy blocking operation. Use watch-only wallet or external indexer in production.
-    logger.warn('Using scantxoutset for UTXOs — this is slow. Configure BITCOIN_RPC_WALLET for production.', { address });
-    const descriptor = `addr(${address})`;
-    const result = await this.rpc.scanTxOutSet(descriptor);
-
-    if (!result.unspents) return [];
-
-    return result.unspents
-      .filter((u: any) => u.confirmations >= minConfirmations)
-      .map((u: any) => ({
-        txHash: u.txid,
-        vout: u.vout,
-        address: u.desc?.includes(address) ? address : u.address || address,
-        amount: btcFloatToSatoshi(u.amount),
-        scriptPubKey: u.scriptPubKey || '',
-        confirmations: u.confirmations ?? 0,
-        height: u.height ?? null,
-      }));
+  /**
+   * Import an address into the tenant's watch-only wallet for monitoring.
+   */
+  async importAddressForTenant(address: string, tenantId: string, label = ''): Promise<void> {
+    const walletName = btcWalletName(tenantId);
+    await this.rpc.importAddress(address, label, false, walletName);
+    logger.info('Address imported into tenant wallet', { tenantId, walletName, address });
   }
 
   async estimateSmartFee(targetBlocks: number): Promise<FeeEstimate> {
     const result = await this.rpc.estimateSmartFee(targetBlocks, 'CONSERVATIVE');
-    // feerate is in BTC/kB, convert to sat/vbyte
     const btcPerKb = result.feerate ?? 0.00001;
     const satPerVbyte = Math.ceil((btcPerKb * 100_000_000) / 1000);
 

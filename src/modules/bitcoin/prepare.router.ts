@@ -30,7 +30,7 @@ interface SelectedInput {
   confirmations: number;
 }
 
-async function selectCoins(input: CoinSelectionInput): Promise<{
+async function selectCoins(input: CoinSelectionInput, tenantId: string): Promise<{
   selectedInputs: SelectedInput[];
   outputs: Array<{ address: string; amount: string }>;
   estimatedFee: string;
@@ -41,7 +41,7 @@ async function selectCoins(input: CoinSelectionInput): Promise<{
   // Collect all UTXOs from provided addresses
   let allUtxos: any[] = [];
   for (const addr of input.fromAddresses) {
-    const utxos = await adapter.getUtxosForAddress(addr, 0);
+    const utxos = await adapter.getUtxosForAddress(addr, 0, tenantId);
     allUtxos.push(...utxos);
   }
 
@@ -126,7 +126,7 @@ prepareRouter.post('/coin-selection', async (req: Request, res: Response, next: 
       }
     }
 
-    const result = await selectCoins(body);
+    const result = await selectCoins(body, req.tenantId!);
 
     const changeAmount = BigInt(result.changeAmount);
     const allOutputs = [...result.outputs];
@@ -192,7 +192,7 @@ prepareRouter.post('/prepare', async (req: Request, res: Response, next: NextFun
       outputs: body.outputs,
       feeRate,
       changeAddress: body.changeAddress,
-    });
+    }, req.tenantId!);
 
     const changeAmount = BigInt(coinSel.changeAmount);
     const finalOutputs = [...body.outputs];

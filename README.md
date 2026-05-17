@@ -2,13 +2,35 @@
 
 A production-grade REST API for building Bitcoin payment processing, crypto banking, and checkout functionality. The beta version supports Bitcoin (mainnet, testnet, regtest) via Bitcoin Core JSON-RPC.
 
-**Key capabilities:** address monitoring, deposit detection, payment requests with BIP-21 QR payloads, PSBT/raw transaction preparation, fee estimation, UTXO management, HMAC-signed webhooks, minimal ledger.
+**Key capabilities:** multi-tenant architecture, address monitoring, deposit detection, payment requests with BIP-21 QR payloads, PSBT/raw transaction preparation, fee estimation, UTXO management, HMAC-signed webhooks, minimal ledger.
+
+## How it works: Tenant, Customer, Wallet, and Address
+
+```
+Bitcoin Core node
+  └── Watch-only wallet: btc_{tenantId}   ← one per tenant, provisioned automatically
+        └── Imported addresses             ← deposit addresses belonging to this tenant
+
+chain-api platform
+  └── Tenant (API key owner)
+        └── Customer (ledger identity — NOT a Bitcoin Core wallet)
+              ├── LedgerAccount (available / pending / hold per asset)
+              ├── DepositAddress (assigned from tenant's wallet namespace)
+              └── TransactionHistory
+```
+
+**Key rules:**
+
+- Each **Tenant** gets a dedicated watch-only Bitcoin Core wallet named `btc_{tenantId}` (e.g., `btc_tenant_default`). This wallet is created automatically when the tenant is provisioned.
+- Each **Customer** is a ledger construct only — no node wallet. Customers have ledger accounts and deposit addresses tracked in the platform database.
+- Deposit addresses are imported into the **tenant's** Bitcoin Core wallet using `importaddress`. The deposit monitor uses `listunspent` on `btc_{tenantId}` to find incoming UTXOs.
+- The **ledger is the source of truth** for balances; Bitcoin Core is chain infrastructure.
+- UTXOs are never shared between tenants: Bitcoin Core enforces wallet-level isolation, and the platform enforces SQL-level isolation (`WHERE tenant_id = ?`).
 
 ## Prerequisites
 
 - **Node.js 20+**
 - **Bitcoin Core** (fully synced) with JSON-RPC enabled
-- (Optional) A watch-only wallet in Bitcoin Core for efficient UTXO queries
 
 ## Quick Start
 
@@ -45,20 +67,17 @@ rpcpassword=changeme
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
 
-# Optional: enable wallet for better UTXO queries
-# wallet=chain-api-watch
-
 # For testnet:
 # testnet=1
 ```
 
-**Watch-only wallet (recommended for production):**
+**Tenant wallets are provisioned automatically.** When the engine starts or a new tenant is created, it calls:
+
 ```bash
-bitcoin-cli createwallet "chain-api-watch" true true "" false true
-bitcoin-cli -rpcwallet=chain-api-watch importaddress "bc1q..." "" false
+bitcoin-cli createwallet "btc_{tenantId}" true   # disablePrivateKeys=true, watch-only
 ```
 
-Set `BITCOIN_RPC_WALLET=chain-api-watch` in `.env` for efficient `listunspent` queries instead of the heavy `scantxoutset`.
+You do not need to create wallets manually. The seed script (`npm run db:seed`) provisions the wallet for the default tenant. Subsequent tenant creations via the admin API provision their wallets automatically.
 
 ## API Authentication
 
@@ -313,9 +332,9 @@ Background Workers (setInterval)
 - Verify `BITCOIN_RPC_URL`, `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD` in `.env`
 - Ensure `server=1` is in `bitcoin.conf`
 
-**"scantxoutset is slow"**
-- Configure `BITCOIN_RPC_WALLET` to use `listunspent` instead
-- Or use an external indexer like electrs or mempool.space
+**"UTXOs not found for address"**
+- Ensure the address was registered via `POST /v1/monitors/addresses` — this imports it into the tenant's Bitcoin Core wallet
+- Verify the tenant's wallet (`btc_{tenantId}`) is loaded: `bitcoin-cli listwallets`
 
 **Deposits not detected**
 - Ensure addresses are in `watched_addresses` (via `POST /v1/monitors/addresses` or wallet address registration)

@@ -9,7 +9,6 @@ const configSchema = z.object({
   BITCOIN_RPC_URL: z.string().url().default('http://127.0.0.1:8332'),
   BITCOIN_RPC_USER: z.string().default('bitcoin'),
   BITCOIN_RPC_PASSWORD: z.string().default('changeme'),
-  BITCOIN_RPC_WALLET: z.string().optional(),
   BITCOIN_NETWORK: z.enum(['mainnet', 'testnet', 'regtest']).default('mainnet'),
   API_KEY: z.string().optional(),
   ADMIN_KEY: z.string().optional(),

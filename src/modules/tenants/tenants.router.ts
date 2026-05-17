@@ -35,10 +35,11 @@ const apiKeySchema = z.object({
 });
 
 // POST /admin/v1/tenants
-tenantsAdminRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
+tenantsAdminRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = createSchema.parse(req.body);
     const tenant = tenantsService.create(body);
+    await tenantsService.provisionBitcoinWallet(tenant.id);
     res.status(201).json({ data: tenant });
   } catch (err) {
     next(err);

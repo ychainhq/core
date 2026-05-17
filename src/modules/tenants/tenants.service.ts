@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError, ConflictError } from '../../shared/errors/index';
+import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
+import { logger } from '../../shared/logging/index';
 
 export interface Tenant {
   id: string;
@@ -49,6 +51,20 @@ function withConfig(tenant: Tenant): TenantWithConfig {
 }
 
 export const tenantsService = {
+  /**
+   * Provision the Bitcoin Core watch-only wallet for a tenant.
+   * Must be called after create() completes. Idempotent.
+   */
+  async provisionBitcoinWallet(tenantId: string): Promise<void> {
+    const adapter = new BitcoinAdapter();
+    try {
+      await adapter.provisionTenantWallet(tenantId);
+    } catch (err) {
+      logger.error('Failed to provision Bitcoin Core wallet for tenant', { tenantId, err });
+      throw err;
+    }
+  },
+
   create(input: { name: string; metadata?: Record<string, unknown> }): TenantWithConfig {
     const db = getDb();
     const id = `tenant_${crypto.randomBytes(8).toString('hex')}`;

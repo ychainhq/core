@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { monitorsService } from './monitors.service';
+import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
+import { logger } from '../../shared/logging/index';
 
 export const monitorsRouter = Router();
 
@@ -26,11 +28,22 @@ const listQuerySchema = z.object({
 });
 
 // POST /v1/monitors/addresses
-monitorsRouter.post('/addresses', (req: Request, res: Response, next: NextFunction) => {
+monitorsRouter.post('/addresses', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const body = addSchema.parse(req.body);
     const monitor = monitorsService.add(tenantId, body);
+
+    // Import into tenant's Bitcoin Core watch-only wallet so listunspent can detect UTXOs
+    if (body.chain === 'bitcoin') {
+      try {
+        const adapter = new BitcoinAdapter();
+        await adapter.importAddressForTenant(body.address, tenantId, body.label ?? '');
+      } catch (err) {
+        logger.warn('Failed to import address into Bitcoin Core wallet', { tenantId, address: body.address, err });
+      }
+    }
+
     res.status(201).json({ data: monitor });
   } catch (err) {
     next(err);

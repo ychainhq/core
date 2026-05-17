@@ -3,6 +3,7 @@ import { getDb } from './sqlite';
 import { runMigrations } from './migrate';
 import { config } from '../config/index';
 import { logger } from '../shared/logging/index';
+import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
 
 function sha256(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -16,7 +17,7 @@ function generateAdminKey(): string {
   return `aak_${crypto.randomBytes(24).toString('hex')}`;
 }
 
-export function runSeed(): void {
+export async function runSeed(): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 
@@ -217,16 +218,24 @@ export function runSeed(): void {
   } else {
     logger.info('Admin key seed complete');
   }
+
+  // 8. Provision Bitcoin Core watch-only wallet for the default tenant
+  try {
+    const btcAdapter = new BitcoinAdapter();
+    await btcAdapter.provisionTenantWallet('tenant_default');
+    logger.info('Bitcoin Core wallet provisioned for tenant_default');
+  } catch (err) {
+    logger.warn('Could not provision Bitcoin Core wallet for tenant_default (Bitcoin Core may not be running)', { err });
+  }
 }
 
 // Run if executed directly
 if (require.main === module) {
-  try {
-    runMigrations();
-    runSeed();
-    process.exit(0);
-  } catch (err) {
-    console.error('Seed failed:', err);
-    process.exit(1);
-  }
+  runMigrations();
+  runSeed()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('Seed failed:', err);
+      process.exit(1);
+    });
 }

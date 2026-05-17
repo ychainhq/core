@@ -22,7 +22,7 @@ utxosRouter.get('/', async (req: Request, res: Response, next: NextFunction) => 
     const address = req.params['address']!;
     const query = utxoQuerySchema.parse(req.query);
     const adapter = adapterRegistry.get('bitcoin');
-    const utxos = await adapter.getUtxosForAddress(address, query.minConfirmations);
+    const utxos = await adapter.getUtxosForAddress(address, query.minConfirmations, req.tenantId!);
 
     res.json({
       data: utxos.map((u) => ({
@@ -54,7 +54,7 @@ walletUtxosRouter.get('/', async (req: Request, res: Response, next: NextFunctio
 
     for (const { address } of addresses) {
       try {
-        const utxos = await adapter.getUtxosForAddress(address, query.minConfirmations);
+        const utxos = await adapter.getUtxosForAddress(address, query.minConfirmations, req.tenantId!);
         allUtxos.push(...utxos.map((u) => ({
           ...u,
           amount_display: satoshiToBtc(u.amount),

@@ -77,8 +77,8 @@ export interface IChainAdapter {
   getRawTransaction(txHash: string, verbose?: boolean): Promise<any>;
   getRawMempool(): Promise<string[]>;
   getTransactionStatus(txHash: string): Promise<TransactionStatus>;
-  getAddressBalance(address: string): Promise<AddressBalance>;
-  getUtxosForAddress(address: string, minConfirmations?: number): Promise<Utxo[]>;
+  getAddressBalance(address: string, tenantId: string): Promise<AddressBalance>;
+  getUtxosForAddress(address: string, minConfirmations: number, tenantId: string): Promise<Utxo[]>;
   estimateSmartFee(targetBlocks: number): Promise<FeeEstimate>;
   testMempoolAccept(rawTx: string): Promise<MempoolAcceptResult>;
   sendRawTransaction(rawTx: string): Promise<string>;

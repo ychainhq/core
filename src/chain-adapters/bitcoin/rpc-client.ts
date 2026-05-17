@@ -21,7 +21,6 @@ interface JsonRpcResponse<T = unknown> {
 export class BitcoinRpcClient {
   private readonly baseUrl: string;
   private readonly auth: string;
-  private readonly walletUrl: string | null;
   private requestId = 0;
 
   constructor() {
@@ -29,20 +28,18 @@ export class BitcoinRpcClient {
     this.auth = Buffer.from(
       `${config.BITCOIN_RPC_USER}:${config.BITCOIN_RPC_PASSWORD}`
     ).toString('base64');
-
-    this.walletUrl = config.BITCOIN_RPC_WALLET
-      ? `${config.BITCOIN_RPC_URL}/wallet/${encodeURIComponent(config.BITCOIN_RPC_WALLET)}`
-      : null;
   }
 
-  private getUrl(useWallet = false): string {
-    if (useWallet && this.walletUrl) return this.walletUrl;
+  private getUrl(walletName?: string): string {
+    if (walletName) {
+      return `${this.baseUrl}/wallet/${encodeURIComponent(walletName)}`;
+    }
     return this.baseUrl;
   }
 
-  async call<T = unknown>(method: string, params: unknown[] = [], useWallet = false): Promise<T> {
+  async call<T = unknown>(method: string, params: unknown[] = [], walletName?: string): Promise<T> {
     const id = `rpc_${++this.requestId}`;
-    const url = this.getUrl(useWallet);
+    const url = this.getUrl(walletName);
 
     const body: JsonRpcRequest = {
       jsonrpc: '1.1',
@@ -51,7 +48,7 @@ export class BitcoinRpcClient {
       params,
     };
 
-    logger.debug('Bitcoin RPC call', { method, params: params.length });
+    logger.debug('Bitcoin RPC call', { method, params: params.length, wallet: walletName });
 
     let response: Response;
     let attempts = 0;
@@ -91,7 +88,6 @@ export class BitcoinRpcClient {
 
     if (data.error) {
       logger.warn('Bitcoin RPC error', { method, code: data.error.code, message: data.error.message });
-      // Map common RPC error codes
       if (data.error.code === -5) {
         throw new ApiError(404, 'TX_NOT_FOUND', data.error.message);
       }
@@ -137,28 +133,59 @@ export class BitcoinRpcClient {
     return this.call<string[]>('getrawmempool');
   }
 
-  // ---- Address/wallet operations ----
+  // ---- Wallet management ----
 
   /**
-   * Scan UTXO set for an address.
-   * WARNING: scantxoutset is a blocking, heavy operation in Bitcoin Core.
-   * For production, use electrs/mempool.space indexer or a watch-only wallet with listunspent.
-   * Only use this when no watch-only wallet is configured.
+   * Create a watch-only wallet for a tenant.
+   * disablePrivateKeys=true means no private keys are stored in this wallet.
    */
+  async createWatchOnlyWallet(walletName: string): Promise<void> {
+    await this.call('createwallet', [
+      walletName,
+      true,  // disablePrivateKeys
+      false, // blank
+      '',    // passphrase
+      false, // avoidReuse
+      false, // descriptors
+      false, // loadOnStartup (managed manually)
+    ]);
+  }
+
+  /**
+   * Load an existing wallet by name.
+   */
+  async loadWallet(walletName: string): Promise<void> {
+    await this.call('loadwallet', [walletName]);
+  }
+
+  /**
+   * List currently loaded wallets.
+   */
+  async listWallets(): Promise<string[]> {
+    return this.call<string[]>('listwallets');
+  }
+
+  // ---- Address/wallet operations ----
+
   async scanTxOutSet(descriptor: string): Promise<any> {
     return this.call('scantxoutset', ['start', [{ desc: descriptor }]]);
   }
 
-  async getReceivedByAddress(address: string, minConf = 0): Promise<number> {
-    return this.call<number>('getreceivedbyaddress', [address, minConf], true);
+  async getReceivedByAddress(address: string, minConf = 0, walletName?: string): Promise<number> {
+    return this.call<number>('getreceivedbyaddress', [address, minConf], walletName);
   }
 
   async listUnspent(
     minConf = 0,
     maxConf = 9999999,
-    addresses: string[] = []
+    addresses: string[] = [],
+    walletName?: string,
   ): Promise<any[]> {
-    return this.call<any[]>('listunspent', [minConf, maxConf, addresses], true);
+    return this.call<any[]>('listunspent', [minConf, maxConf, addresses], walletName);
+  }
+
+  async importAddress(address: string, label = '', rescan = false, walletName?: string): Promise<void> {
+    await this.call('importaddress', [address, label, rescan], walletName);
   }
 
   // ---- Transaction operations ----
@@ -190,12 +217,13 @@ export class BitcoinRpcClient {
     outputs: any[],
     locktime = 0,
     options: any = {},
-    bip32Derivs = false
+    bip32Derivs = false,
+    walletName?: string,
   ): Promise<any> {
     return this.call(
       'walletcreatefundedpsbt',
       [inputs, outputs, locktime, options, bip32Derivs],
-      true
+      walletName,
     );
   }
 
@@ -205,9 +233,5 @@ export class BitcoinRpcClient {
 
   async getMempoolEntry(txHash: string): Promise<any> {
     return this.call('getmempoolentry', [txHash]);
-  }
-
-  async importAddress(address: string, label = '', rescan = false): Promise<void> {
-    await this.call('importaddress', [address, label, rescan], true);
   }
 }

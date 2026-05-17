@@ -12,7 +12,7 @@ balancesRouter.get('/', async (req: Request, res: Response, next: NextFunction) 
   try {
     const { chain, address } = req.params as { chain: string; address: string };
     const adapter = adapterRegistry.get(chain);
-    const balance = await adapter.getAddressBalance(address);
+    const balance = await adapter.getAddressBalance(address, req.tenantId!);
 
     res.json({
       data: {
@@ -43,7 +43,7 @@ balancesRouter.get('/:asset', async (req: Request, res: Response, next: NextFunc
     const assetRow = db.prepare('SELECT * FROM assets WHERE id = ? OR symbol = ?').get(`${chain}:${asset}`, asset);
     if (!assetRow) throw new NotFoundError('Asset', asset);
 
-    const balance = await adapter.getAddressBalance(address);
+    const balance = await adapter.getAddressBalance(address, req.tenantId!);
 
     res.json({
       data: {
@@ -99,7 +99,7 @@ walletBalancesRouter.get('/', async (req: Request, res: Response, next: NextFunc
 
       for (const addr of addrs) {
         try {
-          const bal = await adapter.getAddressBalance(addr);
+          const bal = await adapter.getAddressBalance(addr, req.tenantId!);
           totalConfirmed = addSatoshi(totalConfirmed, bal.confirmed);
           totalUnconfirmed = addSatoshi(totalUnconfirmed, bal.unconfirmed);
         } catch {
