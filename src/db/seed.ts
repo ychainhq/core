@@ -145,7 +145,7 @@ export async function runSeed(): Promise<void> {
   const assetExists = db.prepare('SELECT id FROM assets WHERE id = ?').get('bitcoin:BTC');
   if (!assetExists) {
     db.prepare(`
-      INSERT INTO assets (id, chain_id, symbol, name, type, contract_address, decimals, is_enabled, metadata, created_at, updated_at)
+      INSERT INTO assets (id, chain_id, symbol, name, type, decimals, specs, is_enabled, metadata, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       'bitcoin:BTC',
@@ -153,8 +153,8 @@ export async function runSeed(): Promise<void> {
       'BTC',
       'Bitcoin',
       'native',
-      null,
       8,
+      null,
       1,
       JSON.stringify({ coingeckoId: 'bitcoin' }),
       now,

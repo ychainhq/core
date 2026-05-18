@@ -1,14 +1,18 @@
 import { getDb } from '../../db/sqlite';
 import { NotFoundError } from '../../shared/errors/index';
 
+export interface AssetSpecs {
+  contract_address?: string;  // present for type=token (ERC-20 etc.)
+}
+
 export interface Asset {
   id: string;
   chain_id: string;
   symbol: string;
   name: string;
   type: string;
-  contract_address: string | null;
   decimals: number;
+  specs: AssetSpecs | null;
   is_enabled: boolean;
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -19,6 +23,7 @@ function mapAsset(row: any): Asset {
   return {
     ...row,
     is_enabled: row.is_enabled === 1,
+    specs: row.specs ? JSON.parse(row.specs) : null,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
   };
 }

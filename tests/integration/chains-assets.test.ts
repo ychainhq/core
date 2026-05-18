@@ -65,7 +65,8 @@ describe('GET /v1/assets', () => {
     expect(btc.symbol).toBe('BTC');
     expect(btc.decimals).toBe(8);
     expect(btc.type).toBe('native');
-    expect(btc.contract_address).toBeNull();
+    expect(btc.specs).toBeNull();
+    expect(btc.contract_address).toBeUndefined();
   });
 
   it('filters by chain=bitcoin', async () => {
