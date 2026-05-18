@@ -21,6 +21,7 @@ import { depositsRouter, addressDepositsRouter } from './modules/deposits/deposi
 import { ledgerRouter } from './modules/ledger/ledger.router';
 import { webhooksRouter, webhookDeliveriesRouter } from './modules/webhooks/webhooks.router';
 import { tenantsAdminRouter } from './modules/tenants/tenants.router';
+import { tenantSelfRouter } from './modules/tenants/tenant-self.router';
 import { customersRouter } from './modules/customers/customers.router';
 import { sweepsRouter } from './modules/sweeps/sweeps.router';
 import { meRouter } from './modules/me/me.router';
@@ -59,6 +60,9 @@ export function createApp(): express.Application {
   // Apply tenant auth and rate limiting to all other /v1/* routes
   app.use('/v1', authMiddleware);
   app.use('/v1', rateLimitMiddleware);
+
+  // ---- Tenant self-service ----
+  app.use('/v1/tenant', tenantSelfRouter);
 
   // ---- Customers (tenant-scoped) ----
   app.use('/v1/customers', customersRouter);
