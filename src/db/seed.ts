@@ -1,4 +1,7 @@
 import crypto from 'crypto';
+import * as bitcoin from 'bitcoinjs-lib';
+import * as ecc from 'tiny-secp256k1';
+import BIP32Factory from 'bip32';
 import { getDb } from './sqlite';
 import { runMigrations } from './migrate';
 import { config } from '../config/index';
@@ -70,6 +73,49 @@ export async function runSeed(): Promise<void> {
       'tenant_default'
     );
     logger.info('Updated tenant_config for tenant_default');
+  }
+
+  // 2b. Generate BTC xpub for tenant_default if not yet set
+  const cfgRow = db
+    .prepare('SELECT btc_xpub FROM tenant_configs WHERE tenant_id = ?')
+    .get('tenant_default') as { btc_xpub: string | null } | undefined;
+
+  if (!cfgRow?.btc_xpub) {
+    const network = config.BITCOIN_NETWORK === 'mainnet'
+      ? bitcoin.networks.bitcoin
+      : bitcoin.networks.testnet; // regtest shares BIP32 version bytes with testnet → tpub prefix
+
+    try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
+    const bip32 = BIP32Factory(ecc);
+
+    const entropy = crypto.randomBytes(32);
+    const root = bip32.fromSeed(entropy, network);
+    const coinType = config.BITCOIN_NETWORK === 'mainnet' ? 0 : 1;
+    const accountNode = root.derivePath(`m/44'/${coinType}'/0'`);
+    const xpub = accountNode.neutered().toBase58();
+    const xprv = root.toBase58();
+
+    db.prepare(
+      "UPDATE tenant_configs SET btc_xpub = ?, updated_at = ? WHERE tenant_id = ?"
+    ).run(xpub, now, 'tenant_default');
+
+    logger.info('BTC xpub generated for tenant_default', { derivationPath: `m/44'/${coinType}'/0'` });
+
+    console.log('');
+    console.log('======================================================');
+    console.log('GENERATED BTC DEV XPUB (stored in DB for tenant_default):');
+    console.log('');
+    console.log(`  BTC_DEV_XPUB=${xpub}`);
+    console.log('');
+    console.log('  BIP32 root private key (for signing daemon / regtest tests):');
+    console.log(`  BTC_DEV_XPRV=${xprv}`);
+    console.log('');
+    console.log(`  Derivation path: m/44'/${coinType}'/0'`);
+    console.log('  Customer deposit addresses derived at: m/0/{index} from xpub above');
+    console.log('======================================================');
+    console.log('');
+  } else {
+    logger.info('BTC xpub already set for tenant_default, skipping');
   }
 
   // 3. Upsert bitcoin chain
