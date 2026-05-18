@@ -9,7 +9,7 @@
  * - Sweep is tenant-scoped (cross-tenant access denied)
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, teardownDb } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr } from './helpers';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -18,7 +18,7 @@ async function createTenantWithKey(): Promise<{ tenantId: string; auth: { Author
   const createRes = await request(app)
     .post('/admin/v1/tenants')
     .set(ADMIN_AUTH)
-    .send({ name: `sweep-test-tenant-${Date.now()}` });
+    .send({ name: `sweep-test-tenant-${Date.now()}`, assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
   const tenantId = createRes.body.data.id;
   const keyRes = await request(app)
     .post(`/admin/v1/tenants/${tenantId}/api-keys`)
@@ -88,7 +88,7 @@ describe('Tenant config — sweep threshold', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'default-sweep-tenant' });
+      .send({ name: 'default-sweep-tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const tenantId = createRes.body.data.id;
 
     const res = await request(app)

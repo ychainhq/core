@@ -82,7 +82,8 @@ export const tenantsService = {
    * BTC is always provisioned in MVP regardless of the assets array.
    */
   async provision(tenantId: string, assets: AssetConfig[]): Promise<void> {
-    const btcAsset = assets.find((a): a is BtcAssetConfig => a.chain === 'bitcoin') ?? { chain: 'bitcoin' as const };
+    const btcAsset = assets.find((a): a is BtcAssetConfig => a.chain === 'bitcoin');
+    if (!btcAsset) throw new ValidationError('BTC asset config with hotAddress is required');
 
     // BTC: provision FWallet first (addresses are imported into it below)
     await tenantsService.provisionBitcoinWallet(tenantId);
@@ -90,7 +91,7 @@ export const tenantsService = {
 
     // Store xpub in config if provided at onboarding time
     if (btcAsset.xpub) {
-      tenantsService.updateConfig(tenantId, { btcXpub: btcAsset.xpub });
+      await tenantsService.updateConfig(tenantId, { btcXpub: btcAsset.xpub });
     }
 
     // Future: for ETH — no FWallet, only LWallets
@@ -109,6 +110,86 @@ export const tenantsService = {
       await adapter.provisionTenantWallet(tenantId);
     } catch (err) {
       logger.warn('Could not provision Bitcoin Core FWallet for tenant (Bitcoin Core may be unavailable)', { tenantId, err });
+    }
+  },
+
+  /**
+   * Find-or-create a treasury wallet (tenant_hot or tenant_cold), set the given address
+   * as the active address, and import it into the Bitcoin Core FWallet.
+   * Idempotent: re-activates the address if it is already in the wallet.
+   * Supersedes any previously active addresses in the wallet (status → 'replaced').
+   */
+  async upsertTreasuryWallet(
+    tenantId: string,
+    opts: {
+      role: 'tenant_hot' | 'tenant_cold';
+      address: string;
+      addressRole: 'treasury_hot' | 'treasury_cold';
+      walletName: string;
+      accountType: 'tenant_hot_control' | 'tenant_cold_control';
+      accountName: string;
+    }
+  ): Promise<void> {
+    const adapter = new BitcoinAdapter();
+    if (!adapter.isValidAddress(opts.address)) {
+      throw new ValidationError(`Invalid bitcoin address: ${opts.address}`);
+    }
+
+    const db = getDb();
+    const chainId = 'bitcoin';
+    const assetId = 'bitcoin:BTC';
+    const now = new Date().toISOString();
+
+    let wallet = db
+      .prepare('SELECT * FROM wallets WHERE tenant_id = ? AND wallet_role = ?')
+      .get(tenantId, opts.role) as any;
+
+    if (!wallet) {
+      wallet = walletsService.create(tenantId, {
+        name: opts.walletName,
+        type: 'external_signer',
+        walletRole: opts.role,
+      });
+      ledgerService.createAccount(tenantId, {
+        walletId: wallet.id,
+        chainId,
+        assetId,
+        accountType: opts.accountType,
+        name: opts.accountName,
+      });
+    }
+
+    // Check if address is already tracked in this wallet
+    const existingAddr = db
+      .prepare('SELECT id, status FROM addresses WHERE wallet_id = ? AND address = ?')
+      .get(wallet.id, opts.address) as { id: string; status: string } | undefined;
+
+    if (existingAddr) {
+      // Reactivate if needed, supersede all other active addresses
+      if (existingAddr.status !== 'active') {
+        db.prepare("UPDATE addresses SET status = 'active', updated_at = ? WHERE id = ?")
+          .run(now, existingAddr.id);
+      }
+      db.prepare("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active' AND id != ?")
+        .run(now, wallet.id, existingAddr.id);
+    } else {
+      // Supersede existing active addresses, then add the new one
+      db.prepare("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active'")
+        .run(now, wallet.id);
+      addressesService.addToWallet(tenantId, wallet.id, {
+        chain: 'bitcoin',
+        address: opts.address,
+        label: opts.role,
+        addressRole: opts.addressRole,
+      });
+    }
+
+    try {
+      await adapter.importAddressForTenant(opts.address, tenantId, opts.role);
+    } catch (err) {
+      logger.warn('Failed to import treasury address into BTC Core FWallet (non-fatal)', {
+        tenantId, address: opts.address, role: opts.role, err,
+      });
     }
   },
 
@@ -137,7 +218,6 @@ export const tenantsService = {
       type: 'watch_only',
       walletRole: 'customer_deposits',
     });
-    // Aggregate ledger account for the customer_deposits wallet
     ledgerService.createAccount(tenantId, {
       walletId: depositsWallet.id,
       chainId,
@@ -147,55 +227,25 @@ export const tenantsService = {
     });
 
     if (asset.hotAddress) {
-      const hotWallet = walletsService.create(tenantId, {
-        name: 'Tenant Hot Wallet (BTC)',
-        type: 'external_signer',
-        walletRole: 'tenant_hot',
-      });
-      addressesService.addToWallet(tenantId, hotWallet.id, {
-        chain: 'bitcoin',
+      await tenantsService.upsertTreasuryWallet(tenantId, {
+        role: 'tenant_hot',
         address: asset.hotAddress,
-        label: 'tenant_hot',
         addressRole: 'treasury_hot',
-      });
-      ledgerService.createAccount(tenantId, {
-        walletId: hotWallet.id,
-        chainId,
-        assetId,
+        walletName: 'Tenant Hot Wallet (BTC)',
         accountType: 'tenant_hot_control',
-        name: 'Tenant Hot Control (BTC)',
+        accountName: 'Tenant Hot Control (BTC)',
       });
-      try {
-        await adapter.importAddressForTenant(asset.hotAddress, tenantId, 'tenant_hot');
-      } catch (err) {
-        logger.warn('Failed to import hot address into BTC Core FWallet (non-fatal)', { tenantId, address: asset.hotAddress, err });
-      }
     }
 
     if (asset.coldAddress) {
-      const coldWallet = walletsService.create(tenantId, {
-        name: 'Tenant Cold Wallet (BTC)',
-        type: 'external_signer',
-        walletRole: 'tenant_cold',
-      });
-      addressesService.addToWallet(tenantId, coldWallet.id, {
-        chain: 'bitcoin',
+      await tenantsService.upsertTreasuryWallet(tenantId, {
+        role: 'tenant_cold',
         address: asset.coldAddress,
-        label: 'tenant_cold',
         addressRole: 'treasury_cold',
-      });
-      ledgerService.createAccount(tenantId, {
-        walletId: coldWallet.id,
-        chainId,
-        assetId,
+        walletName: 'Tenant Cold Wallet (BTC)',
         accountType: 'tenant_cold_control',
-        name: 'Tenant Cold Control (BTC)',
+        accountName: 'Tenant Cold Control (BTC)',
       });
-      try {
-        await adapter.importAddressForTenant(asset.coldAddress, tenantId, 'tenant_cold');
-      } catch (err) {
-        logger.warn('Failed to import cold address into BTC Core FWallet (non-fatal)', { tenantId, address: asset.coldAddress, err });
-      }
     }
 
     // Tenant-level operational accounts (not linked to specific wallets)
@@ -284,7 +334,7 @@ export const tenantsService = {
     return tenantsService.getById(id);
   },
 
-  updateConfig(
+  async updateConfig(
     tenantId: string,
     input: {
       btcConfirmationsRequired?: number;
@@ -296,8 +346,10 @@ export const tenantsService = {
       btcXpub?: string | null;
       btcSweepThresholdSats?: string;
       customerSessionTtlSeconds?: number;
+      btcHotAddress?: string;
+      btcColdAddress?: string;
     }
-  ): TenantConfig {
+  ): Promise<TenantConfig> {
     const db = getDb();
     tenantsService.getById(tenantId); // 404 guard
     const now = new Date().toISOString();
@@ -343,6 +395,28 @@ export const tenantsService = {
         params.push(now, tenantId);
         db.prepare(`UPDATE tenant_configs SET ${sets.join(', ')} WHERE tenant_id = ?`).run(...params);
       }
+    }
+
+    if (input.btcHotAddress) {
+      await tenantsService.upsertTreasuryWallet(tenantId, {
+        role: 'tenant_hot',
+        address: input.btcHotAddress,
+        addressRole: 'treasury_hot',
+        walletName: 'Tenant Hot Wallet (BTC)',
+        accountType: 'tenant_hot_control',
+        accountName: 'Tenant Hot Control (BTC)',
+      });
+    }
+
+    if (input.btcColdAddress) {
+      await tenantsService.upsertTreasuryWallet(tenantId, {
+        role: 'tenant_cold',
+        address: input.btcColdAddress,
+        addressRole: 'treasury_cold',
+        walletName: 'Tenant Cold Wallet (BTC)',
+        accountType: 'tenant_cold_control',
+        accountName: 'Tenant Cold Control (BTC)',
+      });
     }
 
     const row = db.prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?').get(tenantId);

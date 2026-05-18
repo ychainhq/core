@@ -58,10 +58,10 @@ tenantSelfRouter.get('/config', (req: Request, res: Response, next: NextFunction
 });
 
 // PATCH /v1/tenant/config
-tenantSelfRouter.patch('/config', (req: Request, res: Response, next: NextFunction) => {
+tenantSelfRouter.patch('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = updateConfigSchema.parse(req.body);
-    const config = tenantsService.updateConfig(tenantId(req), body);
+    const config = await tenantsService.updateConfig(tenantId(req), body);
     res.json({ data: config });
   } catch (err) {
     next(err);

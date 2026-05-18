@@ -14,7 +14,7 @@
  * - GET /v1/withdrawals/:id — tenant-facing detail
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, AUTH, teardownDb } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, AUTH, teardownDb, uniqueAddr } from './helpers';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -26,7 +26,7 @@ async function createTenantWithKey(): Promise<{ tenantId: string; auth: { Author
   const createRes = await request(app)
     .post('/admin/v1/tenants')
     .set(ADMIN_AUTH)
-    .send({ name: `session-test-tenant-${Date.now()}` });
+    .send({ name: `session-test-tenant-${Date.now()}`, assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
   const tenantId = createRes.body.data.id;
   const keyRes = await request(app)
     .post(`/admin/v1/tenants/${tenantId}/api-keys`)

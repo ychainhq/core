@@ -274,13 +274,42 @@ export async function runSeed(): Promise<void> {
     logger.warn('Could not provision Bitcoin Core wallet for tenant_default (Bitcoin Core may not be running)', { err });
   }
 
-  // 9. Provision BTC LWallets (customer_deposits, ledger accounts) for tenant_default
+  // 9. Provision BTC LWallets (customer_deposits, hot wallet, ledger accounts) for tenant_default
   const depositsWalletExists = db
     .prepare("SELECT id FROM wallets WHERE tenant_id = ? AND wallet_role = 'customer_deposits' LIMIT 1")
     .get('tenant_default');
 
   if (!depositsWalletExists) {
-    await tenantsService.provisionBtcLWallets('tenant_default', { chain: 'bitcoin' });
+    // Derive treasury hot address from the account xpub at m/1/0 (BIP44 internal chain)
+    const cfgRow9 = db
+      .prepare('SELECT btc_xpub FROM tenant_configs WHERE tenant_id = ?')
+      .get('tenant_default') as { btc_xpub: string | null } | undefined;
+
+    let hotAddress: string | undefined;
+    if (cfgRow9?.btc_xpub) {
+      // BIP32 xpub uses testnet version bytes for both testnet and regtest (tpub prefix).
+      // Address encoding must use the actual configured network.
+      const bip32Network = config.BITCOIN_NETWORK === 'mainnet'
+        ? bitcoin.networks.bitcoin
+        : bitcoin.networks.testnet; // tpub/tprv version bytes shared by testnet & regtest
+      const addressNetwork = config.BITCOIN_NETWORK === 'mainnet'
+        ? bitcoin.networks.bitcoin
+        : config.BITCOIN_NETWORK === 'testnet'
+          ? bitcoin.networks.testnet
+          : bitcoin.networks.regtest; // bcrt1q... for regtest
+      try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
+      const bip32seed = BIP32Factory(ecc);
+      const accountNode9 = bip32seed.fromBase58(cfgRow9.btc_xpub, bip32Network);
+      const hotNode = accountNode9.derive(1).derive(0);
+      const { address: derivedHot } = bitcoin.payments.p2wpkh({
+        pubkey: Buffer.from(hotNode.publicKey),
+        network: addressNetwork,
+      });
+      hotAddress = derivedHot!;
+      logger.info('Derived treasury hot address for tenant_default', { hotAddress });
+    }
+
+    await tenantsService.provisionBtcLWallets('tenant_default', { chain: 'bitcoin', hotAddress });
     logger.info('Provisioned BTC LWallets for tenant_default');
   } else {
     logger.info('BTC LWallets already provisioned for tenant_default, skipping');

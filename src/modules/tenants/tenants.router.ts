@@ -8,7 +8,7 @@ export const tenantsAdminRouter = Router();
 // Add new chain schemas here when additional chains are supported.
 const btcAssetSchema = z.object({
   chain: z.literal('bitcoin'),
-  hotAddress: z.string().min(1).optional(),
+  hotAddress: z.string().min(1),
   coldAddress: z.string().min(1).optional(),
   xpub: z.string().min(1).optional(),
 });
@@ -19,7 +19,7 @@ const assetConfigSchema = btcAssetSchema;
 const createSchema = z.object({
   name: z.string().min(1).max(200),
   metadata: z.record(z.unknown()).optional(),
-  assets: z.array(assetConfigSchema).optional(),
+  assets: z.array(assetConfigSchema).min(1),
 });
 
 const updateSchema = z.object({
@@ -38,6 +38,8 @@ const configSchema = z.object({
   btcXpub: z.string().min(1).nullable().optional(),
   btcSweepThresholdSats: z.string().regex(/^\d+$/, 'Must be a numeric string').optional(),
   customerSessionTtlSeconds: z.coerce.number().int().min(60).max(86400).optional(),
+  btcHotAddress: z.string().min(1).optional(),
+  btcColdAddress: z.string().min(1).optional(),
 });
 
 const listQuerySchema = z.object({
@@ -55,7 +57,7 @@ tenantsAdminRouter.post('/', async (req: Request, res: Response, next: NextFunct
   try {
     const body = createSchema.parse(req.body);
     const tenant = tenantsService.create(body);
-    await tenantsService.provision(tenant.id, body.assets ?? []);
+    await tenantsService.provision(tenant.id, body.assets);
     res.status(201).json({ data: tenant });
   } catch (err) {
     next(err);
@@ -108,10 +110,10 @@ tenantsAdminRouter.get('/:tenantId/config', (req: Request, res: Response, next: 
 });
 
 // PATCH /admin/v1/tenants/:tenantId/config
-tenantsAdminRouter.patch('/:tenantId/config', (req: Request, res: Response, next: NextFunction) => {
+tenantsAdminRouter.patch('/:tenantId/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = configSchema.parse(req.body);
-    const config = tenantsService.updateConfig(req.params['tenantId']!, body);
+    const config = await tenantsService.updateConfig(req.params['tenantId']!, body);
     res.json({ data: config });
   } catch (err) {
     next(err);

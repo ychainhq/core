@@ -17,7 +17,7 @@
  * - Tenant A key returns only tenant A data; tenant B key returns only tenant B data
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, teardownDb } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr } from './helpers';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -34,7 +34,7 @@ async function createTenantWithKey(): Promise<{
   const createRes = await request(app)
     .post('/admin/v1/tenants')
     .set(ADMIN_AUTH)
-    .send({ name: `self-svc-tenant-${Date.now()}` });
+    .send({ name: `self-svc-tenant-${Date.now()}`, assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
   expect(createRes.status).toBe(201);
   const tenantId = createRes.body.data.id;
   const initialCustodyMode = createRes.body.data.config?.custody_mode ?? 'external_signer';

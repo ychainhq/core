@@ -9,17 +9,17 @@
  * - Customer creation: customer_available + customer_pending ledger accounts auto-created
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, teardownDb, ADDR_1, ADDR_2 } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, teardownDb, ADDR_1, ADDR_2, uniqueAddr } from './helpers';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
 
 describe('GAP 1 — Tenant ledger account auto-provisioning', () => {
-  it('auto-creates customer_deposits ledger account when tenant has no assets', async () => {
+  it('auto-creates customer_deposits ledger account on tenant creation', async () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Ledger Auto Tenant' });
+      .send({ name: 'Ledger Auto Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     expect(createRes.status).toBe(201);
     const tenantId = createRes.body.data.id;
 
@@ -72,7 +72,7 @@ describe('GAP 1 — Tenant ledger account auto-provisioning', () => {
       .set(ADMIN_AUTH)
       .send({
         name: 'Cold Ledger Tenant',
-        assets: [{ chain: 'bitcoin', coldAddress: ADDR_2 }],
+        assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr(), coldAddress: ADDR_2 }],
       });
     expect(createRes.status).toBe(201);
     const tenantId = createRes.body.data.id;
@@ -86,7 +86,7 @@ describe('GAP 1 — Tenant ledger account auto-provisioning', () => {
     const ledgerRes = await request(app).get('/v1/ledger/accounts').set(auth);
     const types = ledgerRes.body.data.map((a: any) => a.account_type);
     expect(types).toContain('tenant_cold_control');
-    expect(types).not.toContain('tenant_hot_control');
+    expect(types).toContain('tenant_hot_control');
   });
 });
 
@@ -97,7 +97,7 @@ describe('GAP 1 — Customer ledger account auto-provisioning', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Customer Ledger Tenant' });
+      .send({ name: 'Customer Ledger Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const tenantId = createRes.body.data.id;
     const keyRes = await request(app)
       .post(`/admin/v1/tenants/${tenantId}/api-keys`)

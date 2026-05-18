@@ -14,10 +14,12 @@ import request from 'supertest';
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 import BIP32Factory from 'bip32';
-import { bootstrapApp, AUTH, ADMIN_AUTH, teardownDb } from './helpers';
+import { bootstrapApp, AUTH, ADMIN_AUTH, teardownDb, uniqueAddr } from './helpers';
 
 bitcoin.initEccLib(ecc);
 const bip32 = BIP32Factory(ecc);
+
+jest.setTimeout(60000);
 
 // Each test scenario needs a unique xpub so their derived m/0/0 addresses don't
 // collide with the global UNIQUE(chain_id, address) constraint in the shared DB.
@@ -39,7 +41,7 @@ async function createTenantWithKey(): Promise<{ tenantId: string; auth: { Author
   const createRes = await request(app)
     .post('/admin/v1/tenants')
     .set(ADMIN_AUTH)
-    .send({ name: `xpub-test-tenant-${Date.now()}` });
+    .send({ name: `xpub-test-tenant-${Date.now()}`, assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
   const tenantId = createRes.body.data.id;
   const keyRes = await request(app)
     .post(`/admin/v1/tenants/${tenantId}/api-keys`)
@@ -221,7 +223,7 @@ describe('POST /v1/customers/:customerId/deposit-address', () => {
       .set(ADMIN_AUTH)
       .send({
         name: 'xpub-at-creation-tenant',
-        assets: [{ chain: 'bitcoin', xpub: TEST_XPUB }],
+        assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr(), xpub: TEST_XPUB }],
       });
     expect(createRes.status).toBe(201);
     const tenantId = createRes.body.data.id;

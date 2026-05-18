@@ -3,7 +3,7 @@
  * Verifies that resources created under tenant A are not visible to tenant B.
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, teardownDb } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr } from './helpers';
 import { getDb } from '../../src/db/sqlite';
 import crypto from 'crypto';
 
@@ -115,7 +115,7 @@ describe('Tenant isolation', () => {
       const res = await request(app)
         .post('/admin/v1/tenants')
         .set(ADMIN_AUTH)
-        .send({ name: 'New Test Tenant' });
+        .send({ name: 'New Test Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
       expect(res.status).toBe(201);
       expect(res.body.data.id).toMatch(/^tenant_/);
       expect(res.body.data.name).toBe('New Test Tenant');
@@ -127,7 +127,7 @@ describe('Tenant isolation', () => {
       const createRes = await request(app)
         .post('/admin/v1/tenants')
         .set(ADMIN_AUTH)
-        .send({ name: 'Key Test Tenant' });
+        .send({ name: 'Key Test Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
       const tenantId = createRes.body.data.id;
 
       const keyRes = await request(app)

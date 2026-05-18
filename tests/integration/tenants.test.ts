@@ -2,22 +2,19 @@
  * Integration tests for POST /admin/v1/tenants and tenant provisioning.
  *
  * Covers:
- * - basic tenant creation (no assets)
+ * - basic tenant creation (hotAddress required)
  * - tenant creation with BTC assets (hotAddress, coldAddress)
  * - LWallet auto-provisioning: customer_deposits always created; tenant_hot / tenant_cold when addresses provided
  * - address validation: invalid Bitcoin addresses rejected before any DB writes
- * - backward compat: assets field is optional
+ * - PATCH /admin/v1/tenants/:id/config — hot/cold address update via upsertTreasuryWallet
  * - admin key auth guard
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, AUTH, teardownDb, ADDR_1, ADDR_2, ADDR_3, ADDR_LEGACY, ADDR_P2SH } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, AUTH, teardownDb, ADDR_1, ADDR_2, ADDR_3, ADDR_P2SH, uniqueAddr } from './helpers';
 
-// Each test case that registers addresses uses a distinct address to avoid
-// the global UNIQUE(chain_id, address) constraint across tests in this file.
-//
-// Mapping: ADDR_1 → full BTC hot, ADDR_2 → full BTC cold,
-//          ADDR_3 → hotAddress test, ADDR_LEGACY → hot-only test,
-//          ADDR_P2SH → cold-only test
+// ADDR_3 is used in the "registers hotAddress" test to verify exact address value.
+// ADDR_P2SH is used as coldAddress when a test needs a specific known cold address.
+// All other tests use uniqueAddr() to avoid UNIQUE(chain_id, address) conflicts.
 
 const app = bootstrapApp();
 
@@ -27,11 +24,11 @@ afterAll(() => teardownDb());
 // POST /admin/v1/tenants — basic creation
 // ---------------------------------------------------------------------------
 describe('POST /admin/v1/tenants — basic', () => {
-  it('creates a tenant with name only', async () => {
+  it('creates a tenant with name and hotAddress', async () => {
     const res = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Acme Fintech' });
+      .send({ name: 'Acme Fintech', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
 
     expect(res.status).toBe(201);
     expect(res.body.data.id).toMatch(/^tenant_/);
@@ -45,10 +42,30 @@ describe('POST /admin/v1/tenants — basic', () => {
     const res = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Meta Tenant', metadata: { region: 'eu', tier: 'pro' } });
+      .send({ name: 'Meta Tenant', metadata: { region: 'eu', tier: 'pro' }, assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
 
     expect(res.status).toBe(201);
     expect(res.body.data.metadata).toEqual({ region: 'eu', tier: 'pro' });
+  });
+
+  it('returns 400 when assets is missing (hotAddress required)', async () => {
+    const res = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'No Assets Tenant' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 400 when assets array is empty', async () => {
+    const res = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'Empty Assets Tenant', assets: [] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('returns 400 for missing name', async () => {
@@ -64,7 +81,7 @@ describe('POST /admin/v1/tenants — basic', () => {
   it('returns 401 without admin key', async () => {
     const res = await request(app)
       .post('/admin/v1/tenants')
-      .send({ name: 'Unauthorized Tenant' });
+      .send({ name: 'Unauthorized Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
 
     expect(res.status).toBe(401);
   });
@@ -73,7 +90,7 @@ describe('POST /admin/v1/tenants — basic', () => {
     const res = await request(app)
       .post('/admin/v1/tenants')
       .set(AUTH)
-      .send({ name: 'Wrong Auth Tenant' });
+      .send({ name: 'Wrong Auth Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
 
     expect(res.status).toBe(401);
   });
@@ -83,34 +100,6 @@ describe('POST /admin/v1/tenants — basic', () => {
 // POST /admin/v1/tenants — with BTC assets (LWallet provisioning)
 // ---------------------------------------------------------------------------
 describe('POST /admin/v1/tenants — BTC assets provisioning', () => {
-  it('creates customer_deposits LWallet automatically (assets omitted)', async () => {
-    const res = await request(app)
-      .post('/admin/v1/tenants')
-      .set(ADMIN_AUTH)
-      .send({ name: 'No Assets Tenant' });
-
-    expect(res.status).toBe(201);
-    const tenantId = res.body.data.id;
-
-    // customer_deposits LWallet must exist even without explicit assets
-    const wallets = await request(app)
-      .get('/v1/wallets?walletRole=customer_deposits')
-      .set({ Authorization: await apiKeyForTenant(tenantId) });
-
-    // We don't have a per-tenant auth token in this test, so verify via DB lookup
-    // The provisioning itself is tested in the "with assets" cases below
-    expect(res.status).toBe(201); // sanity — tenant was created
-  });
-
-  it('creates customer_deposits LWallet when assets: [] is empty', async () => {
-    const res = await request(app)
-      .post('/admin/v1/tenants')
-      .set(ADMIN_AUTH)
-      .send({ name: 'Empty Assets Tenant', assets: [] });
-
-    expect(res.status).toBe(201);
-  });
-
   it('provisions customer_deposits + tenant_hot + tenant_cold LWallets with full BTC assets', async () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
@@ -192,7 +181,7 @@ describe('POST /admin/v1/tenants — BTC assets provisioning', () => {
       .set(ADMIN_AUTH)
       .send({
         name: 'Hot Only Tenant',
-        assets: [{ chain: 'bitcoin', hotAddress: ADDR_LEGACY }],  // distinct address
+        assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }],
       });
 
     expect(createRes.status).toBe(201);
@@ -212,13 +201,13 @@ describe('POST /admin/v1/tenants — BTC assets provisioning', () => {
     expect(roles).not.toContain('tenant_cold');
   });
 
-  it('creates only customer_deposits + tenant_cold when only coldAddress is provided', async () => {
+  it('provisions tenant_hot and tenant_cold when both addresses given', async () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
       .send({
-        name: 'Cold Only Tenant',
-        assets: [{ chain: 'bitcoin', coldAddress: ADDR_P2SH }],  // distinct address
+        name: 'Hot+Cold Tenant',
+        assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr(), coldAddress: ADDR_P2SH }],
       });
 
     expect(createRes.status).toBe(201);
@@ -234,7 +223,7 @@ describe('POST /admin/v1/tenants — BTC assets provisioning', () => {
     const roles = walletsRes.body.data.map((w: any) => w.wallet_role);
 
     expect(roles).toContain('customer_deposits');
-    expect(roles).not.toContain('tenant_hot');
+    expect(roles).toContain('tenant_hot');
     expect(roles).toContain('tenant_cold');
   });
 });
@@ -243,6 +232,19 @@ describe('POST /admin/v1/tenants — BTC assets provisioning', () => {
 // Address validation in assets
 // ---------------------------------------------------------------------------
 describe('POST /admin/v1/tenants — address validation', () => {
+  it('returns 400 when hotAddress is missing from assets element', async () => {
+    const res = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({
+        name: 'No Hot Addr Tenant',
+        assets: [{ chain: 'bitcoin', coldAddress: ADDR_P2SH }],
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it('returns 400 for invalid bitcoin hotAddress', async () => {
     const res = await request(app)
       .post('/admin/v1/tenants')
@@ -262,7 +264,8 @@ describe('POST /admin/v1/tenants — address validation', () => {
       .set(ADMIN_AUTH)
       .send({
         name: 'Bad Cold Addr',
-        assets: [{ chain: 'bitcoin', coldAddress: 'definitely-not-valid' }],
+        // hotAddress is valid; coldAddress is invalid — provisionBtcLWallets upfront check fires
+        assets: [{ chain: 'bitcoin', hotAddress: ADDR_1, coldAddress: 'definitely-not-valid' }],
       });
 
     expect(res.status).toBe(400);
@@ -309,7 +312,7 @@ describe('GET /admin/v1/tenants/:tenantId', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Lookup Tenant' });
+      .send({ name: 'Lookup Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const id = createRes.body.data.id;
 
     const res = await request(app).get(`/admin/v1/tenants/${id}`).set(ADMIN_AUTH);
@@ -330,7 +333,7 @@ describe('PATCH /admin/v1/tenants/:tenantId', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Before Update' });
+      .send({ name: 'Before Update', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const id = createRes.body.data.id;
 
     const res = await request(app)
@@ -349,7 +352,7 @@ describe('PATCH /admin/v1/tenants/:tenantId/config', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Config Tenant' });
+      .send({ name: 'Config Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const id = createRes.body.data.id;
 
     const res = await request(app)
@@ -366,7 +369,7 @@ describe('PATCH /admin/v1/tenants/:tenantId/config', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'TTL Config Tenant' });
+      .send({ name: 'TTL Config Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const id = createRes.body.data.id;
 
     const res = await request(app)
@@ -382,7 +385,7 @@ describe('PATCH /admin/v1/tenants/:tenantId/config', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'TTL Validation Tenant' });
+      .send({ name: 'TTL Validation Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const id = createRes.body.data.id;
 
     const res = await request(app)
@@ -399,7 +402,7 @@ describe('POST /admin/v1/tenants/:tenantId/api-keys', () => {
     const createRes = await request(app)
       .post('/admin/v1/tenants')
       .set(ADMIN_AUTH)
-      .send({ name: 'Key Tenant' });
+      .send({ name: 'Key Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
     const id = createRes.body.data.id;
 
     const res = await request(app)
@@ -420,6 +423,121 @@ describe('POST /admin/v1/tenants/:tenantId/api-keys', () => {
       .send({ name: 'key' });
 
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /admin/v1/tenants/:tenantId/config — treasury address update
+// ---------------------------------------------------------------------------
+describe('PATCH /admin/v1/tenants/:tenantId/config — treasury addresses', () => {
+  it('sets btcHotAddress and creates tenant_hot wallet', async () => {
+    const createRes = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'Addr Config Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
+    expect(createRes.status).toBe(201);
+    const tenantId = createRes.body.data.id;
+
+    const newHot = uniqueAddr();
+    const res = await request(app)
+      .patch(`/admin/v1/tenants/${tenantId}/config`)
+      .set(ADMIN_AUTH)
+      .send({ btcHotAddress: newHot });
+
+    expect(res.status).toBe(200);
+
+    // Verify new address is registered in tenant_hot wallet
+    const keyRes = await request(app)
+      .post(`/admin/v1/tenants/${tenantId}/api-keys`)
+      .set(ADMIN_AUTH)
+      .send({ name: 'test-key' });
+    const tenantAuth = { Authorization: `Bearer ${keyRes.body.data.apiKey}` };
+
+    const walletsRes = await request(app).get('/v1/wallets').set(tenantAuth);
+    const hot = walletsRes.body.data.find((w: any) => w.wallet_role === 'tenant_hot');
+    expect(hot).toBeDefined();
+
+    const addrsRes = await request(app).get(`/v1/wallets/${hot.id}/addresses`).set(tenantAuth);
+    const active = addrsRes.body.data.filter((a: any) => a.status === 'active');
+    expect(active.length).toBe(1);
+    expect(active[0].address).toBe(newHot);
+  });
+
+  it('sets btcColdAddress and creates tenant_cold wallet', async () => {
+    const createRes = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'Cold Config Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
+    expect(createRes.status).toBe(201);
+    const tenantId = createRes.body.data.id;
+
+    const res = await request(app)
+      .patch(`/admin/v1/tenants/${tenantId}/config`)
+      .set(ADMIN_AUTH)
+      .send({ btcColdAddress: uniqueAddr() });
+
+    expect(res.status).toBe(200);
+
+    const keyRes = await request(app)
+      .post(`/admin/v1/tenants/${tenantId}/api-keys`)
+      .set(ADMIN_AUTH)
+      .send({ name: 'test-key' });
+    const tenantAuth = { Authorization: `Bearer ${keyRes.body.data.apiKey}` };
+
+    const walletsRes = await request(app).get('/v1/wallets').set(tenantAuth);
+    const roles = walletsRes.body.data.map((w: any) => w.wallet_role);
+    expect(roles).toContain('tenant_cold');
+  });
+
+  it('returns 400 for invalid btcHotAddress', async () => {
+    const createRes = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'Addr Validation Tenant', assets: [{ chain: 'bitcoin', hotAddress: uniqueAddr() }] });
+    const tenantId = createRes.body.data.id;
+
+    const res = await request(app)
+      .patch(`/admin/v1/tenants/${tenantId}/config`)
+      .set(ADMIN_AUTH)
+      .send({ btcHotAddress: 'not-a-valid-btc-address' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('supersedes old hot address when btcHotAddress is updated', async () => {
+    const firstHot = uniqueAddr();
+    const createRes = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'Hot Rotate Tenant', assets: [{ chain: 'bitcoin', hotAddress: firstHot }] });
+    expect(createRes.status).toBe(201);
+    const tenantId = createRes.body.data.id;
+
+    const keyRes = await request(app)
+      .post(`/admin/v1/tenants/${tenantId}/api-keys`)
+      .set(ADMIN_AUTH)
+      .send({ name: 'test-key' });
+    const tenantAuth = { Authorization: `Bearer ${keyRes.body.data.apiKey}` };
+
+    const secondHot = uniqueAddr();
+    await request(app)
+      .patch(`/admin/v1/tenants/${tenantId}/config`)
+      .set(ADMIN_AUTH)
+      .send({ btcHotAddress: secondHot });
+
+    const walletsRes = await request(app).get('/v1/wallets').set(tenantAuth);
+    const hot = walletsRes.body.data.find((w: any) => w.wallet_role === 'tenant_hot');
+
+    const addrsRes = await request(app).get(`/v1/wallets/${hot.id}/addresses`).set(tenantAuth);
+    const allAddrs = addrsRes.body.data;
+    const active = allAddrs.filter((a: any) => a.status === 'active');
+    const replaced = allAddrs.filter((a: any) => a.status === 'replaced');
+
+    expect(active.length).toBe(1);
+    expect(active[0].address).toBe(secondHot);
+    expect(replaced.length).toBe(1);
+    expect(replaced[0].address).toBe(firstHot);
   });
 });
 
