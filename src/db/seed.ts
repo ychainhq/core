@@ -123,15 +123,14 @@ export async function runSeed(): Promise<void> {
   const chainExists = db.prepare('SELECT id FROM chains WHERE id = ?').get('bitcoin');
   if (!chainExists) {
     db.prepare(`
-      INSERT INTO chains (id, name, type, native_asset, chain_id, finality_type, is_enabled, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO chains (id, name, type, native_asset, specs, is_enabled, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       'bitcoin',
       'Bitcoin',
       'utxo',
       'BTC',
-      null,
-      'confirmations',
+      JSON.stringify({ finality_type: 'confirmations' }),
       1,
       JSON.stringify({ ticker: 'BTC', explorer: 'https://mempool.space' }),
       now,

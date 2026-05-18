@@ -1,13 +1,17 @@
 import { getDb } from '../../db/sqlite';
 import { NotFoundError } from '../../shared/errors/index';
 
+export interface ChainSpecs {
+  finality_type: 'confirmations' | 'safe_finalized';
+  evm_chain_id?: number;
+}
+
 export interface Chain {
   id: string;
   name: string;
   type: string;
   native_asset: string;
-  chain_id: number | null;
-  finality_type: string;
+  specs: ChainSpecs | null;
   is_enabled: boolean;
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -18,6 +22,7 @@ function mapChain(row: any): Chain {
   return {
     ...row,
     is_enabled: row.is_enabled === 1,
+    specs: row.specs ? JSON.parse(row.specs) : null,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
   };
 }

@@ -16,7 +16,11 @@ describe('GET /v1/chains', () => {
     expect(btc).toBeDefined();
     expect(btc.type).toBe('utxo');
     expect(btc.native_asset).toBe('BTC');
-    expect(btc.finality_type).toBe('confirmations');
+    expect(btc.specs).toBeDefined();
+    expect(btc.specs.finality_type).toBe('confirmations');
+    expect(btc.specs.evm_chain_id).toBeUndefined();
+    expect(btc.finality_type).toBeUndefined();
+    expect(btc.chain_id).toBeUndefined();
   });
 
   it('filters by enabled=true', async () => {
