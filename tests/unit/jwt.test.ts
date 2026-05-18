@@ -15,7 +15,7 @@ describe('Customer JWT service', () => {
 
     it('expiresAt is in the future', () => {
       const { expiresAt } = issueCustomerToken(tenantId, customerId);
-      expect(new Date(expiresAt).getTime()).toBeGreaterThan(Date.now());
+      expect(expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
     });
 
     it('two tokens issued at the same time are identical (deterministic for same input in same second)', () => {

@@ -361,6 +361,37 @@ describe('PATCH /admin/v1/tenants/:tenantId/config', () => {
     expect(res.body.data.btc_confirmations_required).toBe(3);
     expect(res.body.data.btc_finality_confirmations).toBe(12);
   });
+
+  it('updates customerSessionTtlSeconds', async () => {
+    const createRes = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'TTL Config Tenant' });
+    const id = createRes.body.data.id;
+
+    const res = await request(app)
+      .patch(`/admin/v1/tenants/${id}/config`)
+      .set(ADMIN_AUTH)
+      .send({ customerSessionTtlSeconds: 7200 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.customer_session_ttl_seconds).toBe(7200);
+  });
+
+  it('rejects customerSessionTtlSeconds below 60', async () => {
+    const createRes = await request(app)
+      .post('/admin/v1/tenants')
+      .set(ADMIN_AUTH)
+      .send({ name: 'TTL Validation Tenant' });
+    const id = createRes.body.data.id;
+
+    const res = await request(app)
+      .patch(`/admin/v1/tenants/${id}/config`)
+      .set(ADMIN_AUTH)
+      .send({ customerSessionTtlSeconds: 30 });
+
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('POST /admin/v1/tenants/:tenantId/api-keys', () => {

@@ -77,8 +77,8 @@ describe('POST /v1/customers/:id/sessions', () => {
     expect(res.body.data.customerId).toBe(customer.id);
     // Token is a 3-part JWT
     expect(res.body.data.accessToken.split('.').length).toBe(3);
-    // expiresAt is in the future
-    expect(new Date(res.body.data.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    // expiresAt is a Unix timestamp (seconds) in the future
+    expect(res.body.data.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
   it('returns 404 for unknown customer', async () => {
@@ -98,6 +98,27 @@ describe('POST /v1/customers/:id/sessions', () => {
       .post(`/v1/customers/${customer.id}/sessions`)
       .set(auth);
     expect(res.status).toBe(403);
+  });
+
+  it('respects per-tenant TTL configured via PATCH /admin/v1/tenants/:id/config', async () => {
+    const { tenantId, auth } = await createTenantWithKey();
+    // Set custom TTL of 120 seconds on this tenant
+    await request(app)
+      .patch(`/admin/v1/tenants/${tenantId}/config`)
+      .set(ADMIN_AUTH)
+      .send({ customerSessionTtlSeconds: 120 });
+
+    const customer = await createCustomer(auth);
+    const now = Math.floor(Date.now() / 1000);
+    const res = await request(app)
+      .post(`/v1/customers/${customer.id}/sessions`)
+      .set(auth);
+
+    expect(res.status).toBe(201);
+    const { expiresAt } = res.body.data;
+    // Should expire ~120s from now (allow ±5s for test execution)
+    expect(expiresAt).toBeGreaterThanOrEqual(now + 115);
+    expect(expiresAt).toBeLessThanOrEqual(now + 125);
   });
 
   it('requires tenant API key (not customer token)', async () => {

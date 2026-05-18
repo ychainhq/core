@@ -4,6 +4,7 @@ import { NotFoundError, ValidationError, ConflictError } from '../../shared/erro
 import { adapterRegistry } from '../../chain-adapters/registry';
 import { detectAddressType } from '../../shared/validation/bitcoin';
 import { config } from '../../config/index';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface Address {
   id: string;
@@ -17,14 +18,16 @@ export interface Address {
   customer_id: string | null;
   status: string;
   metadata: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 function mapAddress(row: any): Address {
   return {
     ...row,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 

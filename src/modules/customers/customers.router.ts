@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { customersService } from './customers.service';
 import { depositAddressService } from './deposit-address.service';
 import { issueCustomerToken } from '../../shared/customer-auth/jwt.service';
+import { tenantsService } from '../tenants/tenants.service';
 
 export const customersRouter = Router();
 
@@ -154,7 +155,9 @@ customersRouter.post('/:customerId/sessions', (req: Request, res: Response, next
       });
       return;
     }
-    const { accessToken, expiresAt } = issueCustomerToken(tenantId(req), customer.id);
+    const tenantWithConfig = tenantsService.getById(tenantId(req));
+    const ttl = tenantWithConfig.config?.customer_session_ttl_seconds ?? undefined;
+    const { accessToken, expiresAt } = issueCustomerToken(tenantId(req), customer.id, ttl);
     res.status(201).json({ data: { accessToken, expiresAt, customerId: customer.id } });
   } catch (err) {
     next(err);

@@ -37,6 +37,7 @@ const configSchema = z.object({
   perTxLimitSats: z.string().nullable().optional(),
   btcXpub: z.string().min(1).nullable().optional(),
   btcSweepThresholdSats: z.string().regex(/^\d+$/, 'Must be a numeric string').optional(),
+  customerSessionTtlSeconds: z.coerce.number().int().min(60).max(86400).optional(),
 });
 
 const listQuerySchema = z.object({

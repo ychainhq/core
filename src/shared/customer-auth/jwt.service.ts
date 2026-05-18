@@ -28,18 +28,22 @@ function sign(headerDotBody: string, secret: string): string {
   return base64url(crypto.createHmac('sha256', secret).update(headerDotBody).digest());
 }
 
-export function issueCustomerToken(tenantId: string, customerId: string): {
+export function issueCustomerToken(
+  tenantId: string,
+  customerId: string,
+  ttlSeconds?: number
+): {
   accessToken: string;
-  expiresAt: string;
+  expiresAt: number;
 } {
   const now = Math.floor(Date.now() / 1000);
-  const exp = now + config.CUSTOMER_SESSION_TTL_SECONDS;
+  const exp = now + (ttlSeconds ?? config.CUSTOMER_SESSION_TTL_SECONDS);
   const payload: CustomerTokenPayload = { sub: customerId, tid: tenantId, iat: now, exp };
   const body = base64urlEncode(JSON.stringify(payload));
   const sig = sign(`${HEADER}.${body}`, config.CUSTOMER_SESSION_SECRET);
   return {
     accessToken: `${HEADER}.${body}.${sig}`,
-    expiresAt: new Date(exp * 1000).toISOString(),
+    expiresAt: exp,
   };
 }
 

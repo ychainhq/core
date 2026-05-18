@@ -3,6 +3,7 @@ import { getDb } from '../../db/sqlite';
 import { NotFoundError, ConflictError, ValidationError } from '../../shared/errors/index';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { logger } from '../../shared/logging/index';
+import { toUnixTs } from '../../shared/time/index';
 import { walletsService } from '../wallets/wallets.service';
 import { addressesService } from '../addresses/addresses.service';
 import { ledgerService } from '../ledger/ledger.service';
@@ -12,8 +13,8 @@ export interface Tenant {
   name: string;
   status: string;
   metadata: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface TenantConfig {
@@ -27,7 +28,8 @@ export interface TenantConfig {
   btc_xpub: string | null;
   btc_next_derivation_index: number;
   btc_sweep_threshold_sats: string;
-  updated_at: string;
+  customer_session_ttl_seconds: number;
+  updated_at: number;
 }
 
 export interface TenantWithConfig extends Tenant {
@@ -38,11 +40,17 @@ function mapTenant(row: any): Tenant {
   return {
     ...row,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 
 function mapConfig(row: any): TenantConfig {
-  return { ...row };
+  return {
+    ...row,
+    updated_at: toUnixTs(row.updated_at),
+    customer_session_ttl_seconds: row.customer_session_ttl_seconds ?? 3600,
+  };
 }
 
 function withConfig(tenant: Tenant): TenantWithConfig {
@@ -287,6 +295,7 @@ export const tenantsService = {
       perTxLimitSats?: string | null;
       btcXpub?: string | null;
       btcSweepThresholdSats?: string;
+      customerSessionTtlSeconds?: number;
     }
   ): TenantConfig {
     const db = getDb();
@@ -327,6 +336,7 @@ export const tenantsService = {
       if ('perTxLimitSats' in input) { sets.push('per_tx_limit_sats = ?'); params.push(input.perTxLimitSats ?? null); }
       if ('btcXpub' in input) { sets.push('btc_xpub = ?'); params.push(input.btcXpub ?? null); }
       if (input.btcSweepThresholdSats !== undefined) { sets.push('btc_sweep_threshold_sats = ?'); params.push(input.btcSweepThresholdSats); }
+      if (input.customerSessionTtlSeconds !== undefined) { sets.push('customer_session_ttl_seconds = ?'); params.push(input.customerSessionTtlSeconds); }
 
       if (sets.length > 0) {
         sets.push('updated_at = ?');
@@ -335,7 +345,8 @@ export const tenantsService = {
       }
     }
 
-    return db.prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?').get(tenantId) as TenantConfig;
+    const row = db.prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?').get(tenantId);
+    return mapConfig(row);
   },
 
   generateApiKey(tenantId: string, name: string): { keyId: string; rawKey: string } {

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface Webhook {
   id: string;
@@ -12,8 +13,8 @@ export interface Webhook {
   wallet_id: string | null;
   is_active: boolean;
   metadata: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface WebhookDelivery {
@@ -27,8 +28,8 @@ export interface WebhookDelivery {
   last_error: string | null;
   next_retry_at: string | null;
   delivered_at: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 function mapWebhook(row: any): Webhook {
@@ -38,6 +39,8 @@ function mapWebhook(row: any): Webhook {
     events: row.events ? JSON.parse(row.events) : [],
     chains: row.chains ? JSON.parse(row.chains) : null,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 
@@ -45,6 +48,8 @@ function mapDelivery(row: any): WebhookDelivery {
   return {
     ...row,
     payload: row.payload ? JSON.parse(row.payload) : null,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 

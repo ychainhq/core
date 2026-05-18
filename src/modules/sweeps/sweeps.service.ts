@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError } from '../../shared/errors/index';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface Sweep {
   id: string;
@@ -16,14 +17,16 @@ export interface Sweep {
   tx_hash: string | null;
   status: string;
   error: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 function mapSweep(row: any): Sweep {
   return {
     ...row,
     from_addresses: JSON.parse(row.from_addresses),
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 

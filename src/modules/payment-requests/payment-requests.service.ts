@@ -3,6 +3,7 @@ import { getDb } from '../../db/sqlite';
 import { NotFoundError, ValidationError, ConflictError } from '../../shared/errors/index';
 import { btcToSatoshi, satoshiToBtc } from '../../shared/money/index';
 import { config } from '../../config/index';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface PaymentRequest {
   id: string;
@@ -20,14 +21,16 @@ export interface PaymentRequest {
   confirmations_required: number;
   qr_payload: string | null;
   metadata: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 function mapPaymentRequest(row: any): PaymentRequest {
   return {
     ...row,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 

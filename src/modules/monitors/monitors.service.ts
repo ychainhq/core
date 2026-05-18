@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError, ValidationError, ConflictError } from '../../shared/errors/index';
 import { adapterRegistry } from '../../chain-adapters/registry';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface WatchedAddress {
   id: string;
@@ -14,8 +15,8 @@ export interface WatchedAddress {
   webhook_id: string | null;
   is_active: boolean;
   metadata: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 function mapWatchedAddress(row: any): WatchedAddress {
@@ -24,6 +25,8 @@ function mapWatchedAddress(row: any): WatchedAddress {
     is_active: row.is_active === 1,
     events: row.events ? JSON.parse(row.events) : ['incoming'],
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 

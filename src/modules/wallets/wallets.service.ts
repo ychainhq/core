@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError } from '../../shared/errors/index';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface Wallet {
   id: string;
@@ -10,14 +11,16 @@ export interface Wallet {
   wallet_role: string;
   status: string;
   metadata: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 function mapWallet(row: any): Wallet {
   return {
     ...row,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
   };
 }
 

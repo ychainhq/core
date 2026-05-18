@@ -5,6 +5,7 @@ import { ledgerService } from '../ledger/ledger.service';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { logger } from '../../shared/logging/index';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface CustomerWithdrawal {
   id: string;
@@ -21,12 +22,16 @@ export interface CustomerWithdrawal {
   status: string;
   error: string | null;
   idempotency_key: string | null;
-  created_at: string;
-  updated_at: string;
+  created_at: number;
+  updated_at: number;
 }
 
 function mapWithdrawal(row: any): CustomerWithdrawal {
-  return row as CustomerWithdrawal;
+  return {
+    ...row,
+    created_at: toUnixTs(row.created_at),
+    updated_at: toUnixTs(row.updated_at),
+  };
 }
 
 export const withdrawalsService = {
