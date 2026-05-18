@@ -169,7 +169,7 @@ export const customersService = {
     for (const acc of accounts) {
       const latest = db
         .prepare(
-          'SELECT balance_pending_raw, balance_settled_raw FROM ledger_entries WHERE ledger_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+          'SELECT balance_pending_raw, balance_settled_raw FROM ledger_entries WHERE ledger_account_id = ? ORDER BY rowid DESC LIMIT 1'
         )
         .get(acc.id) as { balance_pending_raw: string; balance_settled_raw: string } | undefined;
 

@@ -133,4 +133,16 @@ export const sweepsService = {
       .all(tenantId) as any[];
     return rows.map(mapSweep);
   },
+
+  /**
+   * Return all broadcast sweeps that have a tx_hash (across all tenants).
+   * Used by SweepConfirmationWorker to poll for on-chain confirmation.
+   */
+  getBroadcastWithTxHash(): Sweep[] {
+    const db = getDb();
+    const rows = db
+      .prepare("SELECT * FROM sweeps WHERE status = 'broadcast' AND tx_hash IS NOT NULL")
+      .all() as any[];
+    return rows.map(mapSweep);
+  },
 };

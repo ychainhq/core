@@ -152,6 +152,15 @@ export const withdrawalsService = {
       now, now
     );
 
+    // Reserve customer balance immediately — prevents double-spend while PSBT awaits signing
+    ledgerService.addEntry({
+      ledgerAccountId: account.id,
+      type: 'withdrawal_reserve',
+      amountRaw: (-amountBigInt).toString(),
+      referenceType: 'customer_withdrawal',
+      referenceId: id,
+    });
+
     const withdrawal = withdrawalsService.getByIdInternal(id);
 
     // Fire webhook
@@ -277,26 +286,49 @@ export const withdrawalsService = {
       txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
       withdrawalsService.updateStatus(withdrawalId, 'failed', { error: String(err) });
+      // Refund the reservation made at create() — broadcast failed, balance is restored
+      const custAccount = ledgerService.findAccountByCustomerAndAsset(
+        tenantId, withdrawal.customer_id, withdrawal.asset_id
+      );
+      if (custAccount) {
+        ledgerService.addEntry({
+          ledgerAccountId: custAccount.id,
+          type: 'withdrawal_refund',
+          amountRaw: withdrawal.amount_raw,
+          referenceType: 'customer_withdrawal',
+          referenceId: withdrawalId,
+        });
+      }
       throw new ValidationError(`Failed to broadcast withdrawal: ${err?.message ?? err}`);
     }
 
     const updated = withdrawalsService.updateStatus(withdrawalId, 'broadcast', { signedPsbt, txHash });
 
-    // Debit customer_available ledger
-    const account = ledgerService.findAccountByCustomerAndAsset(
-      tenantId,
-      withdrawal.customer_id,
-      withdrawal.asset_id
-    );
-    if (account) {
+    // Debit tenant hot wallet control — funds have left the hot wallet
+    const hotAccount = ledgerService.findAccountByTenantAndType(tenantId, 'tenant_hot_control');
+    if (hotAccount) {
+      const totalOut = BigInt(withdrawal.amount_raw) + BigInt(withdrawal.fee_raw ?? '0');
       ledgerService.addEntry({
-        ledgerAccountId: account.id,
-        type: 'withdrawal',
-        amountRaw: (-BigInt(withdrawal.amount_raw)).toString(),
+        ledgerAccountId: hotAccount.id,
+        type: 'hot_debit',
+        amountRaw: (-totalOut).toString(),
         referenceType: 'customer_withdrawal',
         referenceId: withdrawalId,
-        isPending: false,
       });
+    }
+
+    // Record network fee expense
+    if (withdrawal.fee_raw) {
+      const feeAccount = ledgerService.findAccountByTenantAndType(tenantId, 'network_fee_expense');
+      if (feeAccount) {
+        ledgerService.addEntry({
+          ledgerAccountId: feeAccount.id,
+          type: 'fee_expense',
+          amountRaw: withdrawal.fee_raw,
+          referenceType: 'customer_withdrawal',
+          referenceId: withdrawalId,
+        });
+      }
     }
 
     webhooksService.queueEvent(

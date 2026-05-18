@@ -132,9 +132,9 @@ export const ledgerService = {
 
   getBalance(accountId: string): LedgerBalance {
     const db = getDb();
-    // Get the latest entry to read running balance
+    // rowid is always insertion order in SQLite — use as tiebreaker when timestamps collide
     const latestEntry = db
-      .prepare('SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+      .prepare('SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY rowid DESC LIMIT 1')
       .get(accountId) as LedgerEntry | undefined;
 
     if (!latestEntry) {
@@ -161,7 +161,7 @@ export const ledgerService = {
       query += ' AND id < ?';
       params.push(opts.cursor);
     }
-    query += ' ORDER BY created_at DESC, id DESC LIMIT ?';
+    query += ' ORDER BY rowid DESC LIMIT ?';
     params.push(limit + 1);
 
     const rows = db.prepare(query).all(...params);
@@ -233,7 +233,7 @@ export const ledgerService = {
       now
     );
 
-    const entry = ledgerService.listEntries(input.ledgerAccountId, { limit: 1 }).data[0];
+    const entry = mapEntry(db.prepare('SELECT * FROM ledger_entries WHERE id = ?').get(id));
     return {
       entry: entry!,
       balance: { pending: newPending.toString(), settled: newSettled.toString(), total: (newPending + newSettled).toString() },
@@ -309,6 +309,19 @@ export const ledgerService = {
         "SELECT * FROM ledger_accounts WHERE tenant_id = ? AND customer_id = ? AND asset_id = ? AND account_type = 'customer_available' LIMIT 1"
       )
       .get(tenantId, customerId, assetId);
+    return row ? mapAccount(row) : null;
+  },
+
+  /**
+   * Find a tenant-level ledger account by account_type (e.g. sweep_in_transit, tenant_hot_control).
+   */
+  findAccountByTenantAndType(tenantId: string, accountType: string, chainId = 'bitcoin'): LedgerAccount | null {
+    const db = getDb();
+    const row = db
+      .prepare(
+        'SELECT * FROM ledger_accounts WHERE tenant_id = ? AND account_type = ? AND chain_id = ? LIMIT 1'
+      )
+      .get(tenantId, accountType, chainId);
     return row ? mapAccount(row) : null;
   },
 };

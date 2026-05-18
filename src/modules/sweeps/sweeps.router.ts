@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { sweepsService } from './sweeps.service';
 import { adapterRegistry } from '../../chain-adapters/registry';
+import { ledgerService } from '../ledger/ledger.service';
 import { logger } from '../../shared/logging/index';
 import { ValidationError } from '../../shared/errors/index';
 
@@ -76,6 +77,18 @@ sweepsRouter.post('/:sweepId/submit-signed', async (req: Request, res: Response,
       signedPsbt: body.signedPsbt,
       txHash,
     });
+
+    // Credit sweep_in_transit — funds are in flight from deposit addresses to hot wallet
+    const sitAccount = ledgerService.findAccountByTenantAndType(tenantId(req), 'sweep_in_transit');
+    if (sitAccount) {
+      ledgerService.addEntry({
+        ledgerAccountId: sitAccount.id,
+        type: 'sweep_broadcast',
+        amountRaw: sweep.amount_raw,
+        referenceType: 'sweep',
+        referenceId: sweep.id,
+      });
+    }
 
     logger.info('Sweep broadcast', { sweepId: sweep.id, txHash, tenantId: tenantId(req) });
 
