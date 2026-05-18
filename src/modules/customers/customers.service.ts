@@ -164,7 +164,9 @@ export const customersService = {
       .prepare('SELECT * FROM ledger_accounts WHERE tenant_id = ? AND customer_id = ?')
       .all(tenantId, customerId) as any[];
 
-    return accounts.map((acc) => {
+    const byAsset = new Map<string, { pending: string; settled: string }>();
+
+    for (const acc of accounts) {
       const latest = db
         .prepare(
           'SELECT balance_pending_raw, balance_settled_raw FROM ledger_entries WHERE ledger_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
@@ -174,13 +176,23 @@ export const customersService = {
       const pending = latest?.balance_pending_raw ?? '0';
       const settled = latest?.balance_settled_raw ?? '0';
 
-      return {
-        asset_id: acc.asset_id,
-        pending,
-        settled,
-        total: addSatoshi(pending, settled),
-      };
-    });
+      const existing = byAsset.get(acc.asset_id);
+      if (existing) {
+        byAsset.set(acc.asset_id, {
+          pending: addSatoshi(existing.pending, pending),
+          settled: addSatoshi(existing.settled, settled),
+        });
+      } else {
+        byAsset.set(acc.asset_id, { pending, settled });
+      }
+    }
+
+    return Array.from(byAsset.entries()).map(([asset_id, { pending, settled }]) => ({
+      asset_id,
+      pending,
+      settled,
+      total: addSatoshi(pending, settled),
+    }));
   },
 
   getDeposits(

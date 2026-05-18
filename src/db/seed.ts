@@ -7,6 +7,7 @@ import { runMigrations } from './migrate';
 import { config } from '../config/index';
 import { logger } from '../shared/logging/index';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
+import { tenantsService } from '../modules/tenants/tenants.service';
 
 function sha256(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -272,6 +273,18 @@ export async function runSeed(): Promise<void> {
     logger.info('Bitcoin Core wallet provisioned for tenant_default');
   } catch (err) {
     logger.warn('Could not provision Bitcoin Core wallet for tenant_default (Bitcoin Core may not be running)', { err });
+  }
+
+  // 9. Provision BTC LWallets (customer_deposits, ledger accounts) for tenant_default
+  const depositsWalletExists = db
+    .prepare("SELECT id FROM wallets WHERE tenant_id = ? AND wallet_role = 'customer_deposits' LIMIT 1")
+    .get('tenant_default');
+
+  if (!depositsWalletExists) {
+    await tenantsService.provisionBtcLWallets('tenant_default', { chain: 'bitcoin' });
+    logger.info('Provisioned BTC LWallets for tenant_default');
+  } else {
+    logger.info('BTC LWallets already provisioned for tenant_default, skipping');
   }
 }
 

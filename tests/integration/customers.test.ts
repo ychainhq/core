@@ -159,11 +159,33 @@ describe('GET /v1/customers/:customerId/balances', () => {
     customerId = res.body.data.id;
   });
 
-  it('returns empty balances for new customer', async () => {
-    const res = await request(app)
-      .get(`/v1/customers/${customerId}/balances`)
-      .set(AUTH);
+  it('returns 200 with array', async () => {
+    const res = await request(app).get(`/v1/customers/${customerId}/balances`).set(AUTH);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
+  });
+
+  it('returns exactly one entry per asset_id — not one per ledger account', async () => {
+    const res = await request(app).get(`/v1/customers/${customerId}/balances`).set(AUTH);
+    expect(res.status).toBe(200);
+    const assetIds = res.body.data.map((b: any) => b.asset_id);
+    const unique = new Set(assetIds);
+    expect(unique.size).toBe(assetIds.length);
+  });
+
+  it('each balance entry has pending, settled, total fields', async () => {
+    const res = await request(app).get(`/v1/customers/${customerId}/balances`).set(AUTH);
+    expect(res.status).toBe(200);
+    for (const balance of res.body.data) {
+      expect(balance).toHaveProperty('asset_id');
+      expect(balance).toHaveProperty('pending');
+      expect(balance).toHaveProperty('settled');
+      expect(balance).toHaveProperty('total');
+    }
+  });
+
+  it('returns 404 for non-existent customer', async () => {
+    const res = await request(app).get('/v1/customers/cust_nonexistent/balances').set(AUTH);
+    expect(res.status).toBe(404);
   });
 });

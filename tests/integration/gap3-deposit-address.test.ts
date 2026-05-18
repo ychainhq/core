@@ -14,7 +14,7 @@ import request from 'supertest';
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 import BIP32Factory from 'bip32';
-import { bootstrapApp, ADMIN_AUTH, teardownDb } from './helpers';
+import { bootstrapApp, AUTH, ADMIN_AUTH, teardownDb } from './helpers';
 
 bitcoin.initEccLib(ecc);
 const bip32 = BIP32Factory(ecc);
@@ -232,5 +232,47 @@ describe('POST /v1/customers/:customerId/deposit-address', () => {
 
     expect(cfgRes.status).toBe(200);
     expect(cfgRes.body.data.btc_xpub).toBe(TEST_XPUB);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tenant_default — provisioned by seed (regression for missing LWallet bug)
+// ---------------------------------------------------------------------------
+describe('POST /v1/customers/:customerId/deposit-address — tenant_default (seed-provisioned)', () => {
+  it('seed creates customer_deposits wallet so deposit-address works without manual provisioning', async () => {
+    // Before the seed fix this returned 404 "Wallet 'customer_deposits' not found"
+    // because seed.ts skipped provisionBtcLWallets for tenant_default.
+    const custRes = await request(app)
+      .post('/v1/customers')
+      .set(AUTH)
+      .send({ reference: 'seed-prov-test' });
+    expect(custRes.status).toBe(201);
+    const customerId = custRes.body.data.id;
+
+    const res = await request(app)
+      .post(`/v1/customers/${customerId}/deposit-address`)
+      .set(AUTH)
+      .send();
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.address).toBeDefined();
+    expect(res.body.data.chain).toBe('bitcoin');
+    expect(res.body.data.customerId).toBe(customerId);
+  });
+
+  it('consecutive calls on tenant_default also produce unique addresses', async () => {
+    const custRes = await request(app)
+      .post('/v1/customers')
+      .set(AUTH)
+      .send({ reference: 'seed-prov-multi' });
+    const customerId = custRes.body.data.id;
+
+    const r0 = await request(app).post(`/v1/customers/${customerId}/deposit-address`).set(AUTH).send();
+    const r1 = await request(app).post(`/v1/customers/${customerId}/deposit-address`).set(AUTH).send();
+
+    expect(r0.status).toBe(201);
+    expect(r1.status).toBe(201);
+    expect(r0.body.data.address).not.toBe(r1.body.data.address);
+    expect(r1.body.data.derivationIndex).toBe(r0.body.data.derivationIndex + 1);
   });
 });
