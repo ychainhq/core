@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { bootstrapApp, AUTH, ADDR_1, ADDR_2, teardownDb } from './helpers';
+import { bootstrapApp, AUTH, ADDR_1, ADDR_2, teardownDb, uniqueAddr } from './helpers';
 
 const app = bootstrapApp();
 
@@ -186,5 +186,54 @@ describe('GET /v1/wallets/:walletId/addresses', () => {
     const res = await request(app).get(`/v1/wallets/${emptyId}/addresses`).set(AUTH);
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual([]);
+  });
+});
+
+describe('GET /v1/wallets/:walletId/balances', () => {
+  it('returns 404 for non-existent wallet', async () => {
+    const res = await request(app).get('/v1/wallets/wallet_nonexistent/balances').set(AUTH);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('returns empty balances map for wallet with no addresses', async () => {
+    const wRes = await request(app)
+      .post('/v1/wallets')
+      .set(AUTH)
+      .send({ name: 'No-Addr Balance Wallet', type: 'watch_only' });
+    const walletId = wRes.body.data.id;
+
+    const res = await request(app).get(`/v1/wallets/${walletId}/balances`).set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.walletId).toBe(walletId);
+    expect(res.body.data.balances).toEqual({});
+  });
+
+  it('returns bitcoin chain entry for wallet with addresses (Core unavailable — zero totals)', async () => {
+    const wRes = await request(app)
+      .post('/v1/wallets')
+      .set(AUTH)
+      .send({ name: 'With-Addr Balance Wallet', type: 'watch_only' });
+    const walletId = wRes.body.data.id;
+
+    await request(app)
+      .post(`/v1/wallets/${walletId}/addresses`)
+      .set(AUTH)
+      .send({ chain: 'bitcoin', address: uniqueAddr() });
+
+    const res = await request(app).get(`/v1/wallets/${walletId}/balances`).set(AUTH);
+    // Bitcoin Core is unavailable in the test environment; the router silently skips
+    // failed addresses and returns zero totals for the chain.
+    expect(res.status).toBe(200);
+    expect(res.body.data.walletId).toBe(walletId);
+    expect(res.body.data.balances.bitcoin).toBeDefined();
+    expect(res.body.data.balances.bitcoin.confirmed).toBeDefined();
+    expect(res.body.data.balances.bitcoin.unconfirmed).toBeDefined();
+    expect(res.body.data.balances.bitcoin.total).toBeDefined();
+  });
+
+  it('returns 401 without auth', async () => {
+    const res = await request(app).get('/v1/wallets/wallet_any/balances');
+    expect(res.status).toBe(401);
   });
 });

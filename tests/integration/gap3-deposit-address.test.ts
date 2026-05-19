@@ -278,3 +278,65 @@ describe('POST /v1/customers/:customerId/deposit-address — tenant_default (see
     expect(r1.body.data.derivationIndex).toBe(r0.body.data.derivationIndex + 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /v1/me/deposit-address — customer self-service variant
+// ---------------------------------------------------------------------------
+describe('POST /v1/me/deposit-address', () => {
+  let tenantAuth: Record<string, string>;
+  let tenantId: string;
+  let customerId: string;
+
+  beforeAll(async () => {
+    const result = await createTenantWithKey();
+    tenantAuth = result.auth;
+    tenantId = result.tenantId;
+
+    const xpub = uniqueXpub();
+    await request(app)
+      .patch(`/admin/v1/tenants/${tenantId}/config`)
+      .set(ADMIN_AUTH)
+      .send({ btcXpub: xpub });
+
+    const cRes = await request(app).post('/v1/customers').set(tenantAuth).send({});
+    expect(cRes.status).toBe(201);
+    customerId = cRes.body.data.id;
+  });
+
+  it('returns 201 with a valid BTC address when authenticated via customer session', async () => {
+    const sessRes = await request(app)
+      .post(`/v1/customers/${customerId}/sessions`)
+      .set(tenantAuth);
+    expect(sessRes.status).toBe(201);
+    const token = sessRes.body.data.accessToken;
+
+    const res = await request(app)
+      .post('/v1/me/deposit-address')
+      .set({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(201);
+    expect(typeof res.body.data.address).toBe('string');
+    expect(res.body.data.address.length).toBeGreaterThan(0);
+    expect(res.body.data.chain).toBe('bitcoin');
+  });
+
+  it('consecutive calls via customer session return unique addresses', async () => {
+    const sessRes = await request(app)
+      .post(`/v1/customers/${customerId}/sessions`)
+      .set(tenantAuth);
+    const token = sessRes.body.data.accessToken;
+    const auth = { Authorization: `Bearer ${token}` };
+
+    const r0 = await request(app).post('/v1/me/deposit-address').set(auth);
+    const r1 = await request(app).post('/v1/me/deposit-address').set(auth);
+
+    expect(r0.status).toBe(201);
+    expect(r1.status).toBe(201);
+    expect(r0.body.data.address).not.toBe(r1.body.data.address);
+  });
+
+  it('returns 401 without token', async () => {
+    const res = await request(app).post('/v1/me/deposit-address');
+    expect(res.status).toBe(401);
+  });
+});

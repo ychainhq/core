@@ -1,6 +1,7 @@
 import request from 'supertest';
 import crypto from 'crypto';
 import { bootstrapApp, AUTH, teardownDb } from './helpers';
+import { getDb } from '../../src/db/sqlite';
 
 const app = bootstrapApp();
 
@@ -284,5 +285,51 @@ describe('GET /v1/webhook-deliveries', () => {
       .set(AUTH);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
+  });
+});
+
+describe('POST /v1/webhook-deliveries/:deliveryId/retry', () => {
+  let deliveryId: string;
+
+  beforeAll(async () => {
+    const wRes = await request(app)
+      .post('/v1/webhooks')
+      .set(AUTH)
+      .send({ url: 'https://example.invalid/retry-test', events: ['*'] });
+    const webhookId = wRes.body.data.id;
+
+    // Insert a failed delivery directly — webhook-delivery.worker creates these in production
+    const db = getDb();
+    deliveryId = `wdlv_${crypto.randomBytes(8).toString('hex')}`;
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO webhook_deliveries
+        (id, webhook_id, event_id, event_type, payload, status, attempts, next_retry_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'failed', 3, ?, ?, ?)
+    `).run(
+      deliveryId,
+      webhookId,
+      `evt_${crypto.randomBytes(8).toString('hex')}`,
+      'deposit.confirmed',
+      JSON.stringify({ test: true }),
+      now, now, now
+    );
+  });
+
+  it('resets delivery status to pending', async () => {
+    const res = await request(app)
+      .post(`/v1/webhook-deliveries/${deliveryId}/retry`)
+      .set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.id).toBe(deliveryId);
+    expect(res.body.data.status).toBe('pending');
+    expect(res.body.data.next_retry_at).toBeDefined();
+  });
+
+  it('returns 404 for non-existent delivery', async () => {
+    const res = await request(app)
+      .post('/v1/webhook-deliveries/wdlv_doesnotexist/retry')
+      .set(AUTH);
+    expect(res.status).toBe(404);
   });
 });

@@ -189,3 +189,55 @@ describe('GET /v1/customers/:customerId/balances', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('GET /v1/customers/:customerId/deposits', () => {
+  let customerId: string;
+
+  beforeAll(async () => {
+    const res = await request(app).post('/v1/customers').set(AUTH).send({ reference: 'deposits-sub-test' });
+    customerId = res.body.data.id;
+  });
+
+  it('returns empty deposits list for a new customer', async () => {
+    const res = await request(app).get(`/v1/customers/${customerId}/deposits`).set(AUTH);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data).toEqual([]);
+    expect(res.body.pagination).toBeDefined();
+  });
+
+  it('filters by status without error', async () => {
+    const res = await request(app)
+      .get(`/v1/customers/${customerId}/deposits?status=confirmed`)
+      .set(AUTH);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+  });
+
+  it('returns 404 for non-existent customer', async () => {
+    const res = await request(app).get('/v1/customers/cust_doesnotexist/deposits').set(AUTH);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /v1/customers/:customerId/addresses', () => {
+  let customerId: string;
+
+  beforeAll(async () => {
+    const res = await request(app).post('/v1/customers').set(AUTH).send({ reference: 'addresses-sub-test' });
+    customerId = res.body.data.id;
+  });
+
+  it('returns empty address list for a new customer', async () => {
+    const res = await request(app).get(`/v1/customers/${customerId}/addresses`).set(AUTH);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data).toEqual([]);
+    expect(res.body.pagination).toBeDefined();
+  });
+
+  it('returns 404 for non-existent customer', async () => {
+    const res = await request(app).get('/v1/customers/cust_doesnotexist/addresses').set(AUTH);
+    expect(res.status).toBe(404);
+  });
+});
