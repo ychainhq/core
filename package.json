@@ -12,6 +12,7 @@
     "test": "jest --runInBand --forceExit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^9.4.3",
     "bip32": "^5.0.1",
     "bitcoinjs-lib": "^6.1.5",

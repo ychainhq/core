@@ -293,6 +293,55 @@ export const webhooksService = {
     return { ...existing, status: 'pending', next_retry_at: now };
   },
 
+  async test(tenantId: string, webhookId: string): Promise<{
+    success: boolean;
+    status: number | null;
+    statusText: string | null;
+    responseTimeMs: number;
+    error?: string;
+  }> {
+    const webhook = webhooksService.getById(tenantId, webhookId);
+    const secret = webhooksService.getSecret(tenantId, webhookId);
+    const timestamp = Date.now();
+    const payload = {
+      event: 'webhook.test',
+      webhookId,
+      timestamp,
+      message: 'This is a test event from Chain API',
+    };
+    const signature = webhooksService.signPayload(secret, timestamp, payload);
+    const start = Date.now();
+
+    try {
+      const response = await fetch(webhook.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CryptoApi-Event-Id': `evt_test_${Date.now()}`,
+          'X-CryptoApi-Timestamp': String(timestamp),
+          'X-CryptoApi-Signature': signature,
+          'User-Agent': 'ChainAPI-Webhook/0.1',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      return {
+        success: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        responseTimeMs: Date.now() - start,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        status: null,
+        statusText: null,
+        responseTimeMs: Date.now() - start,
+        error: err?.message ?? String(err),
+      };
+    }
+  },
+
   /**
    * Sign a webhook payload with HMAC-SHA256.
    * Signature: HMAC-SHA256(secret, timestamp + "." + JSON.stringify(payload))

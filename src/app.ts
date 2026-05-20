@@ -27,6 +27,7 @@ import { sweepsRouter } from './modules/sweeps/sweeps.router';
 import { meRouter } from './modules/me/me.router';
 import { withdrawalsRouter } from './modules/withdrawals/withdrawals.router';
 import { assetsService } from './modules/assets/assets.service';
+import { registerMcpRoutes } from './mcp/register';
 
 export function createApp(): express.Application {
   const app = express();
@@ -47,6 +48,9 @@ export function createApp(): express.Application {
       timestamp: new Date().toISOString(),
     });
   });
+
+  // ---- MCP routes (authenticated per endpoint) ----
+  registerMcpRoutes(app);
 
   // ---- Admin routes (X-Admin-Key auth) ----
   app.use('/admin/v1', adminAuthMiddleware);

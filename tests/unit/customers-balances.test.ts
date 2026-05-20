@@ -6,10 +6,10 @@ import { ledgerService } from '../../src/modules/ledger/ledger.service';
 
 const TENANT = 'tenant_default';
 
-beforeAll(() => {
+beforeAll(async () => {
   closeDb();
   runMigrations();
-  runSeed();
+  await runSeed();
 });
 
 afterAll(() => {

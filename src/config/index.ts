@@ -9,6 +9,13 @@ const configSchema = z.object({
   BITCOIN_RPC_URL: z.string().url().default('http://127.0.0.1:8332'),
   BITCOIN_RPC_USER: z.string().default('bitcoin'),
   BITCOIN_RPC_PASSWORD: z.string().default('changeme'),
+  BITCOIN_RPC_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+  BITCOIN_RPC_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(3),
+  BITCOIN_RPC_RETRY_DELAY_MS: z.coerce.number().int().min(0).default(1000),
+  BITCOIN_CORE_PROVISIONING_ENABLED: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('true'),
   BITCOIN_NETWORK: z.enum(['mainnet', 'testnet', 'regtest']).default('mainnet'),
   API_KEY: z.string().optional(),
   ADMIN_KEY: z.string().optional(),
@@ -26,6 +33,11 @@ const configSchema = z.object({
   CUSTOMER_SESSION_SECRET: z.string().min(32).default('change-me-in-production-min-32-chars!!'),
   CUSTOMER_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(100),
+  MCP_ADMIN_ENABLED: z
+    .string()
+    .transform((v) => v === 'true')
+    .default('false'),
+  MCP_ALLOWED_ORIGINS: z.string().default('http://127.0.0.1,http://localhost'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 

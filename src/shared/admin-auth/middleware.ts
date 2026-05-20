@@ -10,6 +10,33 @@ interface AdminKeyRow {
   is_active: number;
 }
 
+export interface AdminAuthContext {
+  adminKeyId: string;
+  adminKeyName: string;
+}
+
+export function resolveAdminKey(adminKey: string | undefined): AdminAuthContext {
+  if (!adminKey) {
+    throw new UnauthorizedError('Admin key required');
+  }
+
+  const keyHash = crypto.createHash('sha256').update(adminKey).digest('hex');
+
+  const db = getDb();
+  const key = db
+    .prepare('SELECT * FROM admin_keys WHERE key_hash = ? AND is_active = 1')
+    .get(keyHash) as AdminKeyRow | undefined;
+
+  if (!key) {
+    throw new UnauthorizedError('Invalid admin key');
+  }
+
+  return {
+    adminKeyId: key.id,
+    adminKeyName: key.name,
+  };
+}
+
 export function adminAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
   // Try X-Admin-Key header first, then Authorization header
   const adminKey =
@@ -18,24 +45,8 @@ export function adminAuthMiddleware(req: Request, res: Response, next: NextFunct
       ? req.headers['authorization'].slice(7)
       : undefined);
 
-  if (!adminKey) {
-    next(new UnauthorizedError('Admin key required'));
-    return;
-  }
-
-  const keyHash = crypto.createHash('sha256').update(adminKey).digest('hex');
-
   try {
-    const db = getDb();
-    const key = db
-      .prepare('SELECT * FROM admin_keys WHERE key_hash = ? AND is_active = 1')
-      .get(keyHash) as AdminKeyRow | undefined;
-
-    if (!key) {
-      next(new UnauthorizedError('Invalid admin key'));
-      return;
-    }
-
+    resolveAdminKey(adminKey);
     next();
   } catch (err) {
     next(err);

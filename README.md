@@ -151,6 +151,33 @@ curl -X POST /admin/v1/tenants/:tenantId/api-keys \
 GET /health
 ```
 
+### MCP Endpoints
+
+The same engine is also exposed as MCP over Streamable HTTP. MCP uses the same auth and tenant isolation rules as REST.
+
+```bash
+POST /mcp/tenant
+Authorization: Bearer <tenant-api-key>
+
+POST /mcp/customer
+Authorization: Bearer <customer-session-jwt>
+
+POST /mcp/admin
+X-Admin-Key: <admin-key>
+```
+
+Admin MCP is disabled by default. Enable it with:
+
+```bash
+MCP_ADMIN_ENABLED=true
+```
+
+For browser-like clients, set allowed origins:
+
+```bash
+MCP_ALLOWED_ORIGINS=http://127.0.0.1,http://localhost,https://your-admin-ui.example
+```
+
 ### Chains & Assets
 ```bash
 GET /v1/chains

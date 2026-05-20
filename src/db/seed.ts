@@ -266,12 +266,16 @@ export async function runSeed(): Promise<void> {
   }
 
   // 8. Provision Bitcoin Core watch-only wallet for the default tenant
-  try {
-    const btcAdapter = new BitcoinAdapter();
-    await btcAdapter.provisionTenantWallet('tenant_default');
-    logger.info('Bitcoin Core wallet provisioned for tenant_default');
-  } catch (err) {
-    logger.warn('Could not provision Bitcoin Core wallet for tenant_default (Bitcoin Core may not be running)', { err });
+  if (config.BITCOIN_CORE_PROVISIONING_ENABLED) {
+    try {
+      const btcAdapter = new BitcoinAdapter();
+      await btcAdapter.provisionTenantWallet('tenant_default');
+      logger.info('Bitcoin Core wallet provisioned for tenant_default');
+    } catch (err) {
+      logger.warn('Could not provision Bitcoin Core wallet for tenant_default (Bitcoin Core may not be running)', { err });
+    }
+  } else {
+    logger.debug('Skipping Bitcoin Core wallet provisioning for tenant_default');
   }
 
   // 9. Provision BTC LWallets (customer_deposits, hot wallet, ledger accounts) for tenant_default

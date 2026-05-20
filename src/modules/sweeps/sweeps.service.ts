@@ -1,7 +1,10 @@
 import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
-import { NotFoundError } from '../../shared/errors/index';
+import { NotFoundError, ValidationError } from '../../shared/errors/index';
 import { toUnixTs } from '../../shared/time/index';
+import { adapterRegistry } from '../../chain-adapters/registry';
+import { ledgerService } from '../ledger/ledger.service';
+import { logger } from '../../shared/logging/index';
 
 export interface Sweep {
   id: string;
@@ -121,6 +124,43 @@ export const sweepsService = {
     params.push(id);
     db.prepare(`UPDATE sweeps SET ${sets.join(', ')} WHERE id = ?`).run(...params);
     return sweepsService.getByIdInternal(id);
+  },
+
+  async submitSigned(tenantId: string, sweepId: string, signedPsbt: string): Promise<Sweep> {
+    const sweep = sweepsService.getById(tenantId, sweepId);
+
+    if (sweep.status !== 'pending_signature') {
+      throw new ValidationError(`Sweep is in status '${sweep.status}', expected 'pending_signature'`);
+    }
+
+    const adapter = adapterRegistry.get('bitcoin');
+    let txHash: string;
+    try {
+      const finalizedResult = await adapter.finalizePsbt(signedPsbt);
+      if (!finalizedResult.complete) {
+        throw new Error('PSBT is not fully signed — missing signatures');
+      }
+      txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
+    } catch (err: any) {
+      sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
+      throw new ValidationError(`Failed to broadcast sweep: ${err.message ?? err}`);
+    }
+
+    const updated = sweepsService.updateStatus(sweep.id, 'broadcast', { signedPsbt, txHash });
+
+    const sitAccount = ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
+    if (sitAccount) {
+      ledgerService.addEntry({
+        ledgerAccountId: sitAccount.id,
+        type: 'sweep_broadcast',
+        amountRaw: sweep.amount_raw,
+        referenceType: 'sweep',
+        referenceId: sweep.id,
+      });
+    }
+
+    logger.info('Sweep broadcast', { sweepId: sweep.id, txHash, tenantId });
+    return updated;
   },
 
   /**

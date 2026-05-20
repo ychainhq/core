@@ -52,7 +52,7 @@ export class BitcoinRpcClient {
 
     let response: Response;
     let attempts = 0;
-    const maxAttempts = 3;
+    const maxAttempts = config.BITCOIN_RPC_MAX_ATTEMPTS;
 
     while (true) {
       try {
@@ -63,6 +63,7 @@ export class BitcoinRpcClient {
             'Authorization': `Basic ${this.auth}`,
           },
           body: JSON.stringify(body),
+          signal: AbortSignal.timeout(config.BITCOIN_RPC_TIMEOUT_MS),
         });
         break;
       } catch (err) {
@@ -71,7 +72,10 @@ export class BitcoinRpcClient {
           throw new ApiError(503, 'BITCOIN_RPC_UNAVAILABLE', `Bitcoin Core RPC unavailable: ${String(err)}`);
         }
         logger.warn('Bitcoin RPC connection failed, retrying', { attempt: attempts, error: String(err) });
-        await new Promise((r) => setTimeout(r, 1000 * attempts));
+        const delayMs = config.BITCOIN_RPC_RETRY_DELAY_MS * attempts;
+        if (delayMs > 0) {
+          await new Promise((r) => setTimeout(r, delayMs));
+        }
       }
     }
 

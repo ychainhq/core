@@ -4,17 +4,14 @@ import { getDb } from '../../db/sqlite';
 import { UnauthorizedError } from '../errors/index';
 import { verifyCustomerToken } from './jwt.service';
 
-export function customerAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    next(new UnauthorizedError('Missing Authorization header'));
-    return;
-  }
+export interface CustomerAuthContext {
+  tenantId: string;
+  customerId: string;
+}
 
-  const token = authHeader.slice(7).trim();
+export function resolveCustomerSessionToken(token: string): CustomerAuthContext {
   if (!token) {
-    next(new UnauthorizedError('Empty token'));
-    return;
+    throw new UnauthorizedError('Empty token');
   }
 
   try {
@@ -27,8 +24,7 @@ export function customerAuthMiddleware(req: Request, res: Response, next: NextFu
       | { status: string }
       | undefined;
     if (!tenant || tenant.status !== 'active') {
-      next(new UnauthorizedError('Tenant not active'));
-      return;
+      throw new UnauthorizedError('Tenant not active');
     }
 
     // Validate customer still exists and is active
@@ -36,23 +32,41 @@ export function customerAuthMiddleware(req: Request, res: Response, next: NextFu
       .prepare('SELECT status FROM customers WHERE id = ? AND tenant_id = ?')
       .get(payload.sub, payload.tid) as { status: string } | undefined;
     if (!customer) {
-      next(new UnauthorizedError('Customer not found'));
-      return;
+      throw new UnauthorizedError('Customer not found');
     }
     if (customer.status !== 'active') {
-      next(new UnauthorizedError(`Customer account is ${customer.status}`));
-      return;
+      throw new UnauthorizedError(`Customer account is ${customer.status}`);
     }
 
-    req.tenantId = payload.tid;
-    req.customerId = payload.sub;
-    next();
+    return {
+      tenantId: payload.tid,
+      customerId: payload.sub,
+    };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'invalid_token';
     if (msg === 'token_expired') {
-      next(new UnauthorizedError('Token expired'));
-    } else {
-      next(new UnauthorizedError('Invalid token'));
+      throw new UnauthorizedError('Token expired');
     }
+    if (err instanceof UnauthorizedError) throw err;
+    throw new UnauthorizedError('Invalid token');
+  }
+}
+
+export function customerAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    next(new UnauthorizedError('Missing Authorization header'));
+    return;
+  }
+
+  const token = authHeader.slice(7).trim();
+
+  try {
+    const auth = resolveCustomerSessionToken(token);
+    req.tenantId = auth.tenantId;
+    req.customerId = auth.customerId;
+    next();
+  } catch (err: unknown) {
+    next(err);
   }
 }
