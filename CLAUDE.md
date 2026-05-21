@@ -153,23 +153,55 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | POST | `/v1/customers` | ✅ | ✅ | ✅ `chainapi_create_customer` |
-| GET | `/v1/customers` | ✅ | ✅ | ❌ |
-| GET | `/v1/customers/:customerId` | ✅ | ✅ | ❌ |
-| PATCH | `/v1/customers/:customerId` | ✅ | ✅ | ❌ |
-| POST | `/v1/customers/:customerId/disable` | ✅ | ✅ | ❌ |
-| GET | `/v1/customers/:customerId/balances` | ✅ | ✅ | ❌ |
-| GET | `/v1/customers/:customerId/deposits` | ✅ | ✅ | ❌ |
-| GET | `/v1/customers/:customerId/addresses` | ✅ | ✅ | ❌ |
-| POST | `/v1/customers/:customerId/sessions` | ✅ | ✅ | ❌ |
+| GET | `/v1/customers` | ✅ | ✅ | ✅ `chainapi_list_customers` |
+| GET | `/v1/customers/:customerId` | ✅ | ✅ | ✅ `chainapi_get_customer` |
+| PATCH | `/v1/customers/:customerId` | ✅ | ✅ | ✅ `chainapi_update_customer` |
+| POST | `/v1/customers/:customerId/disable` | ✅ | ✅ | ✅ `chainapi_disable_customer` |
+| GET | `/v1/customers/:customerId/balances` | ✅ | ✅ | ✅ `chainapi_get_customer_balances` |
+| GET | `/v1/customers/:customerId/deposits` | ✅ | ✅ | ✅ `chainapi_list_customer_deposits` |
+| GET | `/v1/customers/:customerId/addresses` | ✅ | ✅ | ✅ `chainapi_list_customer_addresses` |
+| POST | `/v1/customers/:customerId/sessions` | ✅ | ✅ | ✅ `chainapi_create_customer_session` |
+| POST | `/v1/customers/:customerId/deposit-address` | ✅ | ✅ | ✅ `chainapi_create_customer_deposit_address` |
+| GET | `/v1/customers/:customerId/profile` | ✅ | ✅ | ✅ `chainapi_get_customer_profile` |
+| PUT | `/v1/customers/:customerId/profile` | ✅ | ✅ | ✅ `chainapi_upsert_customer_profile` |
+| GET | `/v1/customers/:customerId/identifiers` | ✅ | ✅ | ✅ `chainapi_list_customer_identifiers` |
+| POST | `/v1/customers/:customerId/identifiers` | ✅ | ✅ | ✅ `chainapi_add_customer_identifier` |
+| PATCH | `/v1/customers/:customerId/identifiers/:identifierId` | ✅ | ✅ | ✅ `chainapi_update_customer_identifier` |
+| DELETE | `/v1/customers/:customerId/identifiers/:identifierId` | ✅ | ✅ | ✅ `chainapi_delete_customer_identifier` |
+| GET | `/v1/customers/:customerId/relationships` | ✅ | ✅ | ✅ `chainapi_list_customer_relationships` |
+| POST | `/v1/customers/:customerId/relationships` | ✅ | ✅ | ✅ `chainapi_add_customer_relationship` |
+| PATCH | `/v1/customers/:customerId/relationships/:relId` | ✅ | ✅ | ✅ `chainapi_update_customer_relationship` |
+| DELETE | `/v1/customers/:customerId/relationships/:relId` | ✅ | ✅ | ✅ `chainapi_delete_customer_relationship` |
+| GET | `/v1/customers/:customerId/aml-kyc` | ✅ | ✅ | ✅ `chainapi_get_customer_aml_kyc` |
+| PUT | `/v1/customers/:customerId/aml-kyc` | ✅ | ✅ | ✅ `chainapi_upsert_customer_aml_kyc` |
+| GET | `/v1/customers/:customerId/data-governance` | ✅ | ✅ | ✅ `chainapi_get_customer_data_governance` |
+| PUT | `/v1/customers/:customerId/data-governance` | ✅ | ✅ | ✅ `chainapi_upsert_customer_data_governance` |
+| GET | `/v1/customers/:customerId/contact` | ✅ | ✅ | ✅ `chainapi_get_customer_contact` |
+| PUT | `/v1/customers/:customerId/contact` | ✅ | ✅ | ✅ `chainapi_upsert_customer_contact` |
+| GET | `/v1/customers/:customerId/documents` | ✅ | ✅ | ✅ `chainapi_list_customer_documents` |
+| POST | `/v1/customers/:customerId/documents` | ✅ | ✅ | ✅ `chainapi_add_customer_document` |
+| PATCH | `/v1/customers/:customerId/documents/:documentId` | ✅ | ✅ | ✅ `chainapi_update_customer_document` |
+| DELETE | `/v1/customers/:customerId/documents/:documentId` | ✅ | ✅ | ✅ `chainapi_delete_customer_document` |
 
 ### Customer self-service — `/v1/me` (`Bearer <customer-jwt>`)
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | GET | `/v1/me` | ✅ | ✅ | ✅ `chainapi_me_get_profile` |
+| GET | `/v1/me/balances` | ✅ | ⚠️ | ✅ `chainapi_me_get_balances` |
+| GET | `/v1/me/deposits` | ✅ | ⚠️ | ✅ `chainapi_me_list_deposits` |
 | GET | `/v1/me/addresses` | ✅ | ✅ | ✅ `chainapi_me_list_addresses` |
-| GET | `/v1/me/balances` | ✅ | ⚠️ | ❌ |
-| GET | `/v1/me/deposits` | ✅ | ⚠️ | ❌ |
+| POST | `/v1/me/deposit-address` | ✅ | ✅ | ✅ `chainapi_me_create_deposit_address` |
+| POST | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_create_withdrawal` |
+| GET | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_list_withdrawals` |
+| GET | `/v1/me/withdrawals/:withdrawalId` | ✅ | ✅ | ✅ `chainapi_me_get_withdrawal` |
+| GET | `/v1/me/profile` | ✅ | ✅ | ✅ `chainapi_me_get_kyc_profile` |
+| PUT | `/v1/me/profile` | ✅ | ✅ | ✅ `chainapi_me_upsert_kyc_profile` |
+| GET | `/v1/me/contact` | ✅ | ✅ | ✅ `chainapi_me_get_contact` |
+| PUT | `/v1/me/contact` | ✅ | ✅ | ✅ `chainapi_me_upsert_contact` |
+| GET | `/v1/me/kyc-status` | ✅ | ✅ | ✅ `chainapi_me_get_kyc_status` |
+| GET | `/v1/me/documents` | ✅ | ✅ | ✅ `chainapi_me_list_documents` |
+| POST | `/v1/me/documents` | ✅ | ✅ | ✅ `chainapi_me_upload_document` |
 
 ### Chains & Assets
 

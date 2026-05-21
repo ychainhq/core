@@ -4,27 +4,18 @@ import { NotFoundError, ConflictError } from '../../shared/errors/index';
 import { addSatoshi } from '../../shared/money/index';
 import { toUnixTs } from '../../shared/time/index';
 import { ledgerService } from '../ledger/ledger.service';
+import { customersAmlKycService } from './customers-aml-kyc.service';
+import { customersDataGovernanceService } from './customers-data-governance.service';
+import { Customer, CustomerBalance, PartyType, PartyStatus } from './customers.types';
 
-export interface Customer {
-  id: string;
-  tenant_id: string;
-  reference: string | null;
-  status: string;
-  metadata: Record<string, unknown> | null;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface CustomerBalance {
-  asset_id: string;
-  pending: string;
-  settled: string;
-  total: string;
-}
+export type { Customer, CustomerBalance } from './customers.types';
 
 function mapCustomer(row: any): Customer {
   return {
     ...row,
+    party_type: row.party_type ?? 'natural_person',
+    display_name: row.display_name ?? null,
+    country_of_origin: row.country_of_origin ?? null,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
     created_at: toUnixTs(row.created_at),
     updated_at: toUnixTs(row.updated_at),
@@ -34,7 +25,13 @@ function mapCustomer(row: any): Customer {
 export const customersService = {
   create(
     tenantId: string,
-    input: { reference?: string; metadata?: Record<string, unknown> }
+    input: {
+      reference?: string;
+      party_type?: PartyType;
+      display_name?: string | null;
+      country_of_origin?: string | null;
+      metadata?: Record<string, unknown>;
+    }
   ): Customer {
     const db = getDb();
     const id = `cust_${crypto.randomBytes(8).toString('hex')}`;
@@ -48,12 +45,17 @@ export const customersService = {
     }
 
     db.prepare(`
-      INSERT INTO customers (id, tenant_id, reference, status, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, 'active', ?, ?, ?)
+      INSERT INTO customers
+        (id, tenant_id, reference, party_type, display_name, country_of_origin,
+         status, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
     `).run(
       id,
       tenantId,
       input.reference ?? null,
+      input.party_type ?? 'natural_person',
+      input.display_name ?? null,
+      input.country_of_origin ?? null,
       input.metadata ? JSON.stringify(input.metadata) : null,
       now,
       now
@@ -77,20 +79,30 @@ export const customersService = {
       name: 'Pending Balance (BTC)',
     });
 
+    // Auto-provision AML/KYC and Data Governance records with sensible defaults
+    customersAmlKycService.provision(tenantId, id);
+    customersDataGovernanceService.provision(tenantId, id);
+
     return customersService.getById(tenantId, id);
   },
 
   list(
     tenantId: string,
-    filters: { limit?: number; cursor?: string; status?: string } = {}
+    filters: {
+      limit?: number;
+      cursor?: string;
+      status?: string;
+      party_type?: PartyType;
+    } = {}
   ): { data: Customer[]; nextCursor: string | null } {
     const db = getDb();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM customers WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
 
-    if (filters.status) { query += ' AND status = ?'; params.push(filters.status); }
-    if (filters.cursor) { query += ' AND id > ?'; params.push(filters.cursor); }
+    if (filters.status)     { query += ' AND status = ?';     params.push(filters.status); }
+    if (filters.party_type) { query += ' AND party_type = ?'; params.push(filters.party_type); }
+    if (filters.cursor)     { query += ' AND id > ?';         params.push(filters.cursor); }
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
@@ -125,7 +137,13 @@ export const customersService = {
   update(
     tenantId: string,
     id: string,
-    input: { reference?: string; status?: string; metadata?: Record<string, unknown> }
+    input: {
+      reference?: string;
+      status?: PartyStatus;
+      display_name?: string | null;
+      country_of_origin?: string | null;
+      metadata?: Record<string, unknown>;
+    }
   ): Customer {
     const db = getDb();
     customersService.getById(tenantId, id); // 404 guard
@@ -141,9 +159,11 @@ export const customersService = {
     const sets: string[] = [];
     const params: unknown[] = [];
 
-    if (input.reference !== undefined) { sets.push('reference = ?'); params.push(input.reference); }
-    if (input.status !== undefined) { sets.push('status = ?'); params.push(input.status); }
-    if (input.metadata !== undefined) { sets.push('metadata = ?'); params.push(JSON.stringify(input.metadata)); }
+    if (input.reference !== undefined)        { sets.push('reference = ?');        params.push(input.reference); }
+    if (input.status !== undefined)           { sets.push('status = ?');           params.push(input.status); }
+    if (input.display_name !== undefined)     { sets.push('display_name = ?');     params.push(input.display_name); }
+    if (input.country_of_origin !== undefined){ sets.push('country_of_origin = ?');params.push(input.country_of_origin); }
+    if (input.metadata !== undefined)         { sets.push('metadata = ?');         params.push(JSON.stringify(input.metadata)); }
     if (sets.length === 0) return customersService.getById(tenantId, id);
 
     sets.push('updated_at = ?');
@@ -207,7 +227,7 @@ export const customersService = {
     const params: unknown[] = [tenantId, customerId];
 
     if (filters.status) { query += ' AND status = ?'; params.push(filters.status); }
-    if (filters.cursor) { query += ' AND id > ?'; params.push(filters.cursor); }
+    if (filters.cursor) { query += ' AND id > ?';     params.push(filters.cursor); }
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 

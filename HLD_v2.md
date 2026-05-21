@@ -252,15 +252,27 @@ CREATE TABLE tenant_configs (
 
 ```sql
 CREATE TABLE customers (
-  id          TEXT PRIMARY KEY,            -- 'cust_...'
-  tenant_id   TEXT NOT NULL REFERENCES tenants(id),
-  reference   TEXT,                        -- zewnętrzny ID tenanta
-  status      TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'disabled' | 'frozen'
-  metadata    TEXT,                        -- JSON
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL,
-  UNIQUE(tenant_id, reference)
+  id                TEXT PRIMARY KEY,   -- 'cust_...'
+  tenant_id         TEXT NOT NULL REFERENCES tenants(id),
+  reference         TEXT,              -- zewnętrzny ID tenanta (CRM / onboarding)
+  party_type        TEXT NOT NULL DEFAULT 'natural_person', -- 'natural_person' | 'legal_entity'
+  status            TEXT NOT NULL DEFAULT 'active',
+    -- 'pending' | 'active' | 'restricted' | 'suspended' | 'frozen'
+    -- | 'closed' | 'rejected' | 'disabled' (legacy)
+  display_name      TEXT,              -- zsynchronizowany z profilu; używany w logach i wyszukiwaniu
+  country_of_origin TEXT,             -- ISO 3166-1 alpha-2
+  metadata          TEXT,             -- JSON (stopniowo zastępowany przez sub-zasoby KYC)
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
 );
+-- Sub-zasoby KYC (migration 009):
+--   customer_profiles         — NaturalPersonProfile | LegalEntityProfile (1:1)
+--   customer_identifiers      — PASSPORT, TAX_ID, LEI, itp. (N:1)
+--   customer_relationships    — UBO, trustee, representative, itp. (N:1)
+--   customer_aml_kyc          — profil AML/KYC (1:1, auto-provision przy tworzeniu)
+--   customer_data_governance  — GDPR/DORA/NIS2 (1:1, auto-provision przy tworzeniu)
+--   customer_contact          — email, telefon, adresy (1:1)
+--   customer_documents        — referencje do dokumentów, bez przechowywania pliku (N:1)
 ```
 
 #### Tabela: `admin_keys`
@@ -636,18 +648,45 @@ Auth: `X-Admin-Key` header (lub Bearer z flagą is_admin). Dostępne wyłącznie
 |--------|------|------|
 | GET | `/health` | Sprawdzenie stanu serwera (bez auth) |
 
-### 6.2 Customer API (nowe w v2, tenant-scoped)
+### 6.2 Customer API (tenant-scoped)
+
+#### 6.2.1 Core Party (ledger + identity)
 
 | Method | Path | Opis |
 |--------|------|------|
-| POST | `/v1/customers` | Utwórz customera (reference, metadata) |
-| GET | `/v1/customers` | Lista customerów tenanta |
+| POST | `/v1/customers` | Utwórz customera (Party aggregate — reference, party_type, display_name, country_of_origin, metadata) |
+| GET | `/v1/customers` | Lista customerów tenanta (filtry: status, party_type) |
 | GET | `/v1/customers/:customerId` | Szczegóły customera |
-| PATCH | `/v1/customers/:customerId` | Aktualizuj customera |
-| POST | `/v1/customers/:customerId/disable` | Dezaktywuj customera |
+| PATCH | `/v1/customers/:customerId` | Aktualizuj customera (reference, status, display_name, country_of_origin, metadata) |
+| POST | `/v1/customers/:customerId/disable` | Dezaktywuj customera (status → disabled) |
 | GET | `/v1/customers/:customerId/balances` | Saldo BTC (pending + settled) |
 | GET | `/v1/customers/:customerId/deposits` | Historia depozytów customera |
 | GET | `/v1/customers/:customerId/addresses` | Adresy depozytowe customera |
+
+#### 6.2.2 KYC Profile sub-resources
+
+| Method | Path | Opis |
+|--------|------|------|
+| PUT | `/v1/customers/:customerId/profile` | Utwórz / zastąp profil (NaturalPersonProfile lub LegalEntityProfile, discriminator: partyType) |
+| GET | `/v1/customers/:customerId/profile` | Pobierz profil |
+| POST | `/v1/customers/:customerId/identifiers` | Dodaj identyfikator (PASSPORT, TAX_ID, LEI, itp.) |
+| GET | `/v1/customers/:customerId/identifiers` | Lista identyfikatorów |
+| PATCH | `/v1/customers/:customerId/identifiers/:identifierId` | Zaktualizuj identyfikator |
+| DELETE | `/v1/customers/:customerId/identifiers/:identifierId` | Usuń identyfikator |
+| POST | `/v1/customers/:customerId/relationships` | Dodaj relację (UBO, reprezentant, powiernik, itp.) |
+| GET | `/v1/customers/:customerId/relationships` | Lista relacji |
+| PATCH | `/v1/customers/:customerId/relationships/:relationshipId` | Zaktualizuj relację |
+| DELETE | `/v1/customers/:customerId/relationships/:relationshipId` | Usuń relację |
+| PUT | `/v1/customers/:customerId/aml-kyc` | Utwórz / zaktualizuj profil AML/KYC |
+| GET | `/v1/customers/:customerId/aml-kyc` | Pobierz profil AML/KYC |
+| PUT | `/v1/customers/:customerId/data-governance` | Utwórz / zaktualizuj profil data governance (GDPR, DORA, NIS2) |
+| GET | `/v1/customers/:customerId/data-governance` | Pobierz profil data governance |
+| PUT | `/v1/customers/:customerId/contact` | Utwórz / zaktualizuj dane kontaktowe |
+| GET | `/v1/customers/:customerId/contact` | Pobierz dane kontaktowe |
+| POST | `/v1/customers/:customerId/documents` | Dodaj referencję dokumentu (bez przechowywania pliku) |
+| GET | `/v1/customers/:customerId/documents` | Lista referencji dokumentów |
+| PATCH | `/v1/customers/:customerId/documents/:documentId` | Zaktualizuj referencję dokumentu |
+| DELETE | `/v1/customers/:customerId/documents/:documentId` | Usuń referencję dokumentu |
 
 ### 6.3 Metadata (bez zmian, tenant-scoped)
 
