@@ -140,6 +140,7 @@ export class DepositMonitorWorker {
 
       const deposit = depositsService.upsert({
         tenantId,
+        customerId: customerId ?? undefined,
         chainId,
         assetId,
         walletId,

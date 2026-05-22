@@ -64,7 +64,9 @@ export const depositsService = {
       db.prepare(`
         UPDATE deposits SET
           confirmations = ?, status = ?, block_height = ?, block_hash = ?,
-          amount_raw = ?, amount_display = ?, updated_at = ?
+          amount_raw = ?, amount_display = ?,
+          customer_id = COALESCE(customer_id, ?),
+          updated_at = ?
         WHERE id = ?
       `).run(
         input.confirmations,
@@ -73,6 +75,7 @@ export const depositsService = {
         input.blockHash ?? null,
         input.amountRaw,
         input.amountDisplay,
+        input.customerId ?? null,
         now,
         existing.id
       );
