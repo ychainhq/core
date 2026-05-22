@@ -351,7 +351,17 @@ export const customersService = {
   getDeposits(
     tenantId: string,
     customerId: string,
-    filters: { limit?: number; cursor?: string; status?: string } = {},
+    filters: {
+      limit?: number;
+      cursor?: string;
+      status?: string;
+      depositId?: string;
+      txHash?: string;
+      address?: string;
+      assetId?: string;
+      minConfirmations?: number;
+      maxConfirmations?: number;
+    } = {},
     accessFilter?: AccessFilter
   ): { data: any[]; nextCursor: string | null } {
     customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
@@ -361,6 +371,12 @@ export const customersService = {
     const params: unknown[] = [tenantId, customerId];
 
     if (filters.status) { query += ' AND status = ?'; params.push(filters.status); }
+    if (filters.depositId) { query += ' AND id LIKE ?'; params.push(wildcardToLike(filters.depositId)); }
+    if (filters.txHash) { query += ' AND tx_hash LIKE ?'; params.push(wildcardToLike(filters.txHash)); }
+    if (filters.address) { query += ' AND address LIKE ?'; params.push(wildcardToLike(filters.address)); }
+    if (filters.assetId) { query += ' AND asset_id = ?'; params.push(filters.assetId); }
+    if (filters.minConfirmations !== undefined) { query += ' AND confirmations >= ?'; params.push(filters.minConfirmations); }
+    if (filters.maxConfirmations !== undefined) { query += ' AND confirmations <= ?'; params.push(filters.maxConfirmations); }
     if (filters.cursor) { query += ' AND id > ?';     params.push(filters.cursor); }
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);

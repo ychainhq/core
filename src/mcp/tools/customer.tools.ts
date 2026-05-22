@@ -16,6 +16,16 @@ const paging = {
   cursor: z.string().optional(),
 };
 
+const depositFilters = {
+  status: z.string().optional(),
+  depositId: z.string().min(1).optional(),
+  txHash: z.string().min(1).optional(),
+  address: z.string().min(1).optional(),
+  assetId: z.string().min(1).optional(),
+  minConfirmations: z.number().int().min(0).optional(),
+  maxConfirmations: z.number().int().min(0).optional(),
+};
+
 function page<T>(result: { data: T[]; nextCursor: string | null }, input: { limit?: number; cursor?: string }) {
   return {
     data: result.data,
@@ -43,7 +53,7 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
 
   server.registerTool('chainapi_me_list_deposits', {
     description: 'List deposits for the authenticated customer.',
-    inputSchema: { ...paging, status: z.string().optional() },
+    inputSchema: { ...paging, ...depositFilters },
     annotations: readOnly,
   }, async (input: any) => safeTool(() => page(customersService.getDeposits(tenantId, customerId, input), input)));
 

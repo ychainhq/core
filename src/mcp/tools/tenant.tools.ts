@@ -33,6 +33,16 @@ const paging = {
   cursor: z.string().optional(),
 };
 
+const customerDepositFilters = {
+  status: z.string().optional(),
+  depositId: z.string().min(1).optional(),
+  txHash: z.string().min(1).optional(),
+  address: z.string().min(1).optional(),
+  assetId: z.string().min(1).optional(),
+  minConfirmations: z.number().int().min(0).optional(),
+  maxConfirmations: z.number().int().min(0).optional(),
+};
+
 const metadata = z.record(z.string(), z.unknown()).optional();
 
 function page<T>(result: { data: T[]; nextCursor: string | null }, input: { limit?: number; cursor?: string }) {
@@ -185,7 +195,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
 
   server.registerTool('chainapi_list_customer_deposits', {
     description: 'List deposits for a customer.',
-    inputSchema: { customerId: z.string().min(1), ...paging, status: z.string().optional() },
+    inputSchema: { customerId: z.string().min(1), ...paging, ...customerDepositFilters },
     annotations: readOnly,
   }, async ({ customerId, ...input }: any) => safeTool(() => page(customersService.getDeposits(tenantId, customerId, input), input)));
 
@@ -797,4 +807,3 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     annotations: write,
   }, async ({ deliveryId }: any) => safeTool(() => ({ data: webhooksService.retryDelivery(tenantId, deliveryId) })));
 }
-

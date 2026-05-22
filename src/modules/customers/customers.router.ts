@@ -83,6 +83,16 @@ const listQuerySchema = paginationQuery.extend({
   rel_identifier_value: z.string().min(1).max(200).optional(),
 });
 
+const depositsQuerySchema = paginationQuery.extend({
+  status: z.string().optional(),
+  depositId: z.string().min(1).max(100).optional(),
+  txHash: z.string().min(1).max(200).optional(),
+  address: z.string().min(1).max(200).optional(),
+  assetId: z.string().min(1).max(100).optional(),
+  minConfirmations: z.coerce.number().int().min(0).optional(),
+  maxConfirmations: z.coerce.number().int().min(0).optional(),
+});
+
 // ============================================================
 // Core Party CRUD
 // ============================================================
@@ -174,7 +184,7 @@ customersRouter.get('/:customerId/balances', (req: Request, res: Response, next:
 customersRouter.get('/:customerId/deposits', (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    const query = listQuerySchema.parse(req.query);
+    const query = depositsQuerySchema.parse(req.query);
     const result = customersService.getDeposits(tenantId(req), req.params['customerId']!, query, filter);
     res.json({
       data: result.data,

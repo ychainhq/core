@@ -16,6 +16,7 @@
  */
 import request from 'supertest';
 import { bootstrapApp, ADMIN_AUTH, AUTH, TEST_TENANT_ID, teardownDb } from './helpers';
+import { getDb } from '../../src/db/sqlite';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -59,6 +60,33 @@ async function issueSession(customerId: string): Promise<string> {
   const res = await request(app).post(`/v1/customers/${customerId}/sessions`).set(AUTH);
   expect(res.status).toBe(201);
   return res.body.data.accessToken;
+}
+
+function insertDeposit(customerId: string, overrides: Record<string, unknown> = {}) {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const id = String(overrides['id'] ?? `dep_mcp_${Math.random().toString(16).slice(2, 10)}`);
+  db.prepare(`
+    INSERT INTO deposits
+      (id, tenant_id, customer_id, chain_id, asset_id, wallet_id, address, amount_raw, amount_display,
+       tx_hash, vout, block_height, block_hash, confirmations, status, payment_request_id, metadata, created_at, updated_at)
+    VALUES (?, ?, ?, 'bitcoin', ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, ?, ?)
+  `).run(
+    id,
+    TEST_TENANT_ID,
+    customerId,
+    overrides['asset_id'] ?? 'bitcoin:BTC',
+    overrides['address'] ?? 'bcrt1qmcpdefault',
+    overrides['amount_raw'] ?? '100000000',
+    overrides['amount_display'] ?? '1.00000000',
+    overrides['tx_hash'] ?? `tx_mcp_${id}`,
+    overrides['vout'] ?? 0,
+    overrides['confirmations'] ?? 1,
+    overrides['status'] ?? 'confirmed',
+    now,
+    now
+  );
+  return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +150,68 @@ describe('tools/list — KYC tools registration', () => {
     // Tenant-only tools must NOT appear in customer context
     expect(names).not.toContain('chainapi_get_customer_aml_kyc');
     expect(names).not.toContain('chainapi_upsert_customer_aml_kyc');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deposit list filters are exposed through tenant and customer MCP tools
+// ---------------------------------------------------------------------------
+describe('MCP customer deposit filters', () => {
+  it('tenant tool filters customer deposits by txHash and confirmation range', async () => {
+    const customerId = await createCustomer();
+    const finalizedId = insertDeposit(customerId, {
+      id: 'dep_mcp_filter_finalized',
+      tx_hash: 'mcp_filter_tx_finalized',
+      address: 'bcrt1qmcpfilteralpha',
+      confirmations: 110,
+      status: 'finalized',
+    });
+    insertDeposit(customerId, {
+      id: 'dep_mcp_filter_confirmed',
+      tx_hash: 'mcp_filter_tx_confirmed',
+      address: 'bcrt1qmcpfilterbeta',
+      confirmations: 2,
+      status: 'confirmed',
+    });
+
+    const res = await tenantTool('chainapi_list_customer_deposits', {
+      customerId,
+      txHash: 'mcp_filter_tx_final*',
+      minConfirmations: 100,
+      maxConfirmations: 120,
+    });
+
+    expect(res.status).toBe(200);
+    const data = res.body.result.structuredContent.data;
+    expect(data.map((d: any) => d.id)).toEqual([finalizedId]);
+  });
+
+  it('customer tool filters authenticated customer deposits by address and status', async () => {
+    const customerId = await createCustomer();
+    const token = await issueSession(customerId);
+    const confirmedId = insertDeposit(customerId, {
+      id: 'dep_mcp_me_confirmed',
+      tx_hash: 'mcp_me_tx_confirmed',
+      address: 'bcrt1qmecustomerfilter',
+      confirmations: 4,
+      status: 'confirmed',
+    });
+    insertDeposit(customerId, {
+      id: 'dep_mcp_me_finalized',
+      tx_hash: 'mcp_me_tx_finalized',
+      address: 'bcrt1qmeother',
+      confirmations: 100,
+      status: 'finalized',
+    });
+
+    const res = await customerTool(token, 'chainapi_me_list_deposits', {
+      address: '*customerfilter',
+      status: 'confirmed',
+    });
+
+    expect(res.status).toBe(200);
+    const data = res.body.result.structuredContent.data;
+    expect(data.map((d: any) => d.id)).toEqual([confirmedId]);
   });
 });
 

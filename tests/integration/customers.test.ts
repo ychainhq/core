@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { bootstrapApp, AUTH, teardownDb } from './helpers';
+import { getDb } from '../../src/db/sqlite';
 
 const app = bootstrapApp();
 
@@ -192,14 +193,31 @@ describe('GET /v1/customers/:customerId/balances', () => {
 
 describe('GET /v1/customers/:customerId/deposits', () => {
   let customerId: string;
+  let finalizedDepositId: string;
+  let confirmedDepositId: string;
 
   beforeAll(async () => {
     const res = await request(app).post('/v1/customers').set(AUTH).send({ reference: 'deposits-sub-test' });
     customerId = res.body.data.id;
+    const db = getDb();
+    const now = new Date().toISOString();
+    finalizedDepositId = 'dep_filter_finalized';
+    confirmedDepositId = 'dep_filter_confirmed';
+    db.prepare(`
+      INSERT INTO deposits
+        (id, tenant_id, customer_id, chain_id, asset_id, wallet_id, address, amount_raw, amount_display,
+         tx_hash, vout, block_height, block_hash, confirmations, status, payment_request_id, metadata, created_at, updated_at)
+      VALUES
+        (?, 'tenant_default', ?, 'bitcoin', 'bitcoin:BTC', NULL, 'bcrt1qfilteralpha', '5000000000', '50.00000000',
+         'aaa_filter_hash_001', 0, NULL, NULL, 110, 'finalized', NULL, NULL, ?, ?),
+        (?, 'tenant_default', ?, 'bitcoin', 'bitcoin:BTC', NULL, 'bcrt1qfilterbeta', '100000000', '1.00000000',
+         'bbb_filter_hash_002', 1, NULL, NULL, 3, 'confirmed', NULL, NULL, ?, ?)
+    `).run(finalizedDepositId, customerId, now, now, confirmedDepositId, customerId, now, now);
   });
 
   it('returns empty deposits list for a new customer', async () => {
-    const res = await request(app).get(`/v1/customers/${customerId}/deposits`).set(AUTH);
+    const fresh = await request(app).post('/v1/customers').set(AUTH).send({ reference: 'empty-deposits-sub-test' });
+    const res = await request(app).get(`/v1/customers/${fresh.body.data.id}/deposits`).set(AUTH);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
     expect(res.body.data).toEqual([]);
@@ -212,6 +230,38 @@ describe('GET /v1/customers/:customerId/deposits', () => {
       .set(AUTH);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data)).toBe(true);
+  });
+
+  it('filters by depositId', async () => {
+    const res = await request(app)
+      .get(`/v1/customers/${customerId}/deposits?depositId=${finalizedDepositId}`)
+      .set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((d: any) => d.id)).toEqual([finalizedDepositId]);
+  });
+
+  it('filters by txHash wildcard', async () => {
+    const res = await request(app)
+      .get(`/v1/customers/${customerId}/deposits?txHash=aaa_filter*`)
+      .set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((d: any) => d.tx_hash)).toEqual(['aaa_filter_hash_001']);
+  });
+
+  it('filters by address wildcard and assetId', async () => {
+    const res = await request(app)
+      .get(`/v1/customers/${customerId}/deposits?address=*beta&assetId=bitcoin%3ABTC`)
+      .set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((d: any) => d.id)).toEqual([confirmedDepositId]);
+  });
+
+  it('filters by confirmation range', async () => {
+    const res = await request(app)
+      .get(`/v1/customers/${customerId}/deposits?minConfirmations=100&maxConfirmations=120`)
+      .set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((d: any) => d.id)).toEqual([finalizedDepositId]);
   });
 
   it('returns 404 for non-existent customer', async () => {
