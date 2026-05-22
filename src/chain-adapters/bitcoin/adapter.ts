@@ -176,6 +176,7 @@ export class BitcoinAdapter implements IChainAdapter {
 
   /**
    * Get UTXOs for an address using the tenant's watch-only wallet.
+   * Requires the address to be imported via importAddressForTenant first.
    */
   async getUtxosForAddress(address: string, minConfirmations = 0, tenantId: string): Promise<Utxo[]> {
     const walletName = btcWalletName(tenantId);
@@ -192,12 +193,31 @@ export class BitcoinAdapter implements IChainAdapter {
   }
 
   /**
-   * Import an address into the tenant's watch-only wallet for monitoring.
+   * Import a new address into the tenant's watch-only wallet.
+   * timestamp='now' means no historical rescan — BTC Core tracks from current block forward.
+   * Use this when the address is freshly derived and cannot have prior history.
    */
   async importAddressForTenant(address: string, tenantId: string, label = ''): Promise<void> {
     const walletName = btcWalletName(tenantId);
-    await this.rpc.importAddress(address, label, false, walletName);
+    await this.rpc.importDescriptors(
+      [{ desc: `addr(${address})`, timestamp: 'now', label }],
+      walletName
+    );
     logger.info('Address imported into tenant wallet', { tenantId, walletName, address });
+  }
+
+  /**
+   * Import an existing address with a specific scan start timestamp (Unix seconds).
+   * BTC Core rescans blocks from that time forward — used on startup reconciliation
+   * to recover addresses after a wallet reset.
+   */
+  async importAddressWithTimestamp(address: string, tenantId: string, label: string, timestampSec: number): Promise<void> {
+    const walletName = btcWalletName(tenantId);
+    await this.rpc.importDescriptors(
+      [{ desc: `addr(${address})`, timestamp: timestampSec, label }],
+      walletName
+    );
+    logger.info('Address reimported with timestamp', { tenantId, walletName, address, timestampSec });
   }
 
   async estimateSmartFee(targetBlocks: number): Promise<FeeEstimate> {

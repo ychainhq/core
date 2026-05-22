@@ -150,7 +150,7 @@ export class BitcoinRpcClient {
       false, // blank
       '',    // passphrase
       false, // avoidReuse
-      false, // descriptors
+      true,  // descriptors — required for importdescriptors + timestamp support
       false, // loadOnStartup (managed manually)
     ]);
   }
@@ -190,6 +190,28 @@ export class BitcoinRpcClient {
 
   async importAddress(address: string, label = '', rescan = false, walletName?: string): Promise<void> {
     await this.call('importaddress', [address, label, rescan], walletName);
+  }
+
+  async getDescriptorInfo(desc: string): Promise<{ descriptor: string; checksum: string }> {
+    return this.call('getdescriptorinfo', [desc]);
+  }
+
+  async importDescriptors(
+    descriptors: Array<{ desc: string; timestamp: number | 'now'; label?: string; internal?: boolean }>,
+    walletName?: string
+  ): Promise<void> {
+    // Resolve checksums for all descriptors that don't already have one
+    const withChecksums = await Promise.all(
+      descriptors.map(async (d) => {
+        if (d.desc.includes('#')) return d;
+        const info = await this.getDescriptorInfo(d.desc);
+        return { ...d, desc: info.descriptor };
+      })
+    );
+    const results: Array<{ success: boolean; error?: { code: number; message: string } }> =
+      await this.call('importdescriptors', [withChecksums], walletName);
+    const failed = results.find((r) => !r.success);
+    if (failed) throw new Error(`importdescriptors failed: ${JSON.stringify(failed.error)}`);
   }
 
   // ---- Transaction operations ----

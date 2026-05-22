@@ -3,6 +3,7 @@ import { getDb, closeDb } from './db/sqlite';
 import { runMigrations } from './db/migrate';
 import { createApp } from './app';
 import { startWorkers, stopWorkers } from './workers/index';
+import { reconcileBtcWallets } from './workers/btc-wallet-reconciler';
 import { logger } from './shared/logging/index';
 
 async function main(): Promise<void> {
@@ -10,6 +11,13 @@ async function main(): Promise<void> {
 
   // Initialize database
   runMigrations();
+
+  // Ensure BTC Core wallets exist and watched addresses are imported
+  try {
+    await reconcileBtcWallets();
+  } catch (err) {
+    logger.warn('BTC wallet reconciliation failed (non-fatal)', { error: String(err) });
+  }
 
   // Create Express app
   const app = createApp();
