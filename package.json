@@ -4,7 +4,7 @@
   "description": "Crypto REST API for Bitcoin payment processing and custody",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/db/migrations dist/db/migrations",
     "start": "node dist/main.js",
     "dev": "ts-node src/main.ts",
     "db:migrate": "ts-node src/db/migrate.ts",

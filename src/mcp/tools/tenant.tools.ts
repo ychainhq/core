@@ -123,11 +123,31 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }, async (input: any) => safeTool(() => ({ data: customersService.create(tenantId, input) })));
 
   server.registerTool('chainapi_list_customers', {
-    description: 'List tenant customers.',
+    description: 'List tenant customers with optional filters. All text search fields support * as wildcard (e.g. "jan*" = starts with, "*ski" = ends with, "jan" = substring).',
     inputSchema: {
       ...paging,
-      status: z.string().optional(),
-      party_type: z.enum(['natural_person', 'legal_entity']).optional(),
+      // customers table
+      status:            z.string().optional(),
+      party_type:        z.enum(['natural_person', 'legal_entity']).optional(),
+      id:                z.string().optional(),
+      reference:         z.string().optional(),
+      display_name:      z.string().optional(),
+      country_of_origin: z.string().min(2).max(2).optional(),
+      // customer_profiles
+      profile_given_name:    z.string().optional(),
+      profile_family_name:   z.string().optional(),
+      profile_middle_name:   z.string().optional(),
+      profile_business_name: z.string().optional(),
+      // customer_contact
+      contact_email: z.string().optional(),
+      contact_phone: z.string().optional(),
+      // customer_identifiers
+      identifier_type:  z.string().optional(),
+      identifier_value: z.string().optional(),
+      // customer_relationships external_party
+      rel_display_name:     z.string().optional(),
+      rel_identifier_type:  z.string().optional(),
+      rel_identifier_value: z.string().optional(),
     },
     annotations: readOnly,
   }, async (input: any) => safeTool(() => page(customersService.list(tenantId, input), input)));

@@ -58,9 +58,29 @@ const paginationQuery = z.object({
 });
 
 const listQuerySchema = paginationQuery.extend({
-  status: z.string().optional(),
-  party_type: PARTY_TYPE.optional(),
-  sort: z.string().optional(),
+  // customers table
+  status:           z.string().optional(),
+  party_type:       PARTY_TYPE.optional(),
+  sort:             z.string().optional(),
+  id:               z.string().optional(),
+  reference:        z.string().min(1).max(200).optional(),
+  display_name:     z.string().min(1).max(200).optional(),
+  country_of_origin:z.string().length(2).toUpperCase().optional(),
+  // customer_profiles
+  profile_given_name:   z.string().min(1).max(200).optional(),
+  profile_family_name:  z.string().min(1).max(200).optional(),
+  profile_middle_name:  z.string().min(1).max(200).optional(),
+  profile_business_name:z.string().min(1).max(200).optional(),
+  // customer_contact
+  contact_email: z.string().min(1).max(500).optional(),
+  contact_phone: z.string().min(1).max(50).optional(),
+  // customer_identifiers
+  identifier_type:  z.string().optional(),
+  identifier_value: z.string().min(1).max(200).optional(),
+  // customer_relationships external_party
+  rel_display_name:     z.string().min(1).max(500).optional(),
+  rel_identifier_type:  z.string().optional(),
+  rel_identifier_value: z.string().min(1).max(200).optional(),
 });
 
 // ============================================================

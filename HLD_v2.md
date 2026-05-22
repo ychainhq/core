@@ -655,7 +655,7 @@ Auth: `X-Admin-Key` header (lub Bearer z flagą is_admin). Dostępne wyłącznie
 | Method | Path | Opis |
 |--------|------|------|
 | POST | `/v1/customers` | Utwórz customera (Party aggregate — reference, party_type, display_name, country_of_origin, metadata) |
-| GET | `/v1/customers` | Lista customerów tenanta (filtry: status, party_type) |
+| GET | `/v1/customers` | Lista customerów tenanta. Query params: `status`, `party_type`, `id`, `reference`, `display_name`, `country_of_origin` (customers table); `profile_given_name`, `profile_family_name`, `profile_middle_name`, `profile_business_name` (EXISTS na customer_profiles); `contact_email`, `contact_phone` (EXISTS na customer_contact); `identifier_type`, `identifier_value` (EXISTS na customer_identifiers); `rel_display_name`, `rel_identifier_type`, `rel_identifier_value` (EXISTS + JSON_EXTRACT na customer_relationships.external_party). Filtry łączone AND. Pola tekstowe obsługują wildcard `*` → `%` SQL LIKE; bez `*` → implicit substring `%term%`. |
 | GET | `/v1/customers/:customerId` | Szczegóły customera |
 | PATCH | `/v1/customers/:customerId` | Aktualizuj customera (reference, status, display_name, country_of_origin, metadata) |
 | POST | `/v1/customers/:customerId/disable` | Dezaktywuj customera (status → disabled) |

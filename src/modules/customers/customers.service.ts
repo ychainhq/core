@@ -26,6 +26,10 @@ function mapCustomer(row: any): Customer {
   };
 }
 
+function wildcardToLike(term: string): string {
+  return term.includes('*') ? term.replace(/\*/g, '%') : `%${term}%`;
+}
+
 export const customersService = {
   create(
     tenantId: string,
@@ -101,8 +105,28 @@ export const customersService = {
       limit?: number;
       cursor?: string;
       sort?: string;
+      // customers table
       status?: string;
       party_type?: PartyType;
+      id?: string;
+      reference?: string;
+      display_name?: string;
+      country_of_origin?: string;
+      // customer_profiles (EXISTS)
+      profile_given_name?: string;
+      profile_family_name?: string;
+      profile_middle_name?: string;
+      profile_business_name?: string;
+      // customer_contact (EXISTS)
+      contact_email?: string;
+      contact_phone?: string;
+      // customer_identifiers (EXISTS)
+      identifier_type?: string;
+      identifier_value?: string;
+      // customer_relationships external_party JSON (EXISTS)
+      rel_display_name?: string;
+      rel_identifier_type?: string;
+      rel_identifier_value?: string;
     } = {},
     accessFilter?: AccessFilter
   ): { data: Customer[]; nextCursor: string | null } {
@@ -118,8 +142,59 @@ export const customersService = {
     const params: unknown[] = [...sq.fragment.params];
     let query = `SELECT * FROM customers c WHERE 1=1 ${sq.fragment.sql}`;
 
-    if (filters.status)     { query += ' AND c.status = ?';     params.push(filters.status); }
-    if (filters.party_type) { query += ' AND c.party_type = ?'; params.push(filters.party_type); }
+    // --- customers table filters ---
+    if (filters.status)           { query += ' AND c.status = ?';           params.push(filters.status); }
+    if (filters.party_type)       { query += ' AND c.party_type = ?';       params.push(filters.party_type); }
+    if (filters.id)               { query += ' AND c.id = ?';               params.push(filters.id); }
+    if (filters.reference)        { query += ' AND c.reference LIKE ?';     params.push(wildcardToLike(filters.reference)); }
+    if (filters.display_name)     { query += ' AND c.display_name LIKE ?';  params.push(wildcardToLike(filters.display_name)); }
+    if (filters.country_of_origin){ query += ' AND c.country_of_origin = ?'; params.push(filters.country_of_origin.toUpperCase()); }
+
+    // --- customer_profiles (1:1, EXISTS) ---
+    const profileClauses: string[] = [];
+    const profileParams: unknown[] = [];
+    if (filters.profile_given_name)   { profileClauses.push('cp.given_name LIKE ?');  profileParams.push(wildcardToLike(filters.profile_given_name)); }
+    if (filters.profile_family_name)  { profileClauses.push('cp.family_name LIKE ?'); profileParams.push(wildcardToLike(filters.profile_family_name)); }
+    if (filters.profile_middle_name)  { profileClauses.push('cp.middle_name LIKE ?'); profileParams.push(wildcardToLike(filters.profile_middle_name)); }
+    if (filters.profile_business_name) {
+      profileClauses.push('(cp.business_name LIKE ? OR cp.legal_name LIKE ?)');
+      profileParams.push(wildcardToLike(filters.profile_business_name), wildcardToLike(filters.profile_business_name));
+    }
+    if (profileClauses.length > 0) {
+      query += ` AND EXISTS (SELECT 1 FROM customer_profiles cp WHERE cp.customer_id = c.id AND ${profileClauses.join(' AND ')})`;
+      params.push(...profileParams);
+    }
+
+    // --- customer_contact (1:1, EXISTS) ---
+    const contactClauses: string[] = [];
+    const contactParams: unknown[] = [];
+    if (filters.contact_email) { contactClauses.push('cc.email LIKE ?'); contactParams.push(wildcardToLike(filters.contact_email)); }
+    if (filters.contact_phone) { contactClauses.push('cc.phone LIKE ?'); contactParams.push(wildcardToLike(filters.contact_phone)); }
+    if (contactClauses.length > 0) {
+      query += ` AND EXISTS (SELECT 1 FROM customer_contact cc WHERE cc.customer_id = c.id AND ${contactClauses.join(' AND ')})`;
+      params.push(...contactParams);
+    }
+
+    // --- customer_identifiers (1:many, EXISTS) ---
+    const identClauses: string[] = [];
+    const identParams: unknown[] = [];
+    if (filters.identifier_type)  { identClauses.push('LOWER(ci.type) = ?'); identParams.push(filters.identifier_type.toLowerCase()); }
+    if (filters.identifier_value) { identClauses.push('ci.value LIKE ?');    identParams.push(wildcardToLike(filters.identifier_value)); }
+    if (identClauses.length > 0) {
+      query += ` AND EXISTS (SELECT 1 FROM customer_identifiers ci WHERE ci.customer_id = c.id AND ${identClauses.join(' AND ')})`;
+      params.push(...identParams);
+    }
+
+    // --- customer_relationships external_party JSON (1:many, EXISTS + JSON_EXTRACT) ---
+    const relClauses: string[] = [];
+    const relParams: unknown[] = [];
+    if (filters.rel_display_name)    { relClauses.push("JSON_EXTRACT(cr.external_party, '$.display_name') LIKE ?");      relParams.push(wildcardToLike(filters.rel_display_name)); }
+    if (filters.rel_identifier_type) { relClauses.push("LOWER(JSON_EXTRACT(cr.external_party, '$.identifier_type')) = ?"); relParams.push(filters.rel_identifier_type.toLowerCase()); }
+    if (filters.rel_identifier_value){ relClauses.push("JSON_EXTRACT(cr.external_party, '$.identifier_value') LIKE ?");  relParams.push(wildcardToLike(filters.rel_identifier_value)); }
+    if (relClauses.length > 0) {
+      query += ` AND EXISTS (SELECT 1 FROM customer_relationships cr WHERE cr.customer_id = c.id AND ${relClauses.join(' AND ')})`;
+      params.push(...relParams);
+    }
 
     if (filters.cursor) {
       const actorId = filter.type === 'all' ? null : (filter as { actorId: string }).actorId;
