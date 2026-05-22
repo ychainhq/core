@@ -7,6 +7,7 @@ import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { satoshiToBtc } from '../shared/money/index';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
+import { getDb } from '../db/sqlite';
 
 /**
  * DepositMonitorWorker
@@ -86,11 +87,125 @@ export class DepositMonitorWorker {
   }
 
   private getCustomerIdForAddress(address: string, chainId: string): string | null {
-    const db = require('../db/sqlite').getDb();
+    const db = getDb();
     const row = db
       .prepare('SELECT customer_id FROM addresses WHERE chain_id = ? AND address = ? LIMIT 1')
       .get(chainId, address) as { customer_id: string | null } | undefined;
     return row?.customer_id ?? null;
+  }
+
+  private getDepositLedgerAccount(
+    tenantId: string,
+    customerId: string | null,
+    walletId: string | undefined,
+    assetId: string
+  ) {
+    return customerId
+      ? ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId)
+      : (walletId ? ledgerService.findAccountByWalletAndAsset(walletId, assetId) : null);
+  }
+
+  private ledgerEntryExists(ledgerAccountId: string, type: string, depositId: string): boolean {
+    const db = getDb();
+    const row = db
+      .prepare(`
+        SELECT id FROM ledger_entries
+        WHERE ledger_account_id = ?
+          AND type = ?
+          AND reference_type = 'deposit'
+          AND reference_id = ?
+        LIMIT 1
+      `)
+      .get(ledgerAccountId, type, depositId);
+    return Boolean(row);
+  }
+
+  private ensureDepositPendingLedgerEntry(input: {
+    tenantId: string;
+    customerId: string | null;
+    walletId: string | undefined;
+    assetId: string;
+    depositId: string;
+    amountRaw: string;
+  }): void {
+    const ledgerAccount = this.getDepositLedgerAccount(input.tenantId, input.customerId, input.walletId, input.assetId);
+    if (!ledgerAccount) return;
+
+    const hasPending = this.ledgerEntryExists(ledgerAccount.id, 'deposit_pending', input.depositId);
+    const hasSettled = this.ledgerEntryExists(ledgerAccount.id, 'deposit_settled', input.depositId);
+    if (hasPending || hasSettled) return;
+
+    try {
+      ledgerService.addEntry({
+        ledgerAccountId: ledgerAccount.id,
+        type: 'deposit_pending',
+        amountRaw: input.amountRaw,
+        referenceType: 'deposit',
+        referenceId: input.depositId,
+        isPending: true,
+      });
+    } catch (err) {
+      logger.warn('Failed to create ledger entry for deposit', { depositId: input.depositId, error: String(err) });
+    }
+  }
+
+  private ensureDepositConfirmedEffects(input: {
+    tenantId: string;
+    customerId: string | null;
+    walletId: string | undefined;
+    chainId: string;
+    assetId: string;
+    depositId: string;
+    txHash: string;
+    address: string;
+    amountRaw: string;
+    amountDisplay: string;
+    confirmations: number;
+    status: string;
+  }): void {
+    this.ensureDepositPendingLedgerEntry(input);
+
+    webhooksService.queueEventOnce('deposit.confirmed', {
+      depositId: input.depositId,
+      txHash: input.txHash,
+      address: input.address,
+      amount: input.amountDisplay,
+      amountRaw: input.amountRaw,
+      confirmations: input.confirmations,
+      status: input.status,
+    }, { depositId: input.depositId }, input.chainId, input.walletId, input.tenantId);
+
+    const deposit = depositsService.getByIdInternal(input.depositId);
+    if (deposit.payment_request_id) {
+      paymentRequestsService.updateStatus(deposit.payment_request_id, 'paid');
+      webhooksService.queueEventOnce('payment_request.paid', {
+        paymentRequestId: deposit.payment_request_id,
+        depositId: input.depositId,
+        txHash: input.txHash,
+        amount: input.amountDisplay,
+        confirmations: input.confirmations,
+      }, { depositId: input.depositId, paymentRequestId: deposit.payment_request_id }, input.chainId, input.walletId, input.tenantId);
+    }
+
+    const ledgerAccount = this.getDepositLedgerAccount(input.tenantId, input.customerId, input.walletId, input.assetId);
+    if (!ledgerAccount) return;
+
+    if (this.ledgerEntryExists(ledgerAccount.id, 'deposit_settled', input.depositId)) {
+      return;
+    }
+
+    try {
+      ledgerService.addEntry({
+        ledgerAccountId: ledgerAccount.id,
+        type: 'deposit_settled',
+        amountRaw: input.amountRaw,
+        referenceType: 'deposit',
+        referenceId: input.depositId,
+        isPending: false,
+      });
+    } catch (err) {
+      logger.warn('Failed to create settled ledger entry', { depositId: input.depositId, error: String(err) });
+    }
   }
 
   private async processAddress(
@@ -152,6 +267,7 @@ export class DepositMonitorWorker {
         confirmations,
         status,
       });
+      const isConfirmationEligible = status === 'confirmed' || status === 'finalized';
 
       if (isNew) {
         logger.info('New deposit detected', { depositId: deposit.id, txHash: utxo.txHash, address, amount: amountDisplay });
@@ -167,48 +283,36 @@ export class DepositMonitorWorker {
           paymentRequestsService.updateStatus(pr.id, newPrStatus);
 
           // Emit payment request webhook
-          webhooksService.queueEvent('payment_request.detected', {
+          webhooksService.queueEventOnce('payment_request.detected', {
             paymentRequestId: pr.id,
             depositId: deposit.id,
             txHash: utxo.txHash,
             amount: amountDisplay,
             confirmations,
-          }, chainId, walletId, tenantId);
+          }, { depositId: deposit.id, paymentRequestId: pr.id }, chainId, walletId, tenantId);
 
           if (newPrStatus === 'paid') {
-            webhooksService.queueEvent('payment_request.paid', {
+            webhooksService.queueEventOnce('payment_request.paid', {
               paymentRequestId: pr.id,
               depositId: deposit.id,
               txHash: utxo.txHash,
               amount: amountDisplay,
               confirmations,
-            }, chainId, walletId, tenantId);
+            }, { depositId: deposit.id, paymentRequestId: pr.id }, chainId, walletId, tenantId);
           }
         }
 
-        // Create ledger entry — prefer per-customer account, fall back to wallet aggregate
-        {
-          const ledgerAccount = customerId
-            ? ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId)
-            : (walletId ? ledgerService.findAccountByWalletAndAsset(walletId, assetId) : null);
-          if (ledgerAccount) {
-            try {
-              ledgerService.addEntry({
-                ledgerAccountId: ledgerAccount.id,
-                type: 'deposit_pending',
-                amountRaw,
-                referenceType: 'deposit',
-                referenceId: deposit.id,
-                isPending: true,
-              });
-            } catch (err) {
-              logger.warn('Failed to create ledger entry for deposit', { depositId: deposit.id, error: String(err) });
-            }
-          }
-        }
+        this.ensureDepositPendingLedgerEntry({
+          tenantId,
+          customerId,
+          walletId,
+          assetId,
+          depositId: deposit.id,
+          amountRaw,
+        });
 
         // Emit deposit webhook
-        webhooksService.queueEvent('deposit.detected', {
+        webhooksService.queueEventOnce('deposit.detected', {
           depositId: deposit.id,
           txHash: utxo.txHash,
           address,
@@ -216,55 +320,60 @@ export class DepositMonitorWorker {
           amountRaw,
           confirmations,
           status,
-        }, chainId, walletId, tenantId);
+        }, { depositId: deposit.id }, chainId, walletId, tenantId);
+
+        if (isConfirmationEligible) {
+          this.ensureDepositConfirmedEffects({
+            tenantId,
+            customerId,
+            walletId,
+            chainId,
+            assetId,
+            depositId: deposit.id,
+            txHash: utxo.txHash,
+            address,
+            amountRaw,
+            amountDisplay,
+            confirmations,
+            status,
+          });
+        }
       } else {
         // Update existing deposit — check for confirmation status change
         const existing = existingDeposits.find((d) => `${d.tx_hash}:${d.vout}` === key)!;
 
         if (existing.status !== status || existing.confirmations !== confirmations) {
-          // Status changed — emit webhook if newly confirmed
-          if (status === 'confirmed' && existing.status !== 'confirmed' && existing.status !== 'finalized') {
-            webhooksService.queueEvent('deposit.confirmed', {
+          if (isConfirmationEligible) {
+            this.ensureDepositConfirmedEffects({
+              tenantId,
+              customerId,
+              walletId,
+              chainId,
+              assetId,
               depositId: deposit.id,
               txHash: utxo.txHash,
               address,
-              amount: amountDisplay,
+              amountRaw,
+              amountDisplay,
               confirmations,
               status,
-            }, chainId, walletId, tenantId);
-
-            // Update linked payment request
-            if (deposit.payment_request_id) {
-              paymentRequestsService.updateStatus(deposit.payment_request_id, 'paid');
-              webhooksService.queueEvent('payment_request.paid', {
-                paymentRequestId: deposit.payment_request_id,
-                depositId: deposit.id,
-                txHash: utxo.txHash,
-                confirmations,
-              }, chainId, walletId, tenantId);
-            }
-
-            // Settle ledger entry — prefer per-customer account
-            {
-              const ledgerAccount = customerId
-                ? ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId)
-                : (walletId ? ledgerService.findAccountByWalletAndAsset(walletId, assetId) : null);
-              if (ledgerAccount) {
-                try {
-                  ledgerService.addEntry({
-                    ledgerAccountId: ledgerAccount.id,
-                    type: 'deposit_settled',
-                    amountRaw,
-                    referenceType: 'deposit',
-                    referenceId: deposit.id,
-                    isPending: false,
-                  });
-                } catch (err) {
-                  logger.warn('Failed to create settled ledger entry', { depositId: deposit.id, error: String(err) });
-                }
-              }
-            }
+            });
           }
+        } else if (isConfirmationEligible) {
+          this.ensureDepositConfirmedEffects({
+            tenantId,
+            customerId,
+            walletId,
+            chainId,
+            assetId,
+            depositId: deposit.id,
+            txHash: utxo.txHash,
+            address,
+            amountRaw,
+            amountDisplay,
+            confirmations,
+            status,
+          });
         }
       }
     }

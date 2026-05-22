@@ -32,6 +32,11 @@ export interface WebhookDelivery {
   updated_at: number;
 }
 
+type WebhookEventDedupe = {
+  depositId?: string;
+  paymentRequestId?: string;
+};
+
 function mapWebhook(row: any): Webhook {
   return {
     ...row,
@@ -51,6 +56,20 @@ function mapDelivery(row: any): WebhookDelivery {
     created_at: toUnixTs(row.created_at),
     updated_at: toUnixTs(row.updated_at),
   };
+}
+
+function payloadMatchesDedupe(payload: unknown, dedupe: WebhookEventDedupe): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  const data = payload as Record<string, unknown>;
+
+  if (dedupe.depositId !== undefined && data['depositId'] !== dedupe.depositId) {
+    return false;
+  }
+  if (dedupe.paymentRequestId !== undefined && data['paymentRequestId'] !== dedupe.paymentRequestId) {
+    return false;
+  }
+
+  return true;
 }
 
 export const webhooksService = {
@@ -185,6 +204,19 @@ export const webhooksService = {
    * Workers pass tenantId from the watched_address record.
    */
   queueEvent(eventType: string, payload: unknown, chain?: string, walletId?: string, tenantId?: string): void {
+    webhooksService.queueEventInternal(eventType, payload, chain, walletId, tenantId);
+  },
+
+  /**
+   * Queue an event once per matching webhook for a logical business event.
+   * The dedupe key is intentionally based on stable payload identifiers, not
+   * delivery status, so retries and failed deliveries do not create duplicates.
+   */
+  queueEventOnce(eventType: string, payload: unknown, dedupe: WebhookEventDedupe, chain?: string, walletId?: string, tenantId?: string): void {
+    webhooksService.queueEventInternal(eventType, payload, chain, walletId, tenantId, dedupe);
+  },
+
+  queueEventInternal(eventType: string, payload: unknown, chain?: string, walletId?: string, tenantId?: string, dedupe?: WebhookEventDedupe): void {
     const db = getDb();
     const now = new Date().toISOString();
 
@@ -218,6 +250,24 @@ export const webhooksService = {
 
       const deliveryId = `wdlv_${crypto.randomBytes(8).toString('hex')}`;
       const eventId = `evt_${crypto.randomBytes(8).toString('hex')}`;
+
+      if (dedupe && Object.keys(dedupe).length > 0) {
+        const existingDeliveries = db
+          .prepare('SELECT payload FROM webhook_deliveries WHERE webhook_id = ? AND event_type = ?')
+          .all(webhook.id, eventType) as { payload: string }[];
+
+        const alreadyQueued = existingDeliveries.some((delivery) => {
+          try {
+            return payloadMatchesDedupe(JSON.parse(delivery.payload), dedupe);
+          } catch {
+            return false;
+          }
+        });
+
+        if (alreadyQueued) {
+          continue;
+        }
+      }
 
       db.prepare(`
         INSERT INTO webhook_deliveries (id, webhook_id, event_id, event_type, payload, status, attempts, next_retry_at, created_at, updated_at)
