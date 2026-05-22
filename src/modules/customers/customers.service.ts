@@ -7,6 +7,10 @@ import { ledgerService } from '../ledger/ledger.service';
 import { customersAmlKycService } from './customers-aml-kyc.service';
 import { customersDataGovernanceService } from './customers-data-governance.service';
 import { Customer, CustomerBalance, PartyType, PartyStatus } from './customers.types';
+import { AccessFilter } from '../../shared/actor-auth/types';
+import { SecuredQuery } from '../../shared/actor-auth/query';
+import { normalizeSort, sortToOrderBy, encodeCursor, decodeCursor, cursorToSql } from '../../shared/actor-auth/sort';
+import { CustomerEntityDef } from '../../shared/actor-auth/entity-defs';
 
 export type { Customer, CustomerBalance } from './customers.types';
 
@@ -31,6 +35,8 @@ export const customersService = {
       display_name?: string | null;
       country_of_origin?: string | null;
       metadata?: Record<string, unknown>;
+      ownerUserId?: string | null;
+      ownerTeamId?: string | null;
     }
   ): Customer {
     const db = getDb();
@@ -47,8 +53,8 @@ export const customersService = {
     db.prepare(`
       INSERT INTO customers
         (id, tenant_id, reference, party_type, display_name, country_of_origin,
-         status, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+         status, metadata, owner_user_id, owner_team_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
     `).run(
       id,
       tenantId,
@@ -57,6 +63,8 @@ export const customersService = {
       input.display_name ?? null,
       input.country_of_origin ?? null,
       input.metadata ? JSON.stringify(input.metadata) : null,
+      input.ownerUserId ?? null,
+      input.ownerTeamId ?? null,
       now,
       now
     );
@@ -83,6 +91,7 @@ export const customersService = {
     customersAmlKycService.provision(tenantId, id);
     customersDataGovernanceService.provision(tenantId, id);
 
+    // getById without access filter — we just created it, always visible
     return customersService.getById(tenantId, id);
   },
 
@@ -91,36 +100,69 @@ export const customersService = {
     filters: {
       limit?: number;
       cursor?: string;
+      sort?: string;
       status?: string;
       party_type?: PartyType;
-    } = {}
+    } = {},
+    accessFilter?: AccessFilter
   ): { data: Customer[]; nextCursor: string | null } {
     const db = getDb();
-    const limit = Math.min(filters.limit ?? 20, 100);
-    let query = 'SELECT * FROM customers WHERE tenant_id = ?';
-    const params: unknown[] = [tenantId];
+    const filter: AccessFilter = accessFilter ?? { type: 'all', tenantId };
+    const sq = SecuredQuery.for(filter, 'c');
 
-    if (filters.status)     { query += ' AND status = ?';     params.push(filters.status); }
-    if (filters.party_type) { query += ' AND party_type = ?'; params.push(filters.party_type); }
-    if (filters.cursor)     { query += ' AND id > ?';         params.push(filters.cursor); }
-    query += ' ORDER BY id LIMIT ?';
+    if (sq.isDenied) return { data: [], nextCursor: null };
+
+    const limit = Math.min(filters.limit ?? 20, 100);
+    const sort = normalizeSort(filters.sort, CustomerEntityDef.sortPolicy);
+
+    const params: unknown[] = [...sq.fragment.params];
+    let query = `SELECT * FROM customers c WHERE 1=1 ${sq.fragment.sql}`;
+
+    if (filters.status)     { query += ' AND c.status = ?';     params.push(filters.status); }
+    if (filters.party_type) { query += ' AND c.party_type = ?'; params.push(filters.party_type); }
+
+    if (filters.cursor) {
+      const actorId = filter.type === 'all' ? null : (filter as { actorId: string }).actorId;
+      const decoded = decodeCursor(filters.cursor, sort, tenantId, actorId);
+      const { sql: cSql, params: cParams } = cursorToSql(decoded, sort);
+      query += ` ${cSql}`;
+      params.push(...cParams);
+    }
+
+    query += ` ORDER BY ${sortToOrderBy(sort)} LIMIT ?`;
     params.push(limit + 1);
 
     const rows = db.prepare(query).all(...params) as any[];
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
+    let nextCursor: string | null = null;
+    if (hasMore && items.length > 0) {
+      const lastRow = items[items.length - 1];
+      const actorId = filter.type === 'all' ? null : (filter as { actorId: string }).actorId;
+      nextCursor = encodeCursor(lastRow, sort, tenantId, actorId);
+    }
+
     return {
       data: items.map(mapCustomer),
-      nextCursor: hasMore ? items[items.length - 1].id : null,
+      nextCursor,
     };
   },
 
-  getById(tenantId: string, id: string): Customer {
+  getById(tenantId: string, id: string, accessFilter?: AccessFilter): Customer {
     const db = getDb();
+
+    // When no access filter supplied (internal calls, sub-resource guards with no actor),
+    // fall back to tenant-only filter for backward compatibility.
+    const filter: AccessFilter = accessFilter ?? { type: 'all', tenantId };
+    const sq = SecuredQuery.for(filter, 'c');
+
+    // 'deny' → same 404 as "not found" — do not reveal existence
+    if (sq.isDenied) throw new NotFoundError('Customer', id);
+
     const row = db
-      .prepare('SELECT * FROM customers WHERE id = ? AND tenant_id = ?')
-      .get(id, tenantId);
+      .prepare(`SELECT * FROM customers c WHERE c.id = ? ${sq.fragment.sql}`)
+      .get(id, ...sq.fragment.params);
     if (!row) throw new NotFoundError('Customer', id);
     return mapCustomer(row);
   },
@@ -143,10 +185,19 @@ export const customersService = {
       display_name?: string | null;
       country_of_origin?: string | null;
       metadata?: Record<string, unknown>;
-    }
+    },
+    accessFilter?: AccessFilter
   ): Customer {
     const db = getDb();
-    customersService.getById(tenantId, id); // 404 guard
+    const filter: AccessFilter = accessFilter ?? { type: 'all', tenantId };
+    const sq = SecuredQuery.for(filter, 'c');
+
+    // 404 guard with access filter (deny → 404)
+    if (sq.isDenied) throw new NotFoundError('Customer', id);
+    const existing = db
+      .prepare(`SELECT id FROM customers c WHERE c.id = ? ${sq.fragment.sql}`)
+      .get(id, ...sq.fragment.params);
+    if (!existing) throw new NotFoundError('Customer', id);
 
     if (input.reference) {
       const dup = db
@@ -159,25 +210,32 @@ export const customersService = {
     const sets: string[] = [];
     const params: unknown[] = [];
 
-    if (input.reference !== undefined)        { sets.push('reference = ?');        params.push(input.reference); }
-    if (input.status !== undefined)           { sets.push('status = ?');           params.push(input.status); }
-    if (input.display_name !== undefined)     { sets.push('display_name = ?');     params.push(input.display_name); }
-    if (input.country_of_origin !== undefined){ sets.push('country_of_origin = ?');params.push(input.country_of_origin); }
-    if (input.metadata !== undefined)         { sets.push('metadata = ?');         params.push(JSON.stringify(input.metadata)); }
+    if (input.reference !== undefined)         { sets.push('reference = ?');         params.push(input.reference); }
+    if (input.status !== undefined)            { sets.push('status = ?');            params.push(input.status); }
+    if (input.display_name !== undefined)      { sets.push('display_name = ?');      params.push(input.display_name); }
+    if (input.country_of_origin !== undefined) { sets.push('country_of_origin = ?'); params.push(input.country_of_origin); }
+    if (input.metadata !== undefined)          { sets.push('metadata = ?');          params.push(JSON.stringify(input.metadata)); }
     if (sets.length === 0) return customersService.getById(tenantId, id);
 
     sets.push('updated_at = ?');
-    params.push(now, id, tenantId);
-    db.prepare(`UPDATE customers SET ${sets.join(', ')} WHERE id = ? AND tenant_id = ?`).run(...params);
+    params.push(now);
+
+    // Access filter in the UPDATE WHERE — prevents race condition where a separate
+    // SELECT check passes but the record ownership changes before UPDATE executes.
+    const updateSq = SecuredQuery.for(filter, 'customers');
+    db.prepare(
+      `UPDATE customers SET ${sets.join(', ')} WHERE id = ? ${updateSq.fragment.sql}`
+    ).run(...params, id, ...updateSq.fragment.params);
+
     return customersService.getById(tenantId, id);
   },
 
-  disable(tenantId: string, id: string): Customer {
-    return customersService.update(tenantId, id, { status: 'disabled' });
+  disable(tenantId: string, id: string, accessFilter?: AccessFilter): Customer {
+    return customersService.update(tenantId, id, { status: 'disabled' }, accessFilter);
   },
 
-  getBalances(tenantId: string, customerId: string): CustomerBalance[] {
-    customersService.getById(tenantId, customerId); // 404 guard
+  getBalances(tenantId: string, customerId: string, accessFilter?: AccessFilter): CustomerBalance[] {
+    customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
     const db = getDb();
 
     const accounts = db
@@ -218,9 +276,10 @@ export const customersService = {
   getDeposits(
     tenantId: string,
     customerId: string,
-    filters: { limit?: number; cursor?: string; status?: string } = {}
+    filters: { limit?: number; cursor?: string; status?: string } = {},
+    accessFilter?: AccessFilter
   ): { data: any[]; nextCursor: string | null } {
-    customersService.getById(tenantId, customerId); // 404 guard
+    customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
     const db = getDb();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM deposits WHERE tenant_id = ? AND customer_id = ?';
@@ -244,9 +303,10 @@ export const customersService = {
   getAddresses(
     tenantId: string,
     customerId: string,
-    filters: { limit?: number; cursor?: string } = {}
+    filters: { limit?: number; cursor?: string } = {},
+    accessFilter?: AccessFilter
   ): { data: any[]; nextCursor: string | null } {
-    customersService.getById(tenantId, customerId); // 404 guard
+    customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
     const db = getDb();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM addresses WHERE tenant_id = ? AND customer_id = ?';

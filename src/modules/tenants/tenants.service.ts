@@ -30,6 +30,8 @@ export interface TenantConfig {
   btc_next_derivation_index: number;
   btc_sweep_threshold_sats: string;
   customer_session_ttl_seconds: number;
+  /** HMAC-SHA256 secret used to sign/verify X-Actor-Token JWTs issued by the tenant. */
+  actor_token_secret: string | null;
   updated_at: number;
 }
 
@@ -51,6 +53,7 @@ function mapConfig(row: any): TenantConfig {
     ...row,
     updated_at: toUnixTs(row.updated_at),
     customer_session_ttl_seconds: row.customer_session_ttl_seconds ?? 3600,
+    actor_token_secret: row.actor_token_secret ?? null,
   };
 }
 
@@ -374,6 +377,7 @@ export const tenantsService = {
       btcXpub?: string | null;
       btcSweepThresholdSats?: string;
       customerSessionTtlSeconds?: number;
+      actorTokenSecret?: string | null;
       btcHotAddress?: string;
       btcColdAddress?: string;
     }
@@ -417,6 +421,7 @@ export const tenantsService = {
       if ('btcXpub' in input) { sets.push('btc_xpub = ?'); params.push(input.btcXpub ?? null); }
       if (input.btcSweepThresholdSats !== undefined) { sets.push('btc_sweep_threshold_sats = ?'); params.push(input.btcSweepThresholdSats); }
       if (input.customerSessionTtlSeconds !== undefined) { sets.push('customer_session_ttl_seconds = ?'); params.push(input.customerSessionTtlSeconds); }
+      if ('actorTokenSecret' in input) { sets.push('actor_token_secret = ?'); params.push(input.actorTokenSecret ?? null); }
 
       if (sets.length > 0) {
         sets.push('updated_at = ?');

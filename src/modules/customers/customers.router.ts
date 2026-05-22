@@ -11,11 +11,36 @@ import { customersDocumentsService } from './customers-documents.service';
 import { depositAddressService } from './deposit-address.service';
 import { issueCustomerToken } from '../../shared/customer-auth/jwt.service';
 import { tenantsService } from '../tenants/tenants.service';
+import { AccessFilter } from '../../shared/actor-auth/types';
+import { resolvePermission } from '../../shared/actor-auth/context';
+import { buildAccessFilter, adminAllFilter } from '../../shared/actor-auth/filter';
+import { ApiError } from '../../shared/errors/index';
 
 export const customersRouter = Router();
 
+// ============================================================
+// Access filter helpers
+// ============================================================
+
 function tenantId(req: Request): string {
   return (req as any).tenantId as string;
+}
+
+/**
+ * Builds the access filter for a given entity action.
+ * - No X-Actor-Token → full tenant access (admin all)
+ * - With X-Actor-Token → RBAC rules from token
+ * Throws 403 if actor has no permission at all.
+ */
+function getAccessFilter(req: Request, action: 'read' | 'write'): AccessFilter {
+  const ctx = req.actorContext;
+  if (!ctx) return adminAllFilter(tenantId(req));
+
+  const resolved = resolvePermission(ctx, 'customer', action);
+  if (resolved.level === 'none') {
+    throw new ApiError(403, 'INSUFFICIENT_PERMISSIONS', `Actor lacks customer:${action} permission`);
+  }
+  return buildAccessFilter(resolved, ctx);
 }
 
 // ============================================================
@@ -35,6 +60,7 @@ const paginationQuery = z.object({
 const listQuerySchema = paginationQuery.extend({
   status: z.string().optional(),
   party_type: PARTY_TYPE.optional(),
+  sort: z.string().optional(),
 });
 
 // ============================================================
@@ -60,8 +86,16 @@ const updateSchema = z.object({
 // POST /v1/customers
 customersRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Require write permission to create
+    getAccessFilter(req, 'write'); // throws 403 if no permission
+
     const body = createSchema.parse(req.body);
-    const customer = customersService.create(tenantId(req), body);
+    const ctx = req.actorContext;
+    const customer = customersService.create(tenantId(req), {
+      ...body,
+      ownerUserId: ctx?.actorId ?? null,
+      ownerTeamId: ctx?.teams[0] ?? null,
+    });
     res.status(201).json({ data: customer });
   } catch (err) { next(err); }
 });
@@ -69,8 +103,9 @@ customersRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
 // GET /v1/customers
 customersRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
     const query = listQuerySchema.parse(req.query);
-    const result = customersService.list(tenantId(req), query);
+    const result = customersService.list(tenantId(req), query, filter);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -81,7 +116,8 @@ customersRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 // GET /v1/customers/:customerId
 customersRouter.get('/:customerId', (req: Request, res: Response, next: NextFunction) => {
   try {
-    const customer = customersService.getById(tenantId(req), req.params['customerId']!);
+    const filter = getAccessFilter(req, 'read');
+    const customer = customersService.getById(tenantId(req), req.params['customerId']!, filter);
     res.json({ data: customer });
   } catch (err) { next(err); }
 });
@@ -89,8 +125,9 @@ customersRouter.get('/:customerId', (req: Request, res: Response, next: NextFunc
 // PATCH /v1/customers/:customerId
 customersRouter.patch('/:customerId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
     const body = updateSchema.parse(req.body);
-    const customer = customersService.update(tenantId(req), req.params['customerId']!, body);
+    const customer = customersService.update(tenantId(req), req.params['customerId']!, body, filter);
     res.json({ data: customer });
   } catch (err) { next(err); }
 });
@@ -98,7 +135,8 @@ customersRouter.patch('/:customerId', (req: Request, res: Response, next: NextFu
 // POST /v1/customers/:customerId/disable
 customersRouter.post('/:customerId/disable', (req: Request, res: Response, next: NextFunction) => {
   try {
-    const customer = customersService.disable(tenantId(req), req.params['customerId']!);
+    const filter = getAccessFilter(req, 'write');
+    const customer = customersService.disable(tenantId(req), req.params['customerId']!, filter);
     res.json({ data: customer });
   } catch (err) { next(err); }
 });
@@ -106,7 +144,8 @@ customersRouter.post('/:customerId/disable', (req: Request, res: Response, next:
 // GET /v1/customers/:customerId/balances
 customersRouter.get('/:customerId/balances', (req: Request, res: Response, next: NextFunction) => {
   try {
-    const balances = customersService.getBalances(tenantId(req), req.params['customerId']!);
+    const filter = getAccessFilter(req, 'read');
+    const balances = customersService.getBalances(tenantId(req), req.params['customerId']!, filter);
     res.json({ data: balances });
   } catch (err) { next(err); }
 });
@@ -114,8 +153,9 @@ customersRouter.get('/:customerId/balances', (req: Request, res: Response, next:
 // GET /v1/customers/:customerId/deposits
 customersRouter.get('/:customerId/deposits', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
     const query = listQuerySchema.parse(req.query);
-    const result = customersService.getDeposits(tenantId(req), req.params['customerId']!, query);
+    const result = customersService.getDeposits(tenantId(req), req.params['customerId']!, query, filter);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -126,8 +166,9 @@ customersRouter.get('/:customerId/deposits', (req: Request, res: Response, next:
 // GET /v1/customers/:customerId/addresses
 customersRouter.get('/:customerId/addresses', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
     const query = paginationQuery.parse(req.query);
-    const result = customersService.getAddresses(tenantId(req), req.params['customerId']!, query);
+    const result = customersService.getAddresses(tenantId(req), req.params['customerId']!, query, filter);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -138,7 +179,8 @@ customersRouter.get('/:customerId/addresses', (req: Request, res: Response, next
 // POST /v1/customers/:customerId/deposit-address
 customersRouter.post('/:customerId/deposit-address', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    customersService.getById(tenantId(req), req.params['customerId']!);
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const result = await depositAddressService.generateForCustomer(
       tenantId(req),
       req.params['customerId']!
@@ -150,7 +192,9 @@ customersRouter.post('/:customerId/deposit-address', async (req: Request, res: R
 // POST /v1/customers/:customerId/sessions
 customersRouter.post('/:customerId/sessions', (req: Request, res: Response, next: NextFunction) => {
   try {
-    const customer = customersService.getById(tenantId(req), req.params['customerId']!);
+    // Sessions are read-scoped — actor needs read access to this customer
+    const filter = getAccessFilter(req, 'read');
+    const customer = customersService.getById(tenantId(req), req.params['customerId']!, filter);
     if (customer.status !== 'active') {
       res.status(403).json({
         error: { code: 'FORBIDDEN', message: `Customer account is ${customer.status}` },
@@ -215,6 +259,8 @@ const upsertProfileSchema = z.discriminatedUnion('partyType', [
 // PUT /v1/customers/:customerId/profile
 customersRouter.put('/:customerId/profile', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter); // access guard
     const body = upsertProfileSchema.parse(req.body);
     const profile = customersProfileService.upsert(tenantId(req), req.params['customerId']!, body as any);
     res.json({ data: profile });
@@ -224,6 +270,8 @@ customersRouter.put('/:customerId/profile', (req: Request, res: Response, next: 
 // GET /v1/customers/:customerId/profile
 customersRouter.get('/:customerId/profile', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter); // access guard
     const profile = customersProfileService.get(tenantId(req), req.params['customerId']!);
     if (!profile) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Profile not set yet. Use PUT to create it.' } });
@@ -262,6 +310,8 @@ const updateIdentifierSchema = createIdentifierSchema.omit({ type: true }).parti
 // POST /v1/customers/:customerId/identifiers
 customersRouter.post('/:customerId/identifiers', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createIdentifierSchema.parse(req.body);
     const identifier = customersIdentifiersService.create(tenantId(req), req.params['customerId']!, body);
     res.status(201).json({ data: identifier });
@@ -271,6 +321,8 @@ customersRouter.post('/:customerId/identifiers', (req: Request, res: Response, n
 // GET /v1/customers/:customerId/identifiers
 customersRouter.get('/:customerId/identifiers', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const identifiers = customersIdentifiersService.list(tenantId(req), req.params['customerId']!);
     res.json({ data: identifiers });
   } catch (err) { next(err); }
@@ -279,6 +331,8 @@ customersRouter.get('/:customerId/identifiers', (req: Request, res: Response, ne
 // PATCH /v1/customers/:customerId/identifiers/:identifierId
 customersRouter.patch('/:customerId/identifiers/:identifierId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateIdentifierSchema.parse(req.body);
     const identifier = customersIdentifiersService.update(
       tenantId(req), req.params['customerId']!, req.params['identifierId']!, body
@@ -290,6 +344,8 @@ customersRouter.patch('/:customerId/identifiers/:identifierId', (req: Request, r
 // DELETE /v1/customers/:customerId/identifiers/:identifierId
 customersRouter.delete('/:customerId/identifiers/:identifierId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     customersIdentifiersService.delete(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
     res.status(204).send();
   } catch (err) { next(err); }
@@ -337,6 +393,8 @@ const updateRelationshipSchema = createRelationshipSchema
 // POST /v1/customers/:customerId/relationships
 customersRouter.post('/:customerId/relationships', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createRelationshipSchema.parse(req.body);
     const relationship = customersRelationshipsService.create(tenantId(req), req.params['customerId']!, body as any);
     res.status(201).json({ data: relationship });
@@ -346,6 +404,8 @@ customersRouter.post('/:customerId/relationships', (req: Request, res: Response,
 // GET /v1/customers/:customerId/relationships
 customersRouter.get('/:customerId/relationships', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const relationships = customersRelationshipsService.list(tenantId(req), req.params['customerId']!);
     res.json({ data: relationships });
   } catch (err) { next(err); }
@@ -354,6 +414,8 @@ customersRouter.get('/:customerId/relationships', (req: Request, res: Response, 
 // PATCH /v1/customers/:customerId/relationships/:relationshipId
 customersRouter.patch('/:customerId/relationships/:relationshipId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateRelationshipSchema.parse(req.body);
     const relationship = customersRelationshipsService.update(
       tenantId(req), req.params['customerId']!, req.params['relationshipId']!, body as any
@@ -365,6 +427,8 @@ customersRouter.patch('/:customerId/relationships/:relationshipId', (req: Reques
 // DELETE /v1/customers/:customerId/relationships/:relationshipId
 customersRouter.delete('/:customerId/relationships/:relationshipId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     customersRelationshipsService.delete(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
     res.status(204).send();
   } catch (err) { next(err); }
@@ -417,6 +481,8 @@ const upsertAmlKycSchema = z.object({
 // PUT /v1/customers/:customerId/aml-kyc
 customersRouter.put('/:customerId/aml-kyc', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertAmlKycSchema.parse(req.body);
     const amlKyc = customersAmlKycService.upsert(tenantId(req), req.params['customerId']!, body);
     res.json({ data: amlKyc });
@@ -426,6 +492,8 @@ customersRouter.put('/:customerId/aml-kyc', (req: Request, res: Response, next: 
 // GET /v1/customers/:customerId/aml-kyc
 customersRouter.get('/:customerId/aml-kyc', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const amlKyc = customersAmlKycService.get(tenantId(req), req.params['customerId']!);
     if (!amlKyc) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'AML/KYC profile not found' } });
@@ -467,6 +535,8 @@ const upsertDataGovernanceSchema = z.object({
 // PUT /v1/customers/:customerId/data-governance
 customersRouter.put('/:customerId/data-governance', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertDataGovernanceSchema.parse(req.body);
     const dg = customersDataGovernanceService.upsert(tenantId(req), req.params['customerId']!, body);
     res.json({ data: dg });
@@ -476,6 +546,8 @@ customersRouter.put('/:customerId/data-governance', (req: Request, res: Response
 // GET /v1/customers/:customerId/data-governance
 customersRouter.get('/:customerId/data-governance', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const dg = customersDataGovernanceService.get(tenantId(req), req.params['customerId']!);
     if (!dg) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Data governance profile not found' } });
@@ -514,6 +586,8 @@ const upsertContactSchema = z.object({
 // PUT /v1/customers/:customerId/contact
 customersRouter.put('/:customerId/contact', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertContactSchema.parse(req.body);
     const contact = customersContactService.upsert(tenantId(req), req.params['customerId']!, body as any);
     res.json({ data: contact });
@@ -523,6 +597,8 @@ customersRouter.put('/:customerId/contact', (req: Request, res: Response, next: 
 // GET /v1/customers/:customerId/contact
 customersRouter.get('/:customerId/contact', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const contact = customersContactService.get(tenantId(req), req.params['customerId']!);
     if (!contact) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Contact not set yet. Use PUT to create it.' } });
@@ -581,6 +657,8 @@ const updateDocumentSchema = z.object({
 // POST /v1/customers/:customerId/documents
 customersRouter.post('/:customerId/documents', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createDocumentSchema.parse(req.body);
     const doc = customersDocumentsService.create(tenantId(req), req.params['customerId']!, body as any);
     res.status(201).json({ data: doc });
@@ -590,6 +668,8 @@ customersRouter.post('/:customerId/documents', (req: Request, res: Response, nex
 // GET /v1/customers/:customerId/documents
 customersRouter.get('/:customerId/documents', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'read');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const docs = customersDocumentsService.list(tenantId(req), req.params['customerId']!);
     res.json({ data: docs });
   } catch (err) { next(err); }
@@ -598,6 +678,8 @@ customersRouter.get('/:customerId/documents', (req: Request, res: Response, next
 // PATCH /v1/customers/:customerId/documents/:documentId
 customersRouter.patch('/:customerId/documents/:documentId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateDocumentSchema.parse(req.body);
     const doc = customersDocumentsService.update(
       tenantId(req), req.params['customerId']!, req.params['documentId']!, body as any
@@ -609,6 +691,8 @@ customersRouter.patch('/:customerId/documents/:documentId', (req: Request, res: 
 // DELETE /v1/customers/:customerId/documents/:documentId
 customersRouter.delete('/:customerId/documents/:documentId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const filter = getAccessFilter(req, 'write');
+    customersService.getById(tenantId(req), req.params['customerId']!, filter);
     customersDocumentsService.delete(tenantId(req), req.params['customerId']!, req.params['documentId']!);
     res.status(204).send();
   } catch (err) { next(err); }

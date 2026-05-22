@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import { authMiddleware } from './shared/auth/middleware';
 import { adminAuthMiddleware } from './shared/admin-auth/middleware';
 import { customerAuthMiddleware } from './shared/customer-auth/middleware';
+import { actorTokenMiddleware } from './shared/actor-auth/middleware';
 import { rateLimitMiddleware } from './shared/rate-limit/middleware';
 import { errorHandler } from './shared/errors/index';
 
@@ -61,8 +62,9 @@ export function createApp(): express.Application {
   //      by the tenant API-key lookup. ----
   app.use('/v1/me', customerAuthMiddleware, rateLimitMiddleware, meRouter);
 
-  // Apply tenant auth and rate limiting to all other /v1/* routes
+  // Apply tenant auth, actor token (optional RBAC), and rate limiting to all /v1/* routes
   app.use('/v1', authMiddleware);
+  app.use('/v1', actorTokenMiddleware);
   app.use('/v1', rateLimitMiddleware);
 
   // ---- Tenant self-service ----

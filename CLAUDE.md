@@ -20,6 +20,96 @@
 - **Ledger** — jedyne źródło prawdy o saldach; Bitcoin Core to infrastruktura chainowa.
 - `tenant_id` w tabeli `cached_utxos` + `is_locked` to krytyczna granica bezpieczeństwa — coin selection nigdy nie może przekroczyć granicy tenanta.
 
+## X-Actor-Token — RBAC dla użytkowników tenanta
+
+Każde żądanie do `/v1/*` może opcjonalnie zawierać nagłówek `X-Actor-Token`.
+
+### Dwa tryby dostępu
+
+| Nagłówek | Tryb | Zachowanie |
+|----------|------|-----------|
+| Brak `X-Actor-Token` | **Admin-all** | Pełny dostęp do wszystkich danych tenanta. Tenant odpowiada za kontrolę kto wywołuje API bez tokena. |
+| `X-Actor-Token: <jwt>` | **RBAC** | Prawa dostępu z tokena są wymuszane na poziomie data source (SQL). |
+
+### Format X-Actor-Token (JWT HS256)
+
+```json
+{
+  "sub": "user_123",
+  "tenant_id": "tenant_abc",
+  "permissions": ["customers:read:team", "customers:write:assigned"],
+  "teams": ["team_warsaw", "team_warsaw_north"],
+  "roles": ["sales_agent"],
+  "exp": 1716394800,
+  "iat": 1716394200
+}
+```
+
+- **Podpis:** HMAC-SHA256, secret konfigurowany per tenant w `tenant_configs.actor_token_secret`
+- **`permissions`:** format `<entity>:<action>:<level>`, np. `customers:read:team`
+- **`teams`:** lista teamów aktora — **pre-expanded** przez tenanta, Chain API jej nie rozszerza
+- **`roles`:** tylko informacyjne (Chain API ich nie interpretuje — tenant mapuje role→permissiony sam, przed wystawieniem tokena)
+
+### Format permissionów
+
+```
+<entity>:<action>:<level>
+customers:read:all      — dostęp do wszystkich klientów tenanta
+customers:read:team     — dostęp do klientów własnych teamów aktora
+customers:read:assigned — dostęp tylko do klientów przypisanych do aktora
+customers:write:team    — jak read:team, dla operacji zapisu
+```
+
+Priorytet: `all > team > assigned`. Brak pasującego permissiona → `403 INSUFFICIENT_PERMISSIONS`.
+
+### Security envelope encji
+
+Encje chronione (np. `customers`) posiadają pola:
+
+| Pole | Znaczenie |
+|------|-----------|
+| `owner_user_id` | user który stworzył rekord (`actorContext.actorId` przy create) |
+| `owner_team_id` | team aktora przy tworzeniu (`actorContext.teams[0]`) |
+| `access_user_ids` | JSON array userów z dodatkowym dostępem |
+| `access_team_ids` | JSON array teamów z dodatkowym dostępem |
+
+### Konfiguracja per tenant
+
+```
+PATCH /v1/tenant/config
+{ "actorTokenSecret": "minimum-32-character-secret-here" }
+```
+
+### Moduł `src/shared/actor-auth/`
+
+| Plik | Odpowiedzialność |
+|------|-----------------|
+| `types.ts` | Typy: `ActorContext`, `AccessFilter`, `Permission`, `SortPolicy`, etc. |
+| `verifier.ts` | Weryfikacja JWT (HMAC-SHA256, per-tenant secret) |
+| `context.ts` | `resolveActorContext()`, `resolvePermission()` |
+| `filter.ts` | `buildAccessFilter()`, `adminAllFilter()` |
+| `compiler.ts` | `compileSqliteFilter()` → SQL fragment |
+| `query.ts` | `SecuredQuery.for(filter, alias)` — wrapper wymuszający użycie filtra |
+| `sort.ts` | `normalizeSort()`, `encodeCursor()`, `decodeCursor()`, `cursorToSql()` |
+| `middleware.ts` | Express middleware ustawiający `req.actorContext` |
+| `entity-defs.ts` | `CustomerEntityDef` (sort policy, dozwolone pola) |
+
+### Zasady implementacji nowych endpointów na chronionych encjach
+
+1. **Zawsze** użyj `getAccessFilter(req, 'read'|'write')` z routera — rzuca `403` jeśli brak uprawnień.
+2. **Zawsze** przekaż `AccessFilter` do serwisu — nigdy nie pomijaj go jako `undefined` w nowych endpointach.
+3. **Zawsze** używaj `SecuredQuery.for(filter, alias)` w zapytaniach SQL — `isDenied` → zwróć pusty wynik / 404.
+4. Dla write operations: access filter musi być w klauzuli `WHERE` samej operacji `UPDATE/DELETE` (nie tylko w poprzednim SELECT).
+5. `getById` z `accessFilter` → 404 dla braku dostępu (nie 403) — nie ujawniamy istnienia rekordu.
+6. Przy tworzeniu encji: wypełnij `owner_user_id = ctx?.actorId` i `owner_team_id = ctx?.teams[0]`.
+
+### Dodanie nowej chronionej encji
+
+1. Dodaj security envelope columns w migracji SQL.
+2. Dodaj `EntityDefinition` w `entity-defs.ts`.
+3. W routerze użyj `getAccessFilter(req, action)` i przekaż `AccessFilter` do serwisu.
+4. W serwisie użyj `SecuredQuery.for(filter, alias)` zamiast ręcznego `WHERE tenant_id = ?`.
+
 ## Architektura i dokument HLD
 
 **Dokument architektury:** `HLD_v2.md` (obowiązujący) i `HLD.md` (v1 — historyczny).

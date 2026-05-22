@@ -24,6 +24,8 @@ const updateConfigSchema = z.object({
   btcXpub: z.string().min(1).nullable().optional(),
   btcSweepThresholdSats: z.string().regex(/^\d+$/, 'Must be a numeric string').optional(),
   customerSessionTtlSeconds: z.coerce.number().int().min(60).max(86400).optional(),
+  /** HMAC secret used to verify X-Actor-Token JWTs. Min 32 chars. Set null to disable. */
+  actorTokenSecret: z.string().min(32).nullable().optional(),
 });
 
 // GET /v1/tenant
