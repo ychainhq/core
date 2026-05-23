@@ -11,6 +11,15 @@ import { getDb } from '../../db/sqlite';
 import { NotFoundError, ValidationError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
 import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
+// Lazy import to avoid circular dependency — batcher depends on signing-tasks
+let _withdrawalBatcherService: typeof import('../withdrawal-batches/withdrawal-batcher.service').withdrawalBatcherService | null = null;
+async function getBatcherService() {
+  if (!_withdrawalBatcherService) {
+    const mod = await import('../withdrawal-batches/withdrawal-batcher.service');
+    _withdrawalBatcherService = mod.withdrawalBatcherService;
+  }
+  return _withdrawalBatcherService;
+}
 
 const TASK_TTL_SECONDS = parseInt(process.env['SIGNING_TASK_TTL_SECONDS'] ?? '300', 10);
 
@@ -270,6 +279,22 @@ export const signingTasksService = {
     signingTasksService.recordAudit(task, 'signed', signerId, input.signedPayloadHash);
 
     logger.info('Signing task signed', { taskId, signerId, tenantId });
+
+    // Auto-finalize withdrawal batch — fire-and-forget, errors are logged not thrown
+    if (task.withdrawal_batch_id) {
+      const batchId = task.withdrawal_batch_id;
+      setImmediate(async () => {
+        try {
+          const batcher = await getBatcherService();
+          await batcher.finalizeBatch(tenantId, batchId);
+          logger.info('Withdrawal batch finalized after signing', { batchId, taskId, tenantId });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error('Failed to auto-finalize batch after signing', { batchId, taskId, tenantId, error: msg });
+        }
+      });
+    }
+
     return signingTasksService.getByIdInternal(taskId);
   },
 

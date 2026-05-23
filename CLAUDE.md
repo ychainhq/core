@@ -222,10 +222,10 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 |--------|------|-----|-------|-----|
 | POST | `/admin/v1/tenants` | ✅ | ✅ | ✅ `chainapi_admin_create_tenant` |
 | GET | `/admin/v1/tenants` | ✅ | ✅ | ✅ `chainapi_admin_list_tenants` |
-| GET | `/admin/v1/tenants/:tenantId` | ✅ | ✅ | ❌ |
-| PATCH | `/admin/v1/tenants/:tenantId` | ✅ | ✅ | ❌ |
-| GET | `/admin/v1/tenants/:tenantId/config` | ✅ | ✅ | ❌ |
-| PATCH | `/admin/v1/tenants/:tenantId/config` | ✅ | ✅ | ❌ |
+| GET | `/admin/v1/tenants/:tenantId` | ✅ | ✅ | ✅ `chainapi_admin_get_tenant` |
+| PATCH | `/admin/v1/tenants/:tenantId` | ✅ | ✅ | ✅ `chainapi_admin_update_tenant` |
+| GET | `/admin/v1/tenants/:tenantId/config` | ✅ | ✅ | ✅ `chainapi_admin_get_tenant_config` |
+| PATCH | `/admin/v1/tenants/:tenantId/config` | ✅ | ✅ | ✅ `chainapi_admin_update_tenant_config` |
 | POST | `/admin/v1/tenants/:tenantId/api-keys` | ✅ | ✅ | ✅ `chainapi_admin_create_tenant_api_key` |
 | POST | `/admin/v1/tenants/:tenantId/disable` | ✅ | ✅ | ❌ |
 
@@ -234,9 +234,9 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | GET | `/v1/tenant` | ✅ | ✅ | ✅ `chainapi_get_tenant` |
-| PATCH | `/v1/tenant` | ✅ | ✅ | ❌ |
-| GET | `/v1/tenant/config` | ✅ | ✅ | ❌ |
-| PATCH | `/v1/tenant/config` | ✅ | ✅ | ❌ |
+| PATCH | `/v1/tenant` | ✅ | ✅ | ✅ `chainapi_update_tenant` |
+| GET | `/v1/tenant/config` | ✅ | ✅ | ✅ `chainapi_get_tenant_config` |
+| PATCH | `/v1/tenant/config` | ✅ | ✅ | ✅ `chainapi_update_tenant_config` |
 
 ### Customers
 
@@ -297,26 +297,26 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| GET | `/v1/chains` | ✅ | ✅ | ❌ |
-| GET | `/v1/chains/:chain` | ✅ | ✅ | ❌ |
-| GET | `/v1/assets` | ✅ | ✅ | ❌ |
-| GET | `/v1/chains/:chain/assets/:asset` | ✅ | ✅ | ❌ |
+| GET | `/v1/chains` | ✅ | ✅ | ✅ `chainapi_list_chains` |
+| GET | `/v1/chains/:chain` | ✅ | ✅ | ✅ `chainapi_get_chain` |
+| GET | `/v1/assets` | ✅ | ✅ | ✅ `chainapi_list_assets` |
+| GET | `/v1/chains/:chain/assets/:asset` | ✅ | ✅ | ✅ `chainapi_get_asset` |
 
 ### Wallets
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| POST | `/v1/wallets` | ✅ | ✅ | ❌ |
-| GET | `/v1/wallets` | ✅ | ✅ | ❌ |
-| GET | `/v1/wallets/:walletId` | ✅ | ✅ | ❌ |
+| POST | `/v1/wallets` | ✅ | ✅ | ✅ `chainapi_create_wallet` |
+| GET | `/v1/wallets` | ✅ | ✅ | ✅ `chainapi_list_wallets` |
+| GET | `/v1/wallets/:walletId` | ✅ | ✅ | ✅ `chainapi_get_wallet` |
 
 ### Addresses
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| POST | `/v1/chains/:chain/addresses/validate` | ✅ | ✅ | ❌ |
-| POST | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ❌ |
-| GET | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ❌ |
+| POST | `/v1/chains/:chain/addresses/validate` | ✅ | ✅ | ✅ `chainapi_validate_address` |
+| POST | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ✅ `chainapi_register_wallet_address` |
+| GET | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ✅ `chainapi_list_wallet_addresses` |
 | POST | `/v1/monitors/addresses` | ✅ | ✅ | ❌ |
 | GET | `/v1/monitors/addresses` | ✅ | ✅ | ❌ |
 | DELETE | `/v1/monitors/addresses/:monitorId` | ✅ | ⚠️ | ❌ |
@@ -325,54 +325,54 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| GET | `/v1/chains/:chain/addresses/:address/balances` | ✅ | ✅ | ❌ |
+| GET | `/v1/chains/:chain/addresses/:address/balances` | ✅ | ✅ | ✅ `chainapi_get_address_balances` |
 | GET | `/v1/chains/:chain/addresses/:address/balances/:asset` | ✅ | ⚠️ | ❌ |
-| GET | `/v1/wallets/:walletId/balances` | ✅ | ✅ | ❌ |
+| GET | `/v1/wallets/:walletId/balances` | ✅ | ✅ | ✅ `chainapi_get_wallet_balances` |
 
 ### UTXOs & Fees
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| GET | `/v1/chains/bitcoin/addresses/:address/utxos` | ✅ | ✅ | ❌ |
-| GET | `/v1/wallets/:walletId/utxos` | ✅ | ✅ | ❌ |
-| GET | `/v1/chains/bitcoin/fees` | ✅ | ✅ | ❌ |
+| GET | `/v1/chains/bitcoin/addresses/:address/utxos` | ✅ | ✅ | ✅ `chainapi_list_address_utxos` |
+| GET | `/v1/wallets/:walletId/utxos` | ✅ | ✅ | ✅ `chainapi_list_wallet_utxos` |
+| GET | `/v1/chains/bitcoin/fees` | ✅ | ✅ | ✅ `chainapi_get_bitcoin_fees` |
 
 ### Transactions (Bitcoin-specific)
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| POST | `/v1/chains/bitcoin/transactions/coin-selection` | ✅ | ✅ | ❌ |
-| POST | `/v1/chains/bitcoin/transactions/prepare` | ✅ | ✅ | ❌ |
-| POST | `/v1/chains/bitcoin/transactions/finalize` | ✅ | ✅ | ❌ |
-| POST | `/v1/chains/bitcoin/transactions/broadcast` | ✅ | ✅ | ❌ |
+| POST | `/v1/chains/bitcoin/transactions/coin-selection` | ✅ | ✅ | ✅ `chainapi_bitcoin_coin_selection` |
+| POST | `/v1/chains/bitcoin/transactions/prepare` | ✅ | ✅ | ✅ `chainapi_bitcoin_prepare_transaction` |
+| POST | `/v1/chains/bitcoin/transactions/finalize` | ✅ | ✅ | ✅ `chainapi_bitcoin_finalize_psbt` |
+| POST | `/v1/chains/bitcoin/transactions/broadcast` | ✅ | ✅ | ✅ `chainapi_broadcast_raw_transaction` |
 
 ### Transactions (generic)
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| GET | `/v1/chains/:chain/transactions/:txHash` | ✅ | ⚠️ | ❌ |
-| GET | `/v1/chains/:chain/transactions/:txHash/status` | ✅ | ⚠️ | ❌ |
-| POST | `/v1/chains/:chain/transactions/broadcast` | ✅ | ✅ | ❌ |
-| POST | `/v1/chains/:chain/transactions/validate` | ✅ | ⚠️ | ❌ |
+| GET | `/v1/chains/:chain/transactions/:txHash` | ✅ | ⚠️ | ✅ `chainapi_get_transaction` |
+| GET | `/v1/chains/:chain/transactions/:txHash/status` | ✅ | ⚠️ | ✅ `chainapi_get_transaction_status` |
+| POST | `/v1/chains/:chain/transactions/broadcast` | ✅ | ✅ | ✅ `chainapi_broadcast_raw_transaction` |
+| POST | `/v1/chains/:chain/transactions/validate` | ✅ | ⚠️ | ✅ `chainapi_validate_raw_transaction` |
 
 ### Payment Requests
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| POST | `/v1/payment-requests` | ✅ | ✅ | ❌ |
-| GET | `/v1/payment-requests` | ✅ | ✅ | ❌ |
-| GET | `/v1/payment-requests/:paymentRequestId` | ✅ | ✅ | ❌ |
-| POST | `/v1/payment-requests/:paymentRequestId/cancel` | ✅ | ✅ | ❌ |
-| GET | `/v1/payment-requests/by-reference/:reference` | ✅ | ✅ | ❌ |
-| GET | `/v1/payment-requests/:paymentRequestId/qr` | ✅ | ✅ | ❌ |
+| POST | `/v1/payment-requests` | ✅ | ✅ | ✅ `chainapi_create_payment_request` |
+| GET | `/v1/payment-requests` | ✅ | ✅ | ✅ `chainapi_list_payment_requests` |
+| GET | `/v1/payment-requests/:paymentRequestId` | ✅ | ✅ | ✅ `chainapi_get_payment_request` |
+| POST | `/v1/payment-requests/:paymentRequestId/cancel` | ✅ | ✅ | ✅ `chainapi_cancel_payment_request` |
+| GET | `/v1/payment-requests/by-reference/:reference` | ✅ | ✅ | ✅ `chainapi_get_payment_requests_by_reference` |
+| GET | `/v1/payment-requests/:paymentRequestId/qr` | ✅ | ✅ | ✅ `chainapi_get_payment_request_qr` |
 
 ### Deposits
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| GET | `/v1/deposits` | ✅ | ✅ | ❌ |
-| GET | `/v1/deposits/:depositId` | ✅ | ✅ | ❌ |
-| GET | `/v1/chains/:chain/addresses/:address/deposits` | ✅ | ✅ | ❌ |
+| GET | `/v1/deposits` | ✅ | ✅ | ✅ `chainapi_list_deposits` |
+| GET | `/v1/deposits/:depositId` | ✅ | ✅ | ✅ `chainapi_get_deposit` |
+| GET | `/v1/chains/:chain/addresses/:address/deposits` | ✅ | ✅ | ✅ `chainapi_list_address_deposits` |
 
 ### Ledger
 
@@ -390,17 +390,62 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | POST | `/v1/sweeps` | ✅ | ✅ | ❌ |
-| GET | `/v1/sweeps` | ✅ | ⚠️ | ❌ |
-| GET | `/v1/sweeps/:sweepId` | ✅ | ⚠️ | ❌ |
+| GET | `/v1/sweeps` | ✅ | ⚠️ | ✅ `chainapi_list_sweeps` |
+| GET | `/v1/sweeps/:sweepId` | ✅ | ⚠️ | ✅ `chainapi_get_sweep` |
+| POST | `/v1/sweeps/:sweepId/submit-signed` | ✅ | ⚠️ | ✅ `chainapi_submit_signed_sweep` |
 
 ### Withdrawals
 
+> Tenant-level read endpoints. Withdrawals are created via `/v1/me/withdrawals` (customer self-service).
+
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| POST | `/v1/withdrawals` | ✅ | ⚠️ | ❌ |
-| GET | `/v1/withdrawals` | ✅ | ⚠️ | ❌ |
-| GET | `/v1/withdrawals/:withdrawalId` | ✅ | ⚠️ | ❌ |
+| GET | `/v1/withdrawals` | ✅ | ⚠️ | ✅ `chainapi_list_withdrawals` |
+| GET | `/v1/withdrawals/:withdrawalId` | ✅ | ⚠️ | ✅ `chainapi_get_withdrawal` |
 | POST | `/v1/withdrawals/:withdrawalId/submit-signed` | ✅ | ⚠️ | ✅ `chainapi_submit_signed_withdrawal` |
+
+### External Signers
+
+| Method | Path | MVP | Testy | MCP |
+|--------|------|-----|-------|-----|
+| POST | `/v1/external-signers/enroll` | ✅ | ✅ | ❌ |
+| GET | `/v1/external-signers` | ✅ | ✅ | ❌ |
+| GET | `/v1/external-signers/policies` | ✅ | ✅ | ❌ |
+| PUT | `/v1/external-signers/policies` | ✅ | ✅ | ❌ |
+| GET | `/v1/external-signers/:signerId` | ✅ | ✅ | ❌ |
+| PATCH | `/v1/external-signers/:signerId` | ✅ | ✅ | ❌ |
+| POST | `/v1/external-signers/:signerId/enable` | ✅ | ✅ | ❌ |
+| POST | `/v1/external-signers/:signerId/disable` | ✅ | ✅ | ❌ |
+| DELETE | `/v1/external-signers/:signerId` | ✅ | ✅ | ❌ |
+| POST | `/v1/external-signers/:signerId/heartbeat` | ✅ | ✅ | ❌ |
+| GET | `/v1/external-signers/:signerId/tasks` | ✅ | ✅ | ❌ |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/claim` | ✅ | ✅ | ❌ |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/submit` | ✅ | ✅ | ❌ |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/reject` | ✅ | ✅ | ❌ |
+
+### Signing Tasks
+
+| Method | Path | MVP | Testy | MCP |
+|--------|------|-----|-------|-----|
+| GET | `/v1/signing-tasks` | ✅ | ✅ | ❌ |
+| GET | `/v1/signing-tasks/:taskId` | ✅ | ✅ | ❌ |
+| POST | `/v1/signing-tasks/:taskId/approve` | ✅ | ✅ | ❌ |
+| POST | `/v1/signing-tasks/:taskId/reject` | ✅ | ✅ | ❌ |
+
+### Withdrawal Batches
+
+| Method | Path | MVP | Testy | MCP |
+|--------|------|-----|-------|-----|
+| GET | `/v1/withdrawal-batches` | ✅ | ✅ | ❌ |
+| GET | `/v1/withdrawal-batches/:batchId` | ✅ | ✅ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/approve` | ✅ | ✅ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/reject` | ✅ | ✅ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/retry` | ✅ | ✅ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/cancel` | ✅ | ✅ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/rbf-bump` | ✅ | ❌ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/cpfp` | ✅ | ❌ | ❌ |
+| GET | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ❌ |
+| PATCH | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ❌ |
 
 ### Webhooks
 

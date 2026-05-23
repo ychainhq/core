@@ -788,6 +788,60 @@ Auth: `X-Admin-Key` header (lub Bearer z flagą is_admin). Dostępne wyłącznie
 | GET | `/v1/webhook-deliveries` | Historia deliveries |
 | POST | `/v1/webhook-deliveries/:deliveryId/retry` | Ponów delivery |
 
+### 6.13 Withdrawals (wypłaty klientów)
+
+| Method | Path | Opis |
+|--------|------|------|
+| POST | `/v1/withdrawals` | Utwórz żądanie wypłaty |
+| GET | `/v1/withdrawals` | Lista wypłat tenanta |
+| GET | `/v1/withdrawals/:withdrawalId` | Szczegóły wypłaty |
+| POST | `/v1/withdrawals/:withdrawalId/submit-signed` | Wyślij podpisaną transakcję (manual signing) |
+
+### 6.14 External Signers (zewnętrzne sygnatariusze)
+
+Protokół integracji z zewnętrznym signerem (OSS/Enterprise daemon). Signer polling-based — sam pobiera zadania.
+
+| Method | Path | Opis |
+|--------|------|------|
+| POST | `/v1/external-signers/enroll` | Rejestracja sygnatariusza |
+| GET | `/v1/external-signers` | Lista signerów tenanta |
+| GET | `/v1/external-signers/policies` | Polityki decyzji (auto/manual thresholds) |
+| PUT | `/v1/external-signers/policies` | Aktualizuj polityki |
+| GET | `/v1/external-signers/:signerId` | Szczegóły sygnatariusza |
+| PATCH | `/v1/external-signers/:signerId` | Aktualizuj sygnatariusza |
+| POST | `/v1/external-signers/:signerId/enable` | Aktywuj sygnatariusza |
+| POST | `/v1/external-signers/:signerId/disable` | Dezaktywuj sygnatariusza |
+| DELETE | `/v1/external-signers/:signerId` | Usuń rejestrację |
+| POST | `/v1/external-signers/:signerId/heartbeat` | Heartbeat (wywoływany przez signer daemon) |
+| GET | `/v1/external-signers/:signerId/tasks` | Pobierz nowe zadania podpisywania (polling) |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/claim` | Zarezerwuj zadanie |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/submit` | Prześlij podpisaną transakcję |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/reject` | Odrzuć zadanie z kodem błędu |
+
+### 6.15 Signing Tasks (zadania podpisywania — widok operatora)
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/v1/signing-tasks` | Lista zadań podpisywania tenanta |
+| GET | `/v1/signing-tasks/:taskId` | Szczegóły zadania |
+| POST | `/v1/signing-tasks/:taskId/approve` | Zatwierdź zadanie oczekujące na akceptację |
+| POST | `/v1/signing-tasks/:taskId/reject` | Odrzuć zadanie (manual review) |
+
+### 6.16 Withdrawal Batches (partie wypłat BTC)
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/v1/withdrawal-batches` | Lista partii wypłat |
+| GET | `/v1/withdrawal-batches/:batchId` | Szczegóły partii |
+| POST | `/v1/withdrawal-batches/:batchId/approve` | Zatwierdź partię (manual mode) |
+| POST | `/v1/withdrawal-batches/:batchId/reject` | Odrzuć partię |
+| POST | `/v1/withdrawal-batches/:batchId/retry` | Ponów budowanie partii |
+| POST | `/v1/withdrawal-batches/:batchId/cancel` | Anuluj partię |
+| POST | `/v1/withdrawal-batches/:batchId/rbf-bump` | Zastąp stuck TX wyższą opłatą (RBF) |
+| POST | `/v1/withdrawal-batches/:batchId/cpfp` | Utwórz transakcję CPFP dla odblokowania |
+| GET | `/v1/tenant/withdrawal-batch-config` | Konfiguracja batchowania tenanta |
+| PATCH | `/v1/tenant/withdrawal-batch-config` | Aktualizuj konfigurację batchowania |
+
 ---
 
 ## 7. Statusy (bez zmian)

@@ -7,6 +7,8 @@
  * POST /v1/withdrawal-batches/:batchId/reject
  * POST /v1/withdrawal-batches/:batchId/retry
  * POST /v1/withdrawal-batches/:batchId/cancel
+ * POST /v1/withdrawal-batches/:batchId/rbf-bump
+ * POST /v1/withdrawal-batches/:batchId/cpfp
  *
  * GET   /v1/tenant/withdrawal-batch-config
  * PATCH /v1/tenant/withdrawal-batch-config
@@ -90,6 +92,44 @@ withdrawalBatchesRouter.post('/:batchId/cancel', (req: Request, res: Response, n
     const batch = withdrawalBatcherService.cancelBatch(tenantId(req), req.params['batchId']!);
     res.json({ data: batch });
   } catch (err) { next(err); }
+});
+
+// POST /v1/withdrawal-batches/:batchId/rbf-bump
+const rbfBumpSchema = z.object({
+  newFeeRateSatVb: z.number().int().positive(),
+});
+
+withdrawalBatchesRouter.post('/:batchId/rbf-bump', (req: Request, res: Response, next: NextFunction) => {
+  void (async () => {
+    try {
+      const body = rbfBumpSchema.parse(req.body);
+      const batch = await withdrawalBatcherService.rbfBump(
+        tenantId(req),
+        req.params['batchId']!,
+        body.newFeeRateSatVb
+      );
+      res.json({ data: batch });
+    } catch (err) { next(err); }
+  })();
+});
+
+// POST /v1/withdrawal-batches/:batchId/cpfp
+const cpfpSchema = z.object({
+  targetFeeRateSatVb: z.number().int().positive().optional(),
+});
+
+withdrawalBatchesRouter.post('/:batchId/cpfp', (req: Request, res: Response, next: NextFunction) => {
+  void (async () => {
+    try {
+      const body = cpfpSchema.parse(req.body);
+      const batch = await withdrawalBatcherService.cpfp(
+        tenantId(req),
+        req.params['batchId']!,
+        body.targetFeeRateSatVb
+      );
+      res.json({ data: batch });
+    } catch (err) { next(err); }
+  })();
 });
 
 // ---- Tenant batch config ----

@@ -653,4 +653,329 @@ export const withdrawalBatcherService = {
     logger.info('Withdrawal batch broadcast', { batchId, tenantId, txHash, outputsCount: batch.outputs_count });
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
+
+  /**
+   * RBF Bump — create a fee-bumped replacement for a broadcast batch.
+   *
+   * Reuses the original UTXOs (still locked) and rebuilds the PSBT at a higher
+   * fee rate. The replacement TX will supersede the original in the mempool
+   * (requires the original to have been built with RBF opt-in, sequence < 0xFFFFFFFE).
+   */
+  async rbfBump(
+    tenantId: string,
+    batchId: string,
+    newFeeRateSatVb: number
+  ): Promise<WithdrawalBatch> {
+    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+
+    if (batch.status !== 'broadcast') {
+      throw new ValidationError(
+        `Batch ${batchId} must be in 'broadcast' status for RBF (got '${batch.status}')`
+      );
+    }
+    if (!batch.rbf_enabled) {
+      throw new ValidationError(`Batch ${batchId} was not created with RBF opt-in`);
+    }
+
+    const batchConfig = withdrawalBatcherService.getBatchConfig(tenantId);
+    if (!batchConfig.btc_rbf_enabled) {
+      throw new ValidationError('RBF is disabled — enable btcRbfEnabled in tenant batch config');
+    }
+
+    const currentFeeRate = batch.fee_rate_sat_vb ? parseFloat(batch.fee_rate_sat_vb) : 0;
+    if (newFeeRateSatVb <= currentFeeRate) {
+      throw new ValidationError(
+        `New fee rate (${newFeeRateSatVb} sat/vb) must exceed current rate (${currentFeeRate} sat/vb)`
+      );
+    }
+
+    if (newFeeRateSatVb > batchConfig.btc_max_fee_rate_sat_vb) {
+      throw new ValidationError(
+        `New fee rate (${newFeeRateSatVb} sat/vb) exceeds tenant max (${batchConfig.btc_max_fee_rate_sat_vb} sat/vb)`
+      );
+    }
+
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    // Get locked UTXOs from original batch
+    const lockedUtxos = db.prepare(`
+      SELECT tx_hash, vout, amount_raw
+      FROM utxo_locks
+      WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
+    `).all(tenantId, batchId) as Array<{ tx_hash: string; vout: number; amount_raw: string }>;
+
+    if (lockedUtxos.length === 0) {
+      throw new ValidationError(`No locked UTXOs found for batch ${batchId}`);
+    }
+
+    // Get original withdrawal outputs
+    const items = db.prepare(`
+      SELECT withdrawal_id, amount_raw, to_address FROM withdrawal_batch_items WHERE batch_id = ?
+    `).all(batchId) as Array<{ withdrawal_id: string; amount_raw: string; to_address: string }>;
+
+    const totalOutput = items.reduce((s: bigint, i) => s + BigInt(i.amount_raw), 0n);
+
+    const changeAddrRow = db.prepare(`
+      SELECT a.address FROM addresses a JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
+        AND a.chain_id = 'bitcoin' AND a.status = 'active'
+      LIMIT 1
+    `).get(tenantId) as { address: string } | undefined;
+
+    if (!changeAddrRow) {
+      throw new ValidationError('No tenant hot wallet address available for change output');
+    }
+
+    const newBatchId = `wdb_${crypto.randomBytes(8).toString('hex')}`;
+
+    db.prepare(`
+      INSERT INTO withdrawal_batches (
+        id, tenant_id, chain_id, asset_id,
+        status, outputs_count, total_output_raw, fee_rate_sat_vb,
+        rbf_enabled, replacement_of_batch_id, decision_mode, attempt_count, created_at, updated_at
+      ) VALUES (?, ?, 'bitcoin', 'bitcoin:BTC', 'building', ?, ?, ?, 1, ?, 'auto', 0, ?, ?)
+    `).run(newBatchId, tenantId, items.length, totalOutput.toString(), newFeeRateSatVb.toString(), batchId, now, now);
+
+    for (const item of items) {
+      db.prepare(`
+        INSERT INTO withdrawal_batch_items (batch_id, withdrawal_id, amount_raw, to_address)
+        VALUES (?, ?, ?, ?)
+      `).run(newBatchId, item.withdrawal_id, item.amount_raw, item.to_address);
+    }
+
+    // Transfer UTXO locks from original to replacement batch and reset TTL
+    const newExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    db.prepare(`
+      UPDATE utxo_locks SET batch_id = ?, expires_at = ?
+      WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
+    `).run(newBatchId, newExpiry, tenantId, batchId);
+
+    // Mark original as replaced
+    db.prepare(`
+      UPDATE withdrawal_batches SET status = 'replaced', replaced_by_batch_id = ?, updated_at = ? WHERE id = ?
+    `).run(newBatchId, now, batchId);
+
+    // Build replacement PSBT
+    const adapter = new BitcoinAdapter();
+    const inputs = lockedUtxos.map(u => ({ txid: u.tx_hash, vout: u.vout }));
+    const outputs: Record<string, number>[] = items.map(item => ({
+      [item.to_address]: Number(BigInt(item.amount_raw)) / 1e8,
+    }));
+
+    let psbtBase64: string;
+    let actualFeeSats: string;
+
+    try {
+      const psbtResult = await adapter.walletCreateFundedPsbt(inputs, outputs, {
+        feeRate: newFeeRateSatVb / 1e5,
+        changeAddress: changeAddrRow.address,
+      });
+      psbtBase64 = psbtResult.psbt;
+      actualFeeSats = psbtResult.fee ? String(Math.round(psbtResult.fee * 1e8)) : String(newFeeRateSatVb * 200);
+    } catch (err: any) {
+      // Roll back: restore original batch, re-assign locks, delete new batch
+      db.prepare(`UPDATE utxo_locks SET batch_id = ? WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'`)
+        .run(batchId, tenantId, newBatchId);
+      db.prepare(`UPDATE withdrawal_batches SET status = 'broadcast', replaced_by_batch_id = NULL, updated_at = ? WHERE id = ?`)
+        .run(now, batchId);
+      db.prepare('DELETE FROM withdrawal_batch_items WHERE batch_id = ?').run(newBatchId);
+      db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(newBatchId);
+      throw new UnprocessableEntityError(`Failed to build RBF PSBT: ${err.message}`);
+    }
+
+    db.prepare(`
+      UPDATE withdrawal_batches SET psbt = ?, fee_raw = ?, status = 'pending_signature', updated_at = ? WHERE id = ?
+    `).run(psbtBase64, actualFeeSats, now, newBatchId);
+
+    const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
+    const signingTask = signingTasksService.create({
+      tenantId,
+      signerId: selectedSigner?.id ?? null,
+      requestType: 'btc_withdrawal_batch',
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      withdrawalBatchId: newBatchId,
+      amountRaw: totalOutput.toString(),
+      feeRaw: actualFeeSats,
+      feeRateSatVb: newFeeRateSatVb.toString(),
+      outputsCount: items.length,
+      payloadFormat: 'btc_psbt',
+      unsignedPayload: psbtBase64,
+      decisionMode: 'auto',
+      decisionReason: `RBF replacement of batch ${batchId} at ${newFeeRateSatVb} sat/vb`,
+    });
+
+    db.prepare(`UPDATE withdrawal_batches SET signing_task_id = ?, signer_id = ?, updated_at = ? WHERE id = ?`)
+      .run(signingTask.id, selectedSigner?.id ?? null, now, newBatchId);
+
+    logger.info('RBF batch created', { originalBatchId: batchId, newBatchId, tenantId, newFeeRateSatVb });
+    return withdrawalBatcherService.getBatchById(tenantId, newBatchId);
+  },
+
+  /**
+   * CPFP — Child-Pays-For-Parent fee bump.
+   *
+   * Creates a new transaction spending the change output of the broadcast (unconfirmed)
+   * batch TX with a high enough fee to incentivize miners to confirm both transactions.
+   * Requires btcCpfpEnabled in tenant batch config and the change output to be visible
+   * in cached_utxos (i.e. the node has indexed the parent TX's outputs).
+   */
+  async cpfp(
+    tenantId: string,
+    batchId: string,
+    targetFeeRateSatVb?: number
+  ): Promise<WithdrawalBatch> {
+    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+
+    if (batch.status !== 'broadcast') {
+      throw new ValidationError(
+        `Batch ${batchId} must be in 'broadcast' status for CPFP (got '${batch.status}')`
+      );
+    }
+    if (!batch.tx_hash) {
+      throw new ValidationError(`Batch ${batchId} has no tx_hash — cannot create CPFP`);
+    }
+
+    const batchConfig = withdrawalBatcherService.getBatchConfig(tenantId);
+    if (!batchConfig.btc_cpfp_enabled) {
+      throw new ValidationError('CPFP is disabled — enable btcCpfpEnabled in tenant batch config');
+    }
+
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    // Find the unspent change output of the parent TX in cached_utxos
+    const changeUtxo = db.prepare(`
+      SELECT tx_hash, vout, amount_raw
+      FROM cached_utxos
+      WHERE tenant_id = ? AND tx_hash = ? AND is_spent = 0 AND is_locked = 0
+        AND wallet_role = 'tenant_hot'
+      LIMIT 1
+    `).get(tenantId, batch.tx_hash) as { tx_hash: string; vout: number; amount_raw: string } | undefined;
+
+    if (!changeUtxo) {
+      throw new ValidationError(
+        `No spendable change output found for parent TX ${batch.tx_hash}. ` +
+        'The node may not have indexed the UTXO yet — retry after mempool sync.'
+      );
+    }
+
+    const parentFeeRate = batch.fee_rate_sat_vb ? parseFloat(batch.fee_rate_sat_vb) : 1;
+    const effectiveFeeRateSatVb = targetFeeRateSatVb ?? Math.ceil(parentFeeRate * 2);
+
+    if (effectiveFeeRateSatVb > batchConfig.btc_max_fee_rate_sat_vb) {
+      throw new ValidationError(
+        `Target fee rate (${effectiveFeeRateSatVb} sat/vb) exceeds tenant max (${batchConfig.btc_max_fee_rate_sat_vb} sat/vb)`
+      );
+    }
+
+    const changeAddrRow = db.prepare(`
+      SELECT a.address FROM addresses a JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
+        AND a.chain_id = 'bitcoin' AND a.status = 'active'
+      LIMIT 1
+    `).get(tenantId) as { address: string } | undefined;
+
+    if (!changeAddrRow) {
+      throw new ValidationError('No tenant hot wallet address available for CPFP output');
+    }
+
+    const changeAmount = BigInt(changeUtxo.amount_raw);
+    // ~82 vbytes for a single-input single-output P2WPKH TX
+    const cpfpVsize = 82n;
+    const cpfpFee = BigInt(effectiveFeeRateSatVb) * cpfpVsize;
+
+    if (cpfpFee >= changeAmount) {
+      throw new ValidationError(
+        `CPFP fee (${cpfpFee} sats) would exceed the change output (${changeAmount} sats). ` +
+        'Lower targetFeeRateSatVb or the change output is too small.'
+      );
+    }
+
+    const cpfpOutput = changeAmount - cpfpFee;
+    const cpfpBatchId = `wdb_${crypto.randomBytes(8).toString('hex')}`;
+
+    db.prepare(`
+      INSERT INTO withdrawal_batches (
+        id, tenant_id, chain_id, asset_id,
+        status, outputs_count, total_output_raw, fee_rate_sat_vb, fee_raw,
+        rbf_enabled, replacement_of_batch_id, decision_mode, attempt_count, created_at, updated_at
+      ) VALUES (?, ?, 'bitcoin', 'bitcoin:BTC', 'building', 1, ?, ?, ?, 1, ?, 'auto', 0, ?, ?)
+    `).run(
+      cpfpBatchId, tenantId,
+      cpfpOutput.toString(), effectiveFeeRateSatVb.toString(), cpfpFee.toString(),
+      batchId, now, now
+    );
+
+    // Atomically lock the change UTXO
+    const lockResult = db.prepare(`
+      UPDATE cached_utxos SET is_locked = 1
+      WHERE tenant_id = ? AND tx_hash = ? AND vout = ? AND is_locked = 0 AND is_spent = 0
+    `).run(tenantId, changeUtxo.tx_hash, changeUtxo.vout);
+
+    if (lockResult.changes === 0) {
+      db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(cpfpBatchId);
+      throw new ValidationError(
+        `Change UTXO ${changeUtxo.tx_hash}:${changeUtxo.vout} was concurrently locked`
+      );
+    }
+
+    const lockId = `ulk_${crypto.randomBytes(8).toString('hex')}`;
+    db.prepare(`
+      INSERT INTO utxo_locks (id, tenant_id, batch_id, chain_id, tx_hash, vout, amount_raw, status, locked_at, expires_at)
+      VALUES (?, ?, ?, 'bitcoin', ?, ?, ?, 'locked', ?, ?)
+    `).run(
+      lockId, tenantId, cpfpBatchId,
+      changeUtxo.tx_hash, changeUtxo.vout, changeUtxo.amount_raw,
+      now, new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    );
+
+    // Build CPFP PSBT: spend change → same change address
+    const adapter = new BitcoinAdapter();
+    let psbtBase64: string;
+
+    try {
+      const psbtResult = await adapter.walletCreateFundedPsbt(
+        [{ txid: changeUtxo.tx_hash, vout: changeUtxo.vout }],
+        [{ [changeAddrRow.address]: Number(cpfpOutput) / 1e8 }],
+        { feeRate: effectiveFeeRateSatVb / 1e5, changeAddress: changeAddrRow.address }
+      );
+      psbtBase64 = psbtResult.psbt;
+    } catch (err: any) {
+      db.prepare(`UPDATE cached_utxos SET is_locked = 0 WHERE tenant_id = ? AND tx_hash = ? AND vout = ?`)
+        .run(tenantId, changeUtxo.tx_hash, changeUtxo.vout);
+      db.prepare(`UPDATE utxo_locks SET status = 'released', released_at = ? WHERE id = ?`).run(now, lockId);
+      db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(cpfpBatchId);
+      throw new UnprocessableEntityError(`Failed to build CPFP PSBT: ${err.message}`);
+    }
+
+    db.prepare(`
+      UPDATE withdrawal_batches SET psbt = ?, status = 'pending_signature', updated_at = ? WHERE id = ?
+    `).run(psbtBase64, now, cpfpBatchId);
+
+    const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
+    const signingTask = signingTasksService.create({
+      tenantId,
+      signerId: selectedSigner?.id ?? null,
+      requestType: 'btc_withdrawal_batch',
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      withdrawalBatchId: cpfpBatchId,
+      amountRaw: cpfpOutput.toString(),
+      feeRaw: cpfpFee.toString(),
+      feeRateSatVb: effectiveFeeRateSatVb.toString(),
+      outputsCount: 1,
+      payloadFormat: 'btc_psbt',
+      unsignedPayload: psbtBase64,
+      decisionMode: 'auto',
+      decisionReason: `CPFP fee bump for parent batch ${batchId} at ${effectiveFeeRateSatVb} sat/vb`,
+    });
+
+    db.prepare(`UPDATE withdrawal_batches SET signing_task_id = ?, signer_id = ?, updated_at = ? WHERE id = ?`)
+      .run(signingTask.id, selectedSigner?.id ?? null, now, cpfpBatchId);
+
+    logger.info('CPFP batch created', { parentBatchId: batchId, cpfpBatchId, tenantId, effectiveFeeRateSatVb });
+    return withdrawalBatcherService.getBatchById(tenantId, cpfpBatchId);
+  },
 };
