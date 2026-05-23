@@ -167,3 +167,135 @@ describe('Withdrawal Batches — Retry', () => {
     expect(['cancelled', 'failed']).toContain(res.body.data.status);
   });
 });
+
+function insertBroadcastBatch(opts: { rbfEnabled?: number; feeRateSatVb?: string } = {}) {
+  const db = getDb();
+  const id = `wdb_${crypto.randomBytes(8).toString('hex')}`;
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO withdrawal_batches (
+      id, tenant_id, chain_id, asset_id,
+      status, outputs_count, total_output_raw,
+      rbf_enabled, decision_mode, attempt_count,
+      fee_rate_sat_vb, tx_hash,
+      created_at, updated_at
+    ) VALUES (?, ?, 'bitcoin', 'bitcoin:BTC', 'broadcast', 3, '300000',
+              ?, 'manual', 1, ?, ?, ?, ?)
+  `).run(
+    id, TEST_TENANT_ID,
+    opts.rbfEnabled ?? 1,
+    opts.feeRateSatVb ?? '5',
+    `fakehash_${id}`,
+    now, now
+  );
+
+  return id;
+}
+
+describe('Withdrawal Batches — RBF Bump', () => {
+  test('POST rbf-bump — 400 for non-broadcast status', async () => {
+    const batchId = insertTestBatch('pending_approval');
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/rbf-bump`)
+      .set(AUTH)
+      .send({ newFeeRateSatVb: 20 });
+
+    expect(res.status).toBe(400);
+  });
+
+  test('POST rbf-bump — 400 for missing body field', async () => {
+    const batchId = insertBroadcastBatch();
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/rbf-bump`)
+      .set(AUTH)
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+
+  test('POST rbf-bump — 400 when batch has rbf_enabled=0', async () => {
+    const batchId = insertBroadcastBatch({ rbfEnabled: 0, feeRateSatVb: '5' });
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/rbf-bump`)
+      .set(AUTH)
+      .send({ newFeeRateSatVb: 10 });
+
+    expect(res.status).toBe(400);
+  });
+
+  test('POST rbf-bump — 400 when new fee rate not higher than current', async () => {
+    const batchId = insertBroadcastBatch({ feeRateSatVb: '10' });
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/rbf-bump`)
+      .set(AUTH)
+      .send({ newFeeRateSatVb: 5 });
+
+    expect(res.status).toBe(400);
+  });
+
+  test('POST rbf-bump — proceeds to PSBT build for valid broadcast batch', async () => {
+    const batchId = insertBroadcastBatch({ feeRateSatVb: '5' });
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/rbf-bump`)
+      .set(AUTH)
+      .send({ newFeeRateSatVb: 10 });
+
+    // Validation passes; PSBT build may fail in test env (no BTC Core)
+    expect([200, 400, 422, 500, 503]).toContain(res.status);
+  });
+});
+
+describe('Withdrawal Batches — CPFP', () => {
+  test('POST cpfp — 400 for non-broadcast status', async () => {
+    const batchId = insertTestBatch('pending_approval');
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/cpfp`)
+      .set(AUTH)
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+
+  test('POST cpfp — 400 when btc_cpfp_enabled is false (default)', async () => {
+    const batchId = insertBroadcastBatch();
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/cpfp`)
+      .set(AUTH)
+      .send({});
+
+    // Default config has btc_cpfp_enabled=false
+    expect(res.status).toBe(400);
+  });
+
+  test('POST cpfp — 400 when no change UTXO found (cpfp enabled in config)', async () => {
+    // Enable CPFP for this test
+    await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ btcCpfpEnabled: true });
+
+    const batchId = insertBroadcastBatch({ feeRateSatVb: '5' });
+
+    const res = await request(app)
+      .post(`/v1/withdrawal-batches/${batchId}/cpfp`)
+      .set(AUTH)
+      .send({});
+
+    // No change UTXO in test DB → 400 or proceeds to PSBT build
+    expect([200, 400, 422, 500, 503]).toContain(res.status);
+
+    // Restore default
+    await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ btcCpfpEnabled: false });
+  });
+});

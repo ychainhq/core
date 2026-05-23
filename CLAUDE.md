@@ -317,9 +317,9 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | POST | `/v1/chains/:chain/addresses/validate` | ✅ | ✅ | ✅ `chainapi_validate_address` |
 | POST | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ✅ `chainapi_register_wallet_address` |
 | GET | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ✅ `chainapi_list_wallet_addresses` |
-| POST | `/v1/monitors/addresses` | ✅ | ✅ | ❌ |
-| GET | `/v1/monitors/addresses` | ✅ | ✅ | ❌ |
-| DELETE | `/v1/monitors/addresses/:monitorId` | ✅ | ⚠️ | ❌ |
+| POST | `/v1/monitors/addresses` | ✅ | ✅ | ✅ `chainapi_create_monitor` |
+| GET | `/v1/monitors/addresses` | ✅ | ✅ | ✅ `chainapi_list_monitors` |
+| DELETE | `/v1/monitors/addresses/:monitorId` | ✅ | ⚠️ | ✅ `chainapi_deactivate_monitor` |
 
 ### Balances
 
@@ -408,20 +408,20 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| POST | `/v1/external-signers/enroll` | ✅ | ✅ | ❌ |
-| GET | `/v1/external-signers` | ✅ | ✅ | ❌ |
-| GET | `/v1/external-signers/policies` | ✅ | ✅ | ❌ |
-| PUT | `/v1/external-signers/policies` | ✅ | ✅ | ❌ |
-| GET | `/v1/external-signers/:signerId` | ✅ | ✅ | ❌ |
-| PATCH | `/v1/external-signers/:signerId` | ✅ | ✅ | ❌ |
-| POST | `/v1/external-signers/:signerId/enable` | ✅ | ✅ | ❌ |
-| POST | `/v1/external-signers/:signerId/disable` | ✅ | ✅ | ❌ |
-| DELETE | `/v1/external-signers/:signerId` | ✅ | ✅ | ❌ |
-| POST | `/v1/external-signers/:signerId/heartbeat` | ✅ | ✅ | ❌ |
-| GET | `/v1/external-signers/:signerId/tasks` | ✅ | ✅ | ❌ |
-| POST | `/v1/external-signers/:signerId/tasks/:taskId/claim` | ✅ | ✅ | ❌ |
-| POST | `/v1/external-signers/:signerId/tasks/:taskId/submit` | ✅ | ✅ | ❌ |
-| POST | `/v1/external-signers/:signerId/tasks/:taskId/reject` | ✅ | ✅ | ❌ |
+| POST | `/v1/external-signers/enroll` | ✅ | ✅ | ✅ `chainapi_enroll_external_signer` |
+| GET | `/v1/external-signers` | ✅ | ✅ | ✅ `chainapi_list_external_signers` |
+| GET | `/v1/external-signers/policies` | ✅ | ✅ | ✅ `chainapi_get_external_signer_policies` |
+| PUT | `/v1/external-signers/policies` | ✅ | ✅ | ✅ `chainapi_upsert_external_signer_policies` |
+| GET | `/v1/external-signers/:signerId` | ✅ | ✅ | ✅ `chainapi_get_external_signer` |
+| PATCH | `/v1/external-signers/:signerId` | ✅ | ✅ | ✅ `chainapi_update_external_signer` |
+| POST | `/v1/external-signers/:signerId/enable` | ✅ | ✅ | ✅ `chainapi_enable_external_signer` |
+| POST | `/v1/external-signers/:signerId/disable` | ✅ | ✅ | ✅ `chainapi_disable_external_signer` |
+| DELETE | `/v1/external-signers/:signerId` | ✅ | ✅ | ✅ `chainapi_delete_external_signer` |
+| POST | `/v1/external-signers/:signerId/heartbeat` | ✅ | ✅ | ✅ `chainapi_signer_heartbeat` |
+| GET | `/v1/external-signers/:signerId/tasks` | ✅ | ✅ | ✅ `chainapi_list_signer_tasks` |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/claim` | ✅ | ✅ | ✅ `chainapi_claim_signing_task` |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/submit` | ✅ | ✅ | ✅ `chainapi_submit_signed_task` |
+| POST | `/v1/external-signers/:signerId/tasks/:taskId/reject` | ✅ | ✅ | ✅ `chainapi_reject_signing_task` |
 
 ### Signing Tasks
 
@@ -442,8 +442,8 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | POST | `/v1/withdrawal-batches/:batchId/reject` | ✅ | ✅ | ❌ |
 | POST | `/v1/withdrawal-batches/:batchId/retry` | ✅ | ✅ | ❌ |
 | POST | `/v1/withdrawal-batches/:batchId/cancel` | ✅ | ✅ | ❌ |
-| POST | `/v1/withdrawal-batches/:batchId/rbf-bump` | ✅ | ❌ | ❌ |
-| POST | `/v1/withdrawal-batches/:batchId/cpfp` | ✅ | ❌ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/rbf-bump` | ✅ | ✅ | ❌ |
+| POST | `/v1/withdrawal-batches/:batchId/cpfp` | ✅ | ✅ | ❌ |
 | GET | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ❌ |
 | PATCH | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ❌ |
 

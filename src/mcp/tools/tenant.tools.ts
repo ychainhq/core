@@ -27,6 +27,10 @@ import { config } from '../../config/index';
 import { issueCustomerToken } from '../../shared/customer-auth/jwt.service';
 import { bitcoinTransactionsService } from '../../modules/bitcoin/bitcoin-transactions.service';
 import { idempotencyService } from '../../modules/idempotency/idempotency.service';
+import { monitorsService } from '../../modules/monitors/monitors.service';
+import { externalSignersService } from '../../modules/external-signers/external-signers.service';
+import { signerPolicyService } from '../../modules/external-signers/signer-policy.service';
+import { signingTasksService } from '../../modules/signing-tasks/signing-tasks.service';
 
 const paging = {
   limit: z.number().int().min(1).max(100).optional(),
@@ -806,4 +810,177 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     inputSchema: { deliveryId: z.string().min(1) },
     annotations: write,
   }, async ({ deliveryId }: any) => safeTool(() => ({ data: webhooksService.retryDelivery(tenantId, deliveryId) })));
+
+  // ---- Address Monitors ----
+
+  server.registerTool('chainapi_create_monitor', {
+    description: 'Register an address for on-chain event monitoring.',
+    inputSchema: {
+      chain: z.string().min(1),
+      address: z.string().min(1),
+      label: z.string().optional(),
+      walletId: z.string().optional(),
+      events: z.array(z.string()).optional(),
+      webhookId: z.string().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional(),
+    },
+    annotations: write,
+  }, async (input: any) => safeTool(() => ({ data: monitorsService.add(tenantId, input) })));
+
+  server.registerTool('chainapi_list_monitors', {
+    description: 'List active address monitors for the tenant.',
+    inputSchema: {
+      chain: z.string().optional(),
+      walletId: z.string().optional(),
+      ...paging,
+    },
+    annotations: readOnly,
+  }, async (input: any) => safeTool(() => page(monitorsService.list(tenantId, input), input)));
+
+  server.registerTool('chainapi_deactivate_monitor', {
+    description: 'Deactivate an address monitor (soft delete).',
+    inputSchema: { monitorId: z.string().min(1) },
+    annotations: destructive,
+  }, async ({ monitorId }: any) => safeTool(() => ({ data: monitorsService.deactivate(tenantId, monitorId) })));
+
+  // ---- External Signers — Management ----
+
+  server.registerTool('chainapi_enroll_external_signer', {
+    description: 'Enroll a new external signer daemon.',
+    inputSchema: {
+      name: z.string().min(1).max(200),
+      publicKey: z.string().min(1),
+      signerFingerprint: z.string().min(1),
+      capabilities: z.object({
+        chains: z.array(z.string()),
+        assets: z.array(z.string()),
+        formats: z.array(z.string()),
+      }),
+      edition: z.enum(['community', 'enterprise']).optional(),
+      connectivityMode: z.enum(['polling', 'callback']).optional(),
+      securityLevel: z.enum(['basic', 'hardened', 'regulated']).optional(),
+      keyProvider: z.enum(['local_file', 'env', 'db_encrypted', 'vault', 'hsm', 'kms']).optional(),
+    },
+    annotations: write,
+  }, async (input: any) => safeTool(() => ({ data: externalSignersService.enroll(tenantId, input) })));
+
+  server.registerTool('chainapi_list_external_signers', {
+    description: 'List all external signers enrolled for this tenant.',
+    inputSchema: {},
+    annotations: readOnly,
+  }, async () => safeTool(() => ({ data: externalSignersService.list(tenantId) })));
+
+  server.registerTool('chainapi_get_external_signer', {
+    description: 'Get details of a specific external signer.',
+    inputSchema: { signerId: z.string().min(1) },
+    annotations: readOnly,
+  }, async ({ signerId }: any) => safeTool(() => ({ data: externalSignersService.getById(tenantId, signerId) })));
+
+  server.registerTool('chainapi_update_external_signer', {
+    description: 'Update external signer name or metadata.',
+    inputSchema: {
+      signerId: z.string().min(1),
+      name: z.string().min(1).max(200).optional(),
+      metadata: z.record(z.string(), z.unknown()).optional(),
+    },
+    annotations: write,
+  }, async ({ signerId, ...body }: any) => safeTool(() => ({ data: externalSignersService.update(tenantId, signerId, body) })));
+
+  server.registerTool('chainapi_enable_external_signer', {
+    description: 'Enable a previously disabled external signer.',
+    inputSchema: { signerId: z.string().min(1) },
+    annotations: write,
+  }, async ({ signerId }: any) => safeTool(() => ({ data: externalSignersService.enable(tenantId, signerId) })));
+
+  server.registerTool('chainapi_disable_external_signer', {
+    description: 'Disable an external signer (stops task dispatch to it).',
+    inputSchema: { signerId: z.string().min(1) },
+    annotations: write,
+  }, async ({ signerId }: any) => safeTool(() => ({ data: externalSignersService.disable(tenantId, signerId) })));
+
+  server.registerTool('chainapi_delete_external_signer', {
+    description: 'Revoke and permanently delete an external signer registration.',
+    inputSchema: { signerId: z.string().min(1) },
+    annotations: destructive,
+  }, async ({ signerId }: any) => safeTool(() => { externalSignersService.delete(tenantId, signerId); return { data: null }; }));
+
+  server.registerTool('chainapi_get_external_signer_policies', {
+    description: 'Get signing policies configured for external signers.',
+    inputSchema: {},
+    annotations: readOnly,
+  }, async () => safeTool(() => ({ data: signerPolicyService.listPolicies(tenantId) })));
+
+  server.registerTool('chainapi_upsert_external_signer_policies', {
+    description: 'Create or replace signing policies for external signers.',
+    inputSchema: {
+      policies: z.array(z.object({
+        signerId: z.string().optional(),
+        chainId: z.string().optional(),
+        assetId: z.string().optional(),
+        autoSignLimitRaw: z.string().optional(),
+        manualApprovalFromRaw: z.string().optional(),
+        dailyAutoSignLimitRaw: z.string().optional(),
+        maxSignaturesPerHour: z.number().int().positive().optional(),
+        maxFeeRateSatVb: z.number().int().positive().optional(),
+        maxOutputsPerBatch: z.number().int().positive().optional(),
+        destinationAllowlist: z.array(z.string()).optional(),
+        contractAllowlist: z.array(z.string()).optional(),
+      })),
+    },
+    annotations: write,
+  }, async ({ policies }: any) => safeTool(() => ({ data: signerPolicyService.upsertPolicies(tenantId, policies) })));
+
+  // ---- External Signers — Signer Protocol ----
+
+  server.registerTool('chainapi_signer_heartbeat', {
+    description: 'Send a heartbeat on behalf of a signer daemon (used for monitoring/testing).',
+    inputSchema: {
+      signerId: z.string().min(1),
+      status: z.string(),
+      version: z.string().optional(),
+      keyFingerprints: z.array(z.string()).optional(),
+    },
+    annotations: write,
+  }, async ({ signerId, ...body }: any) => safeTool(() => {
+    const signer = externalSignersService.heartbeat(tenantId, signerId, body);
+    return { data: { signerId: signer.id, status: signer.status, serverTime: new Date().toISOString() } };
+  }));
+
+  server.registerTool('chainapi_list_signer_tasks', {
+    description: 'List available signing tasks for a given signer.',
+    inputSchema: { signerId: z.string().min(1), limit: z.number().int().min(1).max(50).optional() },
+    annotations: readOnly,
+  }, async ({ signerId, limit }: any) => safeTool(() => ({ items: signingTasksService.listAvailableForSigner(tenantId, signerId, limit ?? 10) })));
+
+  server.registerTool('chainapi_claim_signing_task', {
+    description: 'Claim a signing task for a signer (marks it as in-progress).',
+    inputSchema: { signerId: z.string().min(1), taskId: z.string().min(1) },
+    annotations: write,
+  }, async ({ signerId, taskId }: any) => safeTool(async () => ({ data: await signingTasksService.claimTask(tenantId, taskId, signerId) })));
+
+  server.registerTool('chainapi_submit_signed_task', {
+    description: 'Submit a signed payload for a claimed signing task.',
+    inputSchema: {
+      signerId: z.string().min(1),
+      taskId: z.string().min(1),
+      signedPayload: z.string().min(1),
+      signedPayloadHash: z.string().min(1),
+      signerFingerprint: z.string().min(1),
+      signerResponseSignature: z.string().optional(),
+      signedAt: z.string().optional(),
+    },
+    annotations: write,
+  }, async ({ signerId, taskId, ...body }: any) => safeTool(async () => ({ data: await signingTasksService.submitSignedTask(tenantId, taskId, signerId, body) })));
+
+  server.registerTool('chainapi_reject_signing_task', {
+    description: 'Reject a claimed signing task with a reason.',
+    inputSchema: {
+      signerId: z.string().min(1),
+      taskId: z.string().min(1),
+      reasonCode: z.string().min(1),
+      reasonMessage: z.string().min(1),
+      rejectedAt: z.string().optional(),
+    },
+    annotations: write,
+  }, async ({ signerId, taskId, ...body }: any) => safeTool(async () => ({ data: await signingTasksService.rejectTask(tenantId, taskId, signerId, body) })));
 }
