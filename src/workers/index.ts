@@ -3,6 +3,8 @@ import { TxStatusWorker } from './tx-status.worker';
 import { WebhookDeliveryWorker } from './webhook-delivery.worker';
 import { SweepWorker } from './sweep.worker';
 import { SweepConfirmationWorker } from './sweep-confirmation.worker';
+import { WithdrawalBatcherWorker } from './withdrawal-batcher.worker';
+import { SigningTaskExpiryWorker } from './signing-task-expiry.worker';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 
@@ -11,6 +13,8 @@ const txStatus = new TxStatusWorker();
 const webhookDelivery = new WebhookDeliveryWorker();
 const sweepWorker = new SweepWorker();
 const sweepConfirmation = new SweepConfirmationWorker();
+const withdrawalBatcher = new WithdrawalBatcherWorker();
+const signingTaskExpiry = new SigningTaskExpiryWorker();
 
 export function startWorkers(): void {
   if (!config.WORKERS_ENABLED) {
@@ -24,6 +28,8 @@ export function startWorkers(): void {
   webhookDelivery.start();
   sweepWorker.start();
   sweepConfirmation.start();
+  withdrawalBatcher.start();
+  signingTaskExpiry.start();
   logger.info('All workers started');
 }
 
@@ -34,5 +40,7 @@ export function stopWorkers(): void {
   webhookDelivery.stop();
   sweepWorker.stop();
   sweepConfirmation.stop();
+  withdrawalBatcher.stop();
+  signingTaskExpiry.stop();
   logger.info('All workers stopped');
 }

@@ -27,6 +27,10 @@ import { customersRouter } from './modules/customers/customers.router';
 import { sweepsRouter } from './modules/sweeps/sweeps.router';
 import { meRouter } from './modules/me/me.router';
 import { withdrawalsRouter } from './modules/withdrawals/withdrawals.router';
+import { externalSignersRouter } from './modules/external-signers/external-signers.router';
+import { signingTasksRouter } from './modules/signing-tasks/signing-tasks.router';
+import { withdrawalBatchesRouter, withdrawalBatchConfigRouter } from './modules/withdrawal-batches/withdrawal-batches.router';
+import { signerSignaturesRouter } from './modules/external-signers/signer-signatures.router';
 import { assetsService } from './modules/assets/assets.service';
 import { registerMcpRoutes } from './mcp/register';
 
@@ -141,6 +145,21 @@ export function createApp(): express.Application {
 
   // ---- Customer withdrawals (tenant-facing: list + submit-signed) ----
   app.use('/v1/withdrawals', withdrawalsRouter);
+
+  // ---- External Signers (management + signer protocol) ----
+  app.use('/v1/external-signers', externalSignersRouter);
+
+  // ---- Signing Tasks (tenant UI: list, approve, reject) ----
+  app.use('/v1/signing-tasks', signingTasksRouter);
+
+  // ---- Withdrawal Batches ----
+  app.use('/v1/withdrawal-batches', withdrawalBatchesRouter);
+
+  // ---- Signature Audit Log ----
+  app.use('/v1/signer-signatures', signerSignaturesRouter);
+
+  // ---- Tenant batch config (under /v1/tenant/withdrawal-batch-config) ----
+  app.use('/v1/tenant/withdrawal-batch-config', withdrawalBatchConfigRouter);
 
   // ---- Webhooks ----
   app.use('/v1/webhooks', webhooksRouter);
