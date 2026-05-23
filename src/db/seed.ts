@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 import BIP32Factory from 'bip32';
@@ -94,7 +96,7 @@ export async function runSeed(): Promise<void> {
     const coinType = config.BITCOIN_NETWORK === 'mainnet' ? 0 : 1;
     const accountNode = root.derivePath(`m/44'/${coinType}'/0'`);
     const xpub = accountNode.neutered().toBase58();
-    const xprv = root.toBase58();
+    const xprv = accountNode.toBase58();
 
     db.prepare(
       "UPDATE tenant_configs SET btc_xpub = ?, updated_at = ? WHERE tenant_id = ?"
@@ -108,13 +110,28 @@ export async function runSeed(): Promise<void> {
     console.log('');
     console.log(`  BTC_DEV_XPUB=${xpub}`);
     console.log('');
-    console.log('  BIP32 root private key (for signing daemon / regtest tests):');
+    console.log('  BTC account private key (m/44\'/coinType\'/0\') — for signing daemon / regtest tests:');
     console.log(`  BTC_DEV_XPRV=${xprv}`);
     console.log('');
     console.log(`  Derivation path: m/44'/${coinType}'/0'`);
     console.log('  Customer deposit addresses derived at: m/0/{index} from xpub above');
     console.log('======================================================');
     console.log('');
+
+    // Write account xprv to engine/.env for start.sh --signer support (dev/regtest only)
+    if (config.BITCOIN_NETWORK !== 'mainnet') {
+      const envPath = path.resolve(__dirname, '../../.env');
+      if (fs.existsSync(envPath)) {
+        let envContent = fs.readFileSync(envPath, 'utf8');
+        if (/^BTC_DEV_XPRV=/m.test(envContent)) {
+          envContent = envContent.replace(/^BTC_DEV_XPRV=.*/m, `BTC_DEV_XPRV=${xprv}`);
+        } else {
+          envContent = envContent.trimEnd() + `\nBTC_DEV_XPRV=${xprv}\n`;
+        }
+        fs.writeFileSync(envPath, envContent);
+        logger.info('BTC account xprv written to engine/.env');
+      }
+    }
   } else {
     logger.info('BTC xpub already set for tenant_default, skipping');
   }
