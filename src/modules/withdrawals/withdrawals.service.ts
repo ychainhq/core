@@ -36,8 +36,11 @@ function mapWithdrawal(row: any): CustomerWithdrawal {
 
 export const withdrawalsService = {
   /**
-   * Initiate a customer withdrawal. Builds a PSBT from the tenant hot wallet UTXOs,
-   * creates a withdrawal record, and fires the withdrawal.ready_for_signing webhook.
+   * Initiate a customer withdrawal.
+   *
+   * High-throughput path: validate and reserve customer balance, then enqueue
+   * the withdrawal. The withdrawal batcher is the only component that performs
+   * hot-wallet UTXO selection and PSBT construction.
    */
   async create(
     tenantId: string,
@@ -60,6 +63,9 @@ export const withdrawalsService = {
 
     const assetId = 'bitcoin:BTC';
     const amountBigInt = BigInt(input.amountSats);
+    if (amountBigInt <= 0n) {
+      throw new ValidationError('amountSats must be greater than zero');
+    }
 
     // Check customer_available balance
     const account = ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId);
@@ -73,67 +79,9 @@ export const withdrawalsService = {
       );
     }
 
-    // Find tenant hot wallet address
-    const hotAddr = db
-      .prepare(`
-        SELECT a.address
-        FROM addresses a
-        JOIN wallets w ON w.id = a.wallet_id
-        WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
-          AND a.chain_id = 'bitcoin' AND a.status = 'active'
-        LIMIT 1
-      `)
-      .get(tenantId) as { address: string } | undefined;
-
-    if (!hotAddr) {
-      throw new UnprocessableEntityError(
-        'No tenant hot wallet address configured — cannot process withdrawal'
-      );
-    }
-
-    // Get UTXOs from tenant hot wallet
     const adapter = new BitcoinAdapter();
-    let utxos: any[];
-    try {
-      utxos = await adapter.getUtxosForAddress(hotAddr.address, 1, tenantId);
-    } catch (err) {
-      throw new UnprocessableEntityError(
-        `Unable to fetch hot wallet UTXOs: ${String(err)}`
-      );
-    }
-
-    const totalUtxoSats = utxos.reduce((sum, u) => sum + BigInt(u.amount), BigInt(0));
-    if (totalUtxoSats < amountBigInt) {
-      throw new UnprocessableEntityError(
-        `Hot wallet balance insufficient: ${totalUtxoSats} sats available, ${input.amountSats} sats requested`
-      );
-    }
-
-    // Estimate fee
-    let feeRateSatPerVbyte = 5;
-    try {
-      const feeEst = await adapter.estimateSmartFee(6);
-      if (feeEst.feeRate) feeRateSatPerVbyte = Math.ceil(feeEst.feeRate * 100000);
-    } catch {
-      logger.warn('withdrawalsService: fee estimation failed, using fallback', { tenantId });
-    }
-
-    // Build PSBT — use explicit inputs from hot wallet, customer toAddress as output
-    const btcAmount = Number(amountBigInt) / 1e8;
-    const inputs = utxos.map((u: any) => ({ txid: u.txHash, vout: u.vout }));
-    const outputs = [{ [input.toAddress]: btcAmount }];
-
-    let psbtBase64: string;
-    let feeRaw: string;
-    try {
-      const result = await adapter.walletCreateFundedPsbt(inputs, outputs, {
-        feeRate: feeRateSatPerVbyte / 1e5,
-        subtractFeeFromOutputs: [0],
-      });
-      psbtBase64 = result.psbt;
-      feeRaw = result.fee ? String(Math.round(result.fee * 1e8)) : String(feeRateSatPerVbyte * 148);
-    } catch (err: any) {
-      throw new UnprocessableEntityError(`Failed to build PSBT: ${err?.message ?? String(err)}`);
+    if (!adapter.isValidAddress(input.toAddress)) {
+      throw new ValidationError(`Invalid bitcoin address: ${input.toAddress}`);
     }
 
     // Persist withdrawal record
@@ -144,10 +92,10 @@ export const withdrawalsService = {
       INSERT INTO customer_withdrawals
         (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
          status, idempotency_key, created_at, updated_at)
-      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, ?, ?, 'pending_signature', ?, ?, ?)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, NULL, NULL, 'queued', ?, ?, ?)
     `).run(
       id, tenantId, customerId,
-      input.toAddress, input.amountSats, feeRaw, psbtBase64,
+      input.toAddress, input.amountSats,
       input.idempotencyKey ?? null,
       now, now
     );
@@ -163,25 +111,23 @@ export const withdrawalsService = {
 
     const withdrawal = withdrawalsService.getByIdInternal(id);
 
-    // Fire webhook
+    // Fire lightweight lifecycle webhook. Signing-specific events are emitted
+    // after the batcher creates a PSBT/signing task.
     webhooksService.queueEvent(
-      'withdrawal.ready_for_signing',
+      'withdrawal.queued',
       {
         withdrawalId: id,
         tenantId,
         customerId,
         toAddress: input.toAddress,
         amountSats: input.amountSats,
-        feeRaw,
-        psbt: psbtBase64,
-        submitUrl: `/v1/withdrawals/${id}/submit-signed`,
       },
       'bitcoin',
       undefined,
       tenantId
     );
 
-    logger.info('Customer withdrawal created', { id, tenantId, customerId, amountSats: input.amountSats });
+    logger.info('Customer withdrawal queued', { id, tenantId, customerId, amountSats: input.amountSats });
     return withdrawal;
   },
 

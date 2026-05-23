@@ -12,6 +12,7 @@
 - Szacuje fee (sat/vbyte) przez Bitcoin Core `estimatesmartfee`.
 - Przygotowuje unsigned transakcje / PSBT do podpisu przez klienta.
 - Broadcastuje gotowe podpisane raw transakcje.
+- Obsługuje managed withdrawals przez kolejkę `queued`, batcher BTC, signing tasks i zewnętrzne signery.
 - Monitoruje status transakcji w mempolu i po potwierdzeniach.
 - Dostarcza minimalne webhooki HMAC-podpisane dla kluczowych zdarzeń.
 - Prowadzi minimalny ledger (pending/settled balances) powiązany z depozytami.
@@ -25,7 +26,6 @@
 - Brak custody: API nie trzyma kluczy prywatnych klientów.
 - Brak podpisywania transakcji po stronie API.
 - Brak generowania adresów z xpub (Tryb A — zaplanowany jako kolejny krok).
-- Brak withdrawals managed (klient sam podpisuje i broadcastuje).
 - Brak multisig production flow.
 - Brak AML/risk scoring.
 - Brak enterprise accounting.
@@ -70,7 +70,7 @@ Poniższe funkcje są świadomie poza zakresem bety i zaplanowane jako następne
 - **Custodial signing** — przechowywanie kluczy, podpisywanie po stronie API, HSM
 - **Multisig production flow** — BTC P2WSH multisig, EVM smart-contract wallet
 - **Application-level approvals** — workflow zatwierdzania, policies
-- **Managed withdrawals** — zlecenia wypłat z approval flow
+- **Zaawansowane approval workflows** — wieloosobowe zatwierdzanie, quorum, policy UI
 - **AML / risk scoring** — integracja z Chainalysis, Elliptic lub innym dostawcą
 - **Advanced forensic** — śledzenie przepływu środków, clustering
 - **Enterprise accounting** — reconciliation, raportowanie, eksport do systemów ERP
@@ -107,9 +107,12 @@ Poniższe funkcje są świadomie poza zakresem bety i zaplanowane jako następne
 ┌───────▼──────────────────────────────────────┐
 │          In-process Background Workers        │
 │                                               │
-│  DepositMonitorWorker    (setInterval)        │
+│  DepositMonitorWorker    (tenant wallet scan) │
 │  WebhookDeliveryWorker   (setInterval)        │
 │  TxStatusWorker          (setInterval)        │
+│  WithdrawalBatcherWorker (multi-batch/run)    │
+│  SweepWorker / SweepConfirmationWorker        │
+│  SigningTaskExpiryWorker                      │
 └───────────────────────────────────────────────┘
         │
 ┌───────▼──────────────────┐
@@ -129,7 +132,9 @@ Poniższe funkcje są świadomie poza zakresem bety i zaplanowane jako następne
 
 **Payment request service** — zarządza lifecycle payment requestów (created → pending → detected → paid/expired).
 
-**Deposit monitor/indexer** — polling worker sprawdzający nowe bloki i transakcje na monitorowanych adresach.
+**Deposit monitor/indexer** — polling worker skanujący tenantowy FWallet w Bitcoin Core raz na cykl. Wyniki `listunspent` są mapowane do adresów w SQLite i synchronizowane z `cached_utxos`, dzięki czemu koszt nie rośnie liniowo z liczbą adresów.
+
+**Withdrawal batcher** — worker konsumujący `customer_withdrawals.status = queued`, budujący batch PSBT, tworzący signing task i finalizujący batch po podpisie signera.
 
 **Transaction preparation service** — przygotowuje PSBT / unsigned raw tx na podstawie UTXO i outputs. Nie trzyma kluczy.
 

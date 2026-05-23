@@ -159,7 +159,7 @@ export class SweepWorker {
       const result = await adapter.walletCreateFundedPsbt(inputs, outputs, {
         feeRate: feeRateSatPerVbyte / 1e5, // sat/vB → BTC/kB  (approx)
         subtractFeeFromOutputs: [0],
-      });
+      }, tenantId);
       psbtBase64 = result.psbt;
     } catch (err) {
       logger.warn('SweepWorker: failed to create PSBT via Bitcoin Core (non-fatal)', { tenantId, err: String(err) });

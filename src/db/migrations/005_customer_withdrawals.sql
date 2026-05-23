@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS customer_withdrawals (
   signed_psbt     TEXT,
   tx_hash         TEXT,
   status          TEXT NOT NULL DEFAULT 'pending_signature',
-  -- 'pending_signature' | 'broadcast' | 'confirmed' | 'failed'
+  -- 'queued' | 'batched' | 'pending_signature' | 'broadcast' | 'confirmed' | 'failed'
   error           TEXT,
   idempotency_key TEXT,
   created_at      TEXT NOT NULL,

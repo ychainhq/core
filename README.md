@@ -305,6 +305,52 @@ GET /v1/deposits/:depositId
 GET /v1/chains/bitcoin/addresses/:address/deposits
 ```
 
+The deposit worker scans each tenant Bitcoin Core FWallet once per cycle and
+maps returned UTXOs back to registered addresses in SQLite. This keeps the
+worker cost proportional to tenant wallets and new UTXOs, not to the total
+number of active deposit addresses.
+
+### Customer Withdrawals
+```bash
+# Customer-scoped withdrawal request
+POST /v1/me/withdrawals
+{
+  "toAddress": "bc1q...",
+  "amountSats": "100000",
+  "idempotencyKey": "optional-client-key"
+}
+
+GET /v1/me/withdrawals
+GET /v1/me/withdrawals/:withdrawalId
+
+# Tenant-facing operations
+GET /v1/withdrawals
+GET /v1/withdrawals/:withdrawalId
+```
+
+`POST /v1/me/withdrawals` validates and reserves customer balance, then creates
+a `queued` withdrawal. The request path does not build a PSBT. The withdrawal
+batcher consumes queued withdrawals, builds a BTC PSBT batch, creates a signing
+task, and finalizes/broadcasts after the external signer submits a signature.
+
+### Withdrawal Batches
+```bash
+GET /v1/withdrawal-batches
+GET /v1/withdrawal-batches/:batchId
+POST /v1/withdrawal-batches/:batchId/approve
+POST /v1/withdrawal-batches/:batchId/reject
+POST /v1/withdrawal-batches/:batchId/cancel
+POST /v1/withdrawal-batches/:batchId/retry
+
+GET /v1/tenant/withdrawal-batch-config
+PATCH /v1/tenant/withdrawal-batch-config
+```
+
+The batcher can create multiple batches per worker run, bounded by
+`BATCH_WORKER_MAX_BATCHES_PER_RUN`, `BATCH_WORKER_MAX_BATCHES_PER_TENANT_PER_RUN`,
+and `BATCH_WORKER_MAX_RUN_MS`. BTC fee estimates are cached briefly with
+`BTC_FEE_RATE_CACHE_TTL_MS`.
+
 ### Ledger
 ```bash
 # Create ledger account
@@ -396,6 +442,10 @@ Services   Chain Adapters   SQLite (WAL mode)
 Background Workers (setInterval)
     ├── DepositMonitorWorker  (30s)
     ├── TxStatusWorker        (60s)
+    ├── SweepWorker
+    ├── SweepConfirmationWorker
+    ├── WithdrawalBatcherWorker
+    ├── SigningTaskExpiryWorker
     └── WebhookDeliveryWorker (10s)
 ```
 

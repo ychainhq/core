@@ -79,12 +79,13 @@ export interface IChainAdapter {
   getTransactionStatus(txHash: string): Promise<TransactionStatus>;
   getAddressBalance(address: string, tenantId: string): Promise<AddressBalance>;
   getUtxosForAddress(address: string, minConfirmations: number, tenantId: string): Promise<Utxo[]>;
+  getWalletUtxos?(tenantId: string, minConfirmations: number): Promise<Utxo[]>;
   estimateSmartFee(targetBlocks: number): Promise<FeeEstimate>;
   testMempoolAccept(rawTx: string): Promise<MempoolAcceptResult>;
   sendRawTransaction(rawTx: string): Promise<string>;
   decodeRawTransaction(rawTx: string): Promise<any>;
   decodePsbt(psbt: string): Promise<any>;
-  walletCreateFundedPsbt(inputs: any[], outputs: any[], options?: any): Promise<any>;
+  walletCreateFundedPsbt(inputs: any[], outputs: any[], options?: any, tenantId?: string): Promise<any>;
   finalizePsbt(psbt: string): Promise<any>;
   isValidAddress(address: string): boolean;
 }

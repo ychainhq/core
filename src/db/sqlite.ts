@@ -31,6 +31,7 @@ export function getDb(): Database.Database {
   db.pragma('synchronous = NORMAL');
   db.pragma('cache_size = 8000');
   db.pragma('temp_store = MEMORY');
+  db.pragma('busy_timeout = 5000');
 
   dbInstance = db;
   return db;

@@ -216,7 +216,7 @@ prepareRouter.post('/prepare', async (req: Request, res: Response, next: NextFun
         const outputs = finalOutputs.map((o) => ({
           [o.address]: Number((BigInt(o.amount) * BigInt(100)) / BigInt(100_000_000)) / 100,
         }));
-        psbtResult = await adapter.walletCreateFundedPsbt(inputs, outputs, { feeRate: feeRate / 100000 });
+        psbtResult = await adapter.walletCreateFundedPsbt(inputs, outputs, { feeRate: feeRate / 100000 }, req.tenantId!);
       } catch {
         // Fall back to raw format data
       }

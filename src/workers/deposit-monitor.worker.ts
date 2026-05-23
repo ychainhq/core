@@ -1,5 +1,5 @@
+import crypto from 'crypto';
 import { adapterRegistry } from '../chain-adapters/registry';
-import { monitorsService } from '../modules/monitors/monitors.service';
 import { depositsService } from '../modules/deposits/deposits.service';
 import { paymentRequestsService } from '../modules/payment-requests/payment-requests.service';
 import { ledgerService } from '../modules/ledger/ledger.service';
@@ -16,13 +16,11 @@ import { getDb } from '../db/sqlite';
  * Runs every DEPOSIT_MONITOR_INTERVAL_MS (default: 30 seconds).
  *
  * Algorithm:
- * 1. Get all active watched_addresses for chain=bitcoin
- * 2. For each address, get UTXOs (via wallet listunspent or scantxoutset)
- * 3. Compare with existing deposits
- * 4. Create new deposit records for newly detected UTXOs
- * 5. Update confirmation counts for existing deposits
- * 6. Link deposits to payment requests
- * 7. Emit webhooks for status changes
+ * 1. Find tenants with active watched addresses for chain=bitcoin
+ * 2. For each tenant, scan the tenant FWallet once via listunspent
+ * 3. Upsert cached_utxos and mark missing cached UTXOs spent
+ * 4. Compare current wallet UTXOs with existing deposits
+ * 5. Create/update deposit records and ledger/webhook effects
  */
 export class DepositMonitorWorker {
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -59,9 +57,15 @@ export class DepositMonitorWorker {
   async run(): Promise<void> {
     const chainId = 'bitcoin';
     const adapter = adapterRegistry.get(chainId);
-    const watchedAddresses = monitorsService.getActiveByChain(chainId);
+    const db = getDb();
+    const tenantRows = db.prepare(`
+      SELECT DISTINCT tenant_id
+      FROM watched_addresses
+      WHERE chain_id = ? AND is_active = 1 AND tenant_id IS NOT NULL
+      ORDER BY tenant_id
+    `).all(chainId) as Array<{ tenant_id: string }>;
 
-    if (watchedAddresses.length === 0) return;
+    if (tenantRows.length === 0) return;
 
     let currentBlockCount: number;
     try {
@@ -71,27 +75,186 @@ export class DepositMonitorWorker {
       return;
     }
 
-    for (const watched of watchedAddresses) {
+    for (const { tenant_id: tenantId } of tenantRows) {
       try {
-        await this.processAddress(
-          watched.address,
-          watched.tenant_id,
-          watched.wallet_id ?? undefined,
-          currentBlockCount,
-          chainId
-        );
+        await this.processTenantWallet(tenantId, currentBlockCount, chainId);
       } catch (err) {
-        logger.warn('Failed to process watched address', { address: watched.address, error: String(err) });
+        logger.warn('Failed to process tenant wallet deposits', { tenantId, error: String(err) });
       }
     }
   }
 
-  private getCustomerIdForAddress(address: string, chainId: string): string | null {
+  private getAddressContextByTenant(tenantId: string, chainId: string): Map<string, {
+    address: string;
+    tenant_id: string;
+    customer_id: string | null;
+    wallet_id: string | null;
+    wallet_role: string | null;
+  }> {
     const db = getDb();
-    const row = db
-      .prepare('SELECT customer_id FROM addresses WHERE chain_id = ? AND address = ? LIMIT 1')
-      .get(chainId, address) as { customer_id: string | null } | undefined;
-    return row?.customer_id ?? null;
+    const rows = db.prepare(`
+      SELECT a.address, a.tenant_id, a.customer_id, a.wallet_id, w.wallet_role
+      FROM addresses a
+      LEFT JOIN wallets w ON w.id = a.wallet_id
+      WHERE a.tenant_id = ?
+        AND a.chain_id = ?
+        AND a.status = 'active'
+    `).all(tenantId, chainId) as Array<{
+      address: string;
+      tenant_id: string;
+      customer_id: string | null;
+      wallet_id: string | null;
+      wallet_role: string | null;
+    }>;
+
+    const byAddress = new Map(rows.map((row) => [row.address, row]));
+
+    const watchedOnly = db.prepare(`
+      SELECT address, tenant_id, customer_id, wallet_id
+      FROM watched_addresses
+      WHERE tenant_id = ?
+        AND chain_id = ?
+        AND is_active = 1
+    `).all(tenantId, chainId) as Array<{
+      address: string;
+      tenant_id: string;
+      customer_id: string | null;
+      wallet_id: string | null;
+    }>;
+
+    for (const row of watchedOnly) {
+      if (!byAddress.has(row.address)) {
+        byAddress.set(row.address, { ...row, wallet_role: null });
+      }
+    }
+
+    return byAddress;
+  }
+
+  private async getTenantWalletUtxos(
+    tenantId: string,
+    chainId: string,
+    knownAddresses: string[],
+  ): Promise<any[]> {
+    const adapter = adapterRegistry.get(chainId);
+    if (adapter.getWalletUtxos) {
+      return adapter.getWalletUtxos(tenantId, 0);
+    }
+
+    const all: any[] = [];
+    for (const address of knownAddresses) {
+      const utxos = await adapter.getUtxosForAddress(address, 0, tenantId);
+      all.push(...utxos);
+    }
+    return all;
+  }
+
+  private syncCachedUtxos(input: {
+    tenantId: string;
+    chainId: string;
+    utxos: any[];
+    addressContext: Map<string, {
+      customer_id: string | null;
+      wallet_id: string | null;
+      wallet_role: string | null;
+    }>;
+  }): void {
+    const db = getDb();
+    const now = new Date().toISOString();
+    const seen = new Set<string>();
+
+    db.transaction(() => {
+      for (const utxo of input.utxos) {
+        const ctx = input.addressContext.get(utxo.address);
+        if (!ctx) continue;
+
+        seen.add(`${utxo.txHash}:${utxo.vout}`);
+        const id = `utxo_${crypto.randomBytes(8).toString('hex')}`;
+
+        db.prepare(`
+          INSERT INTO cached_utxos (
+            id, tenant_id, customer_id, wallet_id, wallet_role,
+            chain_id, address, tx_hash, vout, amount_raw, script_pub_key,
+            confirmations, is_spent, is_locked, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+          ON CONFLICT(chain_id, tx_hash, vout) DO UPDATE SET
+            tenant_id = excluded.tenant_id,
+            customer_id = excluded.customer_id,
+            wallet_id = excluded.wallet_id,
+            wallet_role = excluded.wallet_role,
+            address = excluded.address,
+            amount_raw = excluded.amount_raw,
+            script_pub_key = excluded.script_pub_key,
+            confirmations = excluded.confirmations,
+            is_spent = 0,
+            updated_at = excluded.updated_at
+        `).run(
+          id,
+          input.tenantId,
+          ctx.customer_id,
+          ctx.wallet_id,
+          ctx.wallet_role,
+          input.chainId,
+          utxo.address,
+          utxo.txHash,
+          utxo.vout,
+          utxo.amount,
+          utxo.scriptPubKey ?? null,
+          utxo.confirmations ?? 0,
+          now,
+          now,
+        );
+      }
+
+      const cached = db.prepare(`
+        SELECT tx_hash, vout
+        FROM cached_utxos
+        WHERE tenant_id = ?
+          AND chain_id = ?
+          AND is_spent = 0
+      `).all(input.tenantId, input.chainId) as Array<{ tx_hash: string; vout: number }>;
+
+      for (const row of cached) {
+        if (!seen.has(`${row.tx_hash}:${row.vout}`)) {
+          db.prepare(`
+            UPDATE cached_utxos
+            SET is_spent = 1, is_locked = 0, updated_at = ?
+            WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
+          `).run(now, input.tenantId, input.chainId, row.tx_hash, row.vout);
+        }
+      }
+    })();
+  }
+
+  private getExistingDepositMap(tenantId: string, chainId: string): Map<string, any> {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT *
+      FROM deposits
+      WHERE tenant_id = ?
+        AND chain_id = ?
+    `).all(tenantId, chainId) as any[];
+    return new Map(rows.map((row) => [`${row.tx_hash}:${row.vout}`, row]));
+  }
+
+  private getPendingPaymentRequestsByAddress(tenantId: string, chainId: string): Map<string, any[]> {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT id, address, confirmations_required
+      FROM payment_requests
+      WHERE tenant_id = ?
+        AND chain_id = ?
+        AND status IN ('pending', 'detected', 'partially_paid')
+      ORDER BY created_at DESC
+    `).all(tenantId, chainId) as Array<{ id: string; address: string; confirmations_required: number }>;
+
+    const byAddress = new Map<string, any[]>();
+    for (const row of rows) {
+      const list = byAddress.get(row.address) ?? [];
+      list.push(row);
+      byAddress.set(row.address, list);
+    }
+    return byAddress;
   }
 
   private getDepositLedgerAccount(
@@ -208,35 +371,39 @@ export class DepositMonitorWorker {
     }
   }
 
-  private async processAddress(
-    address: string,
+  private async processTenantWallet(
     tenantId: string,
-    walletId: string | undefined,
-    currentBlockCount: number,
+    _currentBlockCount: number,
     chainId: string
   ): Promise<void> {
-    const adapter = adapterRegistry.get(chainId);
     const assetId = 'bitcoin:BTC';
-    const customerId = this.getCustomerIdForAddress(address, chainId);
+    const addressContext = this.getAddressContextByTenant(tenantId, chainId);
+    if (addressContext.size === 0) return;
 
-    // Get UTXOs for address (0 confirmations = includes mempool)
     let utxos: any[];
     try {
-      utxos = await adapter.getUtxosForAddress(address, 0, tenantId);
+      utxos = await this.getTenantWalletUtxos(tenantId, chainId, [...addressContext.keys()]);
     } catch (err) {
-      logger.warn('Failed to get UTXOs', { address, error: String(err) });
+      logger.warn('Failed to get tenant wallet UTXOs', { tenantId, error: String(err) });
       return;
     }
 
-    // Get existing deposits for this address
-    const existingDeposits = depositsService.getExistingByAddress(chainId, address);
-    const existingDepositKeys = new Set(
-      existingDeposits.map((d) => `${d.tx_hash}:${d.vout}`)
-    );
+    const knownUtxos = utxos.filter((utxo) => addressContext.has(utxo.address));
+    this.syncCachedUtxos({ tenantId, chainId, utxos: knownUtxos, addressContext });
 
-    for (const utxo of utxos) {
+    const existingDeposits = this.getExistingDepositMap(tenantId, chainId);
+    const pendingPaymentRequestsByAddress = this.getPendingPaymentRequestsByAddress(tenantId, chainId);
+
+    for (const utxo of knownUtxos) {
+      const ctx = addressContext.get(utxo.address);
+      if (!ctx) continue;
+
+      const address = utxo.address;
+      const customerId = ctx.customer_id;
+      const walletId = ctx.wallet_id ?? undefined;
       const key = `${utxo.txHash}:${utxo.vout}`;
-      const isNew = !existingDepositKeys.has(key);
+      const existing = existingDeposits.get(key);
+      const isNew = !existing;
 
       const confirmations = utxo.confirmations ?? 0;
       let status: string;
@@ -273,7 +440,7 @@ export class DepositMonitorWorker {
         logger.info('New deposit detected', { depositId: deposit.id, txHash: utxo.txHash, address, amount: amountDisplay });
 
         // Check for matching payment request
-        const pendingPRs = paymentRequestsService.findPendingByAddress(address, chainId);
+        const pendingPRs = pendingPaymentRequestsByAddress.get(address) ?? [];
         for (const pr of pendingPRs) {
           // Associate deposit with payment request
           depositsService.updatePaymentRequestId(deposit.id, pr.id);
@@ -340,8 +507,6 @@ export class DepositMonitorWorker {
         }
       } else {
         // Update existing deposit — check for confirmation status change
-        const existing = existingDeposits.find((d) => `${d.tx_hash}:${d.vout}` === key)!;
-
         if (existing.status !== status || existing.confirmations !== confirmations) {
           if (isConfirmationEligible) {
             this.ensureDepositConfirmedEffects({

@@ -77,7 +77,7 @@ export class EthereumPlaceholderAdapter implements IChainAdapter {
     throw new NotImplementedError('Ethereum');
   }
 
-  walletCreateFundedPsbt(_inputs: any[], _outputs: any[], _options?: any): Promise<any> {
+  walletCreateFundedPsbt(_inputs: any[], _outputs: any[], _options?: any, _tenantId?: string): Promise<any> {
     throw new NotImplementedError('Ethereum');
   }
 

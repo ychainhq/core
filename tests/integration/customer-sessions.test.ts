@@ -14,7 +14,8 @@
  * - GET /v1/withdrawals/:id — tenant-facing detail
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, AUTH, teardownDb, uniqueAddr } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr, ADDR_1 } from './helpers';
+import { ledgerService } from '../../src/modules/ledger/ledger.service';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -291,6 +292,39 @@ describe('Customer isolation', () => {
 // POST /v1/me/withdrawals — insufficient balance (no hot wallet configured)
 // ---------------------------------------------------------------------------
 describe('POST /v1/me/withdrawals', () => {
+  it('queues a withdrawal and does not build a PSBT in the request path', async () => {
+    const { tenantId, auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const token = await issueSession(auth, customer.id);
+    const account = ledgerService.findAccountByCustomerAndAsset(
+      tenantId,
+      customer.id,
+      'bitcoin:BTC'
+    );
+    expect(account).toBeTruthy();
+    ledgerService.addEntry({
+      ledgerAccountId: account!.id,
+      type: 'test_credit',
+      amountRaw: '200000',
+      referenceType: 'test',
+      referenceId: 'queued_withdrawal',
+      isPending: false,
+    });
+
+    const res = await request(app)
+      .post('/v1/me/withdrawals')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({
+        toAddress: ADDR_1,
+        amountSats: '100000',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.status).toBe('queued');
+    expect(res.body.data.psbt).toBeNull();
+    expect(res.body.data.fee_raw).toBeNull();
+  });
+
   it('returns 422 when customer has no balance', async () => {
     const { auth } = await createTenantWithKey();
     const customer = await createCustomer(auth);

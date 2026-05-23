@@ -193,6 +193,25 @@ export class BitcoinAdapter implements IChainAdapter {
   }
 
   /**
+   * Get all UTXOs known to a tenant's watch-only wallet.
+   * This is the high-throughput path for workers: one RPC per tenant instead
+   * of one RPC per watched address.
+   */
+  async getWalletUtxos(tenantId: string, minConfirmations = 0): Promise<Utxo[]> {
+    const walletName = btcWalletName(tenantId);
+    const unspent = await this.rpc.listUnspent(minConfirmations, 9999999, [], walletName);
+    return unspent.map((u: any) => ({
+      txHash: u.txid,
+      vout: u.vout,
+      address: u.address,
+      amount: btcFloatToSatoshi(u.amount),
+      scriptPubKey: u.scriptPubKey,
+      confirmations: u.confirmations,
+      height: u.height ?? null,
+    }));
+  }
+
+  /**
    * Import a new address into the tenant's watch-only wallet.
    * timestamp='now' means no historical rescan — BTC Core tracks from current block forward.
    * Use this when the address is freshly derived and cannot have prior history.
@@ -256,8 +275,15 @@ export class BitcoinAdapter implements IChainAdapter {
     return this.rpc.decodePsbt(psbt);
   }
 
-  async walletCreateFundedPsbt(inputs: any[], outputs: any[], options?: any): Promise<any> {
-    return this.rpc.walletCreateFundedPsbt(inputs, outputs, 0, options || {});
+  async walletCreateFundedPsbt(inputs: any[], outputs: any[], options?: any, tenantId?: string): Promise<any> {
+    return this.rpc.walletCreateFundedPsbt(
+      inputs,
+      outputs,
+      0,
+      options || {},
+      false,
+      tenantId ? btcWalletName(tenantId) : undefined,
+    );
   }
 
   async finalizePsbt(psbt: string): Promise<any> {

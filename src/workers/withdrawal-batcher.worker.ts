@@ -16,6 +16,9 @@ const BATCH_WORKER_INTERVAL_MS = parseInt(
   process.env['BATCH_WORKER_INTERVAL_MS'] ?? '30000',
   10
 );
+const MAX_BATCHES_PER_RUN = parseInt(process.env['BATCH_WORKER_MAX_BATCHES_PER_RUN'] ?? '25', 10);
+const MAX_BATCHES_PER_TENANT_PER_RUN = parseInt(process.env['BATCH_WORKER_MAX_BATCHES_PER_TENANT_PER_RUN'] ?? '5', 10);
+const MAX_RUN_MS = parseInt(process.env['BATCH_WORKER_MAX_RUN_MS'] ?? '25000', 10);
 
 export class WithdrawalBatcherWorker {
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -59,21 +62,42 @@ export class WithdrawalBatcherWorker {
 
     logger.debug('WithdrawalBatcherWorker: processing tenants', { count: tenantsWithQueued.length });
 
-    for (const { tenant_id } of tenantsWithQueued) {
-      try {
-        const batch = await withdrawalBatcherService.buildBatchForTenant(tenant_id);
-        if (batch) {
-          logger.info('WithdrawalBatcherWorker: batch created', {
+    const startedAt = Date.now();
+    const perTenantCount = new Map<string, number>();
+    let totalCreated = 0;
+    let madeProgress = true;
+
+    while (
+      madeProgress &&
+      totalCreated < MAX_BATCHES_PER_RUN &&
+      Date.now() - startedAt < MAX_RUN_MS
+    ) {
+      madeProgress = false;
+
+      for (const { tenant_id } of tenantsWithQueued) {
+        if (totalCreated >= MAX_BATCHES_PER_RUN || Date.now() - startedAt >= MAX_RUN_MS) break;
+
+        const tenantCreated = perTenantCount.get(tenant_id) ?? 0;
+        if (tenantCreated >= MAX_BATCHES_PER_TENANT_PER_RUN) continue;
+
+        try {
+          const batch = await withdrawalBatcherService.buildBatchForTenant(tenant_id);
+          if (batch) {
+            totalCreated++;
+            perTenantCount.set(tenant_id, tenantCreated + 1);
+            madeProgress = true;
+            logger.info('WithdrawalBatcherWorker: batch created', {
+              tenantId: tenant_id,
+              batchId: batch.id,
+              outputsCount: batch.outputs_count,
+            });
+          }
+        } catch (err) {
+          logger.warn('WithdrawalBatcherWorker: batch build failed', {
             tenantId: tenant_id,
-            batchId: batch.id,
-            outputsCount: batch.outputs_count,
+            error: String(err),
           });
         }
-      } catch (err) {
-        logger.warn('WithdrawalBatcherWorker: batch build failed', {
-          tenantId: tenant_id,
-          error: String(err),
-        });
       }
     }
   }
