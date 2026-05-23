@@ -68,6 +68,16 @@ export interface MempoolAcceptResult {
   };
 }
 
+/**
+ * Entry for a batch address import during wallet reconciliation.
+ * timestampSec: Unix timestamp from which to scan — avoids full rescan.
+ */
+export interface BatchImportEntry {
+  address: string;
+  label: string;
+  timestampSec: number;
+}
+
 export interface IChainAdapter {
   chain: string;
   getBlockchainInfo(): Promise<BlockchainInfo>;
@@ -80,6 +90,12 @@ export interface IChainAdapter {
   getAddressBalance(address: string, tenantId: string): Promise<AddressBalance>;
   getUtxosForAddress(address: string, minConfirmations: number, tenantId: string): Promise<Utxo[]>;
   getWalletUtxos?(tenantId: string, minConfirmations: number): Promise<Utxo[]>;
+  /**
+   * Batch-import multiple addresses into the chain's tracking infrastructure.
+   * Optional — chains without a node-side wallet concept (e.g. EVM) leave
+   * this undefined; the reconciler skips it gracefully.
+   */
+  batchImportAddresses?(entries: BatchImportEntry[], tenantId: string): Promise<void>;
   estimateSmartFee(targetBlocks: number): Promise<FeeEstimate>;
   testMempoolAccept(rawTx: string): Promise<MempoolAcceptResult>;
   sendRawTransaction(rawTx: string): Promise<string>;

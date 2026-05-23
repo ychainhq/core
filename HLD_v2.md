@@ -79,7 +79,6 @@ Platforma przygotowuje PSBT, klient podpisuje, broadcast przez API. Identycznie 
 - Brak AML/risk scoring.
 - Brak enterprise accounting.
 - Brak Postgres / Redis / BullMQ.
-- Brak zaawansowanego fee bumping / RBF.
 - Brak checkout session.
 - Brak platform_custody / hybrid_custody (HSM/KMS/MPC).
 
@@ -131,7 +130,6 @@ Platforma przygotowuje PSBT, klient podpisuje, broadcast przez API. Identycznie 
 - **Postgres / high availability** — migracja z SQLite
 - **Redis / distributed queues** — zewnętrzna kolejka
 - **BullMQ** — zaawansowane zarządzanie kolejkami
-- **Advanced fee bumping / RBF** — automatyczne przyspieszanie transakcji
 - **Checkout sessions** — multi-asset checkout z konwersją fiat-krypto
 - **Address generation z xpub** (Tryb A) — HD deterministic addresses
 
@@ -171,9 +169,14 @@ Platforma przygotowuje PSBT, klient podpisuje, broadcast przez API. Identycznie 
 
      ┌──────────────────────────────────────────────────────────┐
      │          In-process Background Workers                   │
-     │  DepositMonitorWorker   (per-tenant polling)            │
-     │  WebhookDeliveryWorker  (per-tenant delivery)           │
-     │  TxStatusWorker         (per-tenant monitoring)         │
+     │  DepositMonitorWorker    (per-tenant wallet scan)       │
+     │  WebhookDeliveryWorker   (delivery + auto-pause)        │
+     │  TxStatusWorker          (per-tenant monitoring)        │
+     │  WithdrawalBatcherWorker (multi-batch, round-robin)     │
+     │  SweepWorker / SweepConfirmationWorker                  │
+     │  SigningTaskExpiryWorker                                 │
+     │  WalCheckpointWorker     (SQLite WAL maintenance)       │
+     │  RetentionWorker         (webhook_deliveries cleanup)   │
      └──────────────────────────────────────────────────────────┘
 
      ┌──────────────────────────────────────────────────────────┐
@@ -908,6 +911,33 @@ Protokół integracji z zewnętrznym signerem (OSS/Enterprise daemon). Signer po
 | `active` | Aktywny |
 | `disabled` | Dezaktywowany przez tenanta |
 | `frozen` | Zamrożony (np. podejrzenie nadużycia) |
+
+### Customer withdrawal statusy
+
+| Status | Opis |
+|--------|------|
+| `queued` | Oczekuje na przetworzenie przez batcher |
+| `batched` | Przypisana do partii — PSBT w budowie |
+| `pending_signature` | Partia przekazana do sygnatariusza |
+| `signed` | Podpisana — oczekuje na broadcast |
+| `broadcast` | Transakcja wyemitowana do sieci |
+| `confirmed` | Transakcja potwierdzona on-chain |
+| `failed` | Błąd przetwarzania |
+| `cancelled` | Anulowana przed batczowaniem |
+
+### Withdrawal batch statusy
+
+| Status | Opis |
+|--------|------|
+| `building` | Partia jest budowana (coin selection, PSBT) |
+| `pending_approval` | Oczekuje na ręczne zatwierdzenie przez operatora |
+| `pending_signature` | Przekazana do zewnętrznego sygnatariusza |
+| `signed` | PSBT podpisana — gotowa do broadcast |
+| `broadcast` | Transakcja wyemitowana do sieci |
+| `confirmed` | Transakcja potwierdzona on-chain |
+| `failed` | Błąd (coin selection, signing, broadcast) |
+| `cancelled` | Anulowana przez operatora |
+| `replaced` | Zastąpiona nową transakcją (RBF bump) |
 
 ---
 

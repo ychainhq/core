@@ -6,6 +6,10 @@ import { config } from '../config/index';
 const MAX_ATTEMPTS = 5;
 const BACKOFF_BASE_SECONDS = 60; // 1 minute base, doubles each attempt
 
+function autoPauseThreshold(): number {
+  return config.WEBHOOK_AUTO_PAUSE_THRESHOLD;
+}
+
 /**
  * WebhookDeliveryWorker
  *
@@ -133,6 +137,10 @@ export class WebhookDeliveryWorker {
         SET status = 'sent', attempts = ?, delivered_at = ?, updated_at = ?
         WHERE id = ?
       `).run(newAttempts, nowIso, nowIso, delivery.id);
+      // Successful delivery resets the consecutive failure counter
+      db.prepare(`
+        UPDATE webhooks SET consecutive_failures = 0, updated_at = ? WHERE id = ?
+      `).run(nowIso, delivery.webhook_id);
       logger.debug('Webhook delivered', { deliveryId: delivery.id, eventType: delivery.event_type });
     } else {
       if (newAttempts >= MAX_ATTEMPTS) {
@@ -146,6 +154,26 @@ export class WebhookDeliveryWorker {
           attempts: newAttempts,
           error: errorMessage,
         });
+
+        // Increment consecutive_failures; auto-pause webhook if threshold reached
+        const updated = db.prepare(`
+          UPDATE webhooks
+          SET consecutive_failures = consecutive_failures + 1, updated_at = ?
+          WHERE id = ? AND is_active = 1
+          RETURNING consecutive_failures
+        `).get(nowIso, delivery.webhook_id) as { consecutive_failures: number } | undefined;
+
+        if (updated && updated.consecutive_failures >= autoPauseThreshold()) {
+          db.prepare(`
+            UPDATE webhooks
+            SET is_active = 0, auto_paused_at = ?, updated_at = ?
+            WHERE id = ?
+          `).run(nowIso, nowIso, delivery.webhook_id);
+          logger.warn('Webhook auto-paused due to consecutive failures', {
+            webhookId: delivery.webhook_id,
+            consecutiveFailures: updated.consecutive_failures,
+          });
+        }
       } else {
         // Exponential backoff: 1min, 2min, 4min, 8min, ...
         const backoffSeconds = BACKOFF_BASE_SECONDS * Math.pow(2, newAttempts - 1);

@@ -8,6 +8,7 @@ import {
   Utxo,
   FeeEstimate,
   MempoolAcceptResult,
+  BatchImportEntry,
 } from '../types';
 import { validateBitcoinAddress } from '../../shared/validation/bitcoin';
 import { config } from '../../config/index';
@@ -237,6 +238,29 @@ export class BitcoinAdapter implements IChainAdapter {
       walletName
     );
     logger.info('Address reimported with timestamp', { tenantId, walletName, address, timestampSec });
+  }
+
+  /**
+   * Batch-import up to `chunkSize` addresses per importDescriptors call.
+   * Reduces round-trips to Bitcoin Core compared to one-by-one import.
+   */
+  async batchImportAddresses(entries: BatchImportEntry[], tenantId: string, chunkSize = 100): Promise<void> {
+    const walletName = btcWalletName(tenantId);
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      const chunk = entries.slice(i, i + chunkSize);
+      const descriptors = chunk.map((e) => ({
+        desc: `addr(${e.address})`,
+        timestamp: e.timestampSec,
+        label: e.label,
+      }));
+      await this.rpc.importDescriptors(descriptors, walletName);
+      logger.info('Batch imported addresses into tenant wallet', {
+        tenantId,
+        walletName,
+        count: chunk.length,
+        offset: i,
+      });
+    }
   }
 
   async estimateSmartFee(targetBlocks: number): Promise<FeeEstimate> {

@@ -67,9 +67,8 @@ export class DepositMonitorWorker {
 
     if (tenantRows.length === 0) return;
 
-    let currentBlockCount: number;
     try {
-      currentBlockCount = await adapter.getBlockCount();
+      await adapter.getBlockCount();
     } catch (err) {
       logger.warn('Failed to get block count, skipping deposit monitor run', { error: String(err) });
       return;
@@ -77,7 +76,7 @@ export class DepositMonitorWorker {
 
     for (const { tenant_id: tenantId } of tenantRows) {
       try {
-        await this.processTenantWallet(tenantId, currentBlockCount, chainId);
+        await this.processTenantWallet(tenantId, chainId);
       } catch (err) {
         logger.warn('Failed to process tenant wallet deposits', { tenantId, error: String(err) });
       }
@@ -371,11 +370,7 @@ export class DepositMonitorWorker {
     }
   }
 
-  private async processTenantWallet(
-    tenantId: string,
-    _currentBlockCount: number,
-    chainId: string
-  ): Promise<void> {
+  private async processTenantWallet(tenantId: string, chainId: string): Promise<void> {
     const assetId = 'bitcoin:BTC';
     const addressContext = this.getAddressContextByTenant(tenantId, chainId);
     if (addressContext.size === 0) return;
@@ -505,41 +500,21 @@ export class DepositMonitorWorker {
             status,
           });
         }
-      } else {
-        // Update existing deposit — check for confirmation status change
-        if (existing.status !== status || existing.confirmations !== confirmations) {
-          if (isConfirmationEligible) {
-            this.ensureDepositConfirmedEffects({
-              tenantId,
-              customerId,
-              walletId,
-              chainId,
-              assetId,
-              depositId: deposit.id,
-              txHash: utxo.txHash,
-              address,
-              amountRaw,
-              amountDisplay,
-              confirmations,
-              status,
-            });
-          }
-        } else if (isConfirmationEligible) {
-          this.ensureDepositConfirmedEffects({
-            tenantId,
-            customerId,
-            walletId,
-            chainId,
-            assetId,
-            depositId: deposit.id,
-            txHash: utxo.txHash,
-            address,
-            amountRaw,
-            amountDisplay,
-            confirmations,
-            status,
-          });
-        }
+      } else if (isConfirmationEligible) {
+        this.ensureDepositConfirmedEffects({
+          tenantId,
+          customerId,
+          walletId,
+          chainId,
+          assetId,
+          depositId: deposit.id,
+          txHash: utxo.txHash,
+          address,
+          amountRaw,
+          amountDisplay,
+          confirmations,
+          status,
+        });
       }
     }
   }
