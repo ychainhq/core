@@ -314,6 +314,20 @@ export class BitcoinAdapter implements IChainAdapter {
     return this.rpc.finalizePsbt(psbt);
   }
 
+  /**
+   * Build an unsigned PSBT without wallet involvement.
+   * Uses createpsbt (no solvability requirement) then utxoupdatepsbt to fill
+   * in witness_utxo fields from the global UTXO set — required so the external
+   * signer can compute the segwit sighash for each input.
+   */
+  async createUnsignedPsbt(
+    inputs: Array<{ txid: string; vout: number }>,
+    outputs: Array<Record<string, number>>,
+  ): Promise<string> {
+    const psbt = await this.rpc.createPsbt(inputs, outputs);
+    return this.rpc.utxoUpdatePsbt(psbt);
+  }
+
   isValidAddress(address: string): boolean {
     return validateBitcoinAddress(address, this.network);
   }

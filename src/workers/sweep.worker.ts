@@ -139,30 +139,38 @@ export class SweepWorker {
       utxoCount: sweepableUtxos.length,
     });
 
-    // Estimate fee (target 6 blocks)
+    // Estimate fee (target 6 blocks). adapter.estimateSmartFee already returns sat/vbyte.
     let feeRateSatPerVbyte = 5; // fallback
     try {
       const feeEst = await adapter.estimateSmartFee(6);
-      if (feeEst.feeRate) feeRateSatPerVbyte = Math.ceil(feeEst.feeRate * 100000); // BTC/kB → sat/vB
+      if (feeEst.feeRate) feeRateSatPerVbyte = feeEst.feeRate;
     } catch {
       logger.warn('SweepWorker: fee estimation failed, using fallback', { tenantId });
     }
 
-    // Build PSBT via Bitcoin Core walletCreateFundedPsbt
-    // We pass explicit inputs + the hot address as output; Bitcoin Core adds change if any
-    const btcAmount = Number(totalSats) / 1e8;
-    const walletName = `btc_${tenantId}`;
+    // Build unsigned PSBT via createpsbt + utxoupdatepsbt.
+    // walletCreateFundedPsbt fails on watch-only wallets with addr() descriptors
+    // because those are not "solvable". createpsbt skips that check entirely and
+    // utxoupdatepsbt fills in witness_utxo from the global UTXO set so the
+    // external signer can compute the segwit sighash.
+    const txVbytes = 42 + 68 * sweepableUtxos.length; // P2WPKH: 42 overhead + 68/input
+    const feeSats = BigInt(Math.ceil(feeRateSatPerVbyte * txVbytes));
+    const outputSats = totalSats - feeSats;
+
+    if (outputSats <= BigInt(546)) {
+      logger.warn('SweepWorker: sweep amount after fee is at or below dust threshold', {
+        tenantId, totalSats: totalSats.toString(), feeSats: feeSats.toString(),
+      });
+      return;
+    }
+
     let psbtBase64: string;
     try {
       const inputs = sweepableUtxos.map((u) => ({ txid: u.txHash, vout: u.vout }));
-      const outputs = [{ [hotAddr.address]: btcAmount }];
-      const result = await adapter.walletCreateFundedPsbt(inputs, outputs, {
-        feeRate: feeRateSatPerVbyte / 1e5, // sat/vB → BTC/kB  (approx)
-        subtractFeeFromOutputs: [0],
-      }, tenantId);
-      psbtBase64 = result.psbt;
+      const outputBtc = parseFloat((Number(outputSats) / 1e8).toFixed(8));
+      psbtBase64 = await adapter.createUnsignedPsbt(inputs, [{ [hotAddr.address]: outputBtc }]);
     } catch (err) {
-      logger.warn('SweepWorker: failed to create PSBT via Bitcoin Core (non-fatal)', { tenantId, err: String(err) });
+      logger.warn('SweepWorker: failed to create PSBT (non-fatal)', { tenantId, err: String(err) });
       return;
     }
 
@@ -173,7 +181,7 @@ export class SweepWorker {
       fromAddresses: sweepableUtxos.map((u) => u.address),
       toAddress: hotAddr.address,
       amountRaw: totalSats.toString(),
-      feeRaw: String(Math.round(feeRateSatPerVbyte * sweepableUtxos.length * 148)),
+      feeRaw: feeSats.toString(),
       psbt: psbtBase64,
     });
 

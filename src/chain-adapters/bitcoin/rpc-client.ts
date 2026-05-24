@@ -257,6 +257,14 @@ export class BitcoinRpcClient {
     return this.call('finalizepsbt', [psbt, extract]);
   }
 
+  async createPsbt(inputs: any[], outputs: any[], locktime = 0): Promise<string> {
+    return this.call<string>('createpsbt', [inputs, outputs, locktime]);
+  }
+
+  async utxoUpdatePsbt(psbt: string): Promise<string> {
+    return this.call<string>('utxoupdatepsbt', [psbt]);
+  }
+
   async getMempoolEntry(txHash: string): Promise<any> {
     return this.call('getmempoolentry', [txHash]);
   }
