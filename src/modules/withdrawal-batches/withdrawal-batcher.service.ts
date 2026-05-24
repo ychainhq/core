@@ -111,10 +111,10 @@ interface BatchConfig {
 function getDefaultConfig(): BatchConfig {
   return {
     btc_batching_enabled: 1,
-    btc_batch_interval_seconds: 300,
+    btc_batch_interval_seconds: 30,
     btc_max_outputs_per_batch: 200,
     btc_min_outputs_per_batch: 1,
-    btc_max_batch_age_seconds: 300,
+    btc_max_batch_age_seconds: 30,
     btc_max_batch_total_sats: null,
     btc_max_single_withdrawal_sats: null,
     btc_min_withdrawal_sats: null,
