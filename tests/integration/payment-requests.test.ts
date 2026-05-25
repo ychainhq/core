@@ -290,17 +290,13 @@ describe('GET /v1/payment-requests/:id/qr', () => {
 });
 
 describe('POST /v1/payment-requests/:id/cancel', () => {
-  let prId: string;
-
-  beforeEach(async () => {
-    const res = await request(app)
+  it('cancels a pending payment request', async () => {
+    const createRes = await request(app)
       .post('/v1/payment-requests')
       .set(AUTH)
       .send({ chain: 'bitcoin', asset: 'BTC', amount: '0.001', address: ADDR_1 });
-    prId = res.body.data.id;
-  });
+    const prId = createRes.body.data.id;
 
-  it('cancels a pending payment request', async () => {
     const res = await request(app)
       .post(`/v1/payment-requests/${prId}/cancel`)
       .set(AUTH);
@@ -310,6 +306,12 @@ describe('POST /v1/payment-requests/:id/cancel', () => {
   });
 
   it('returns 409 when trying to cancel an already cancelled request', async () => {
+    const createRes = await request(app)
+      .post('/v1/payment-requests')
+      .set(AUTH)
+      .send({ chain: 'bitcoin', asset: 'BTC', amount: '0.001', address: ADDR_1 });
+    const prId = createRes.body.data.id;
+
     await request(app).post(`/v1/payment-requests/${prId}/cancel`).set(AUTH);
 
     const res = await request(app)
