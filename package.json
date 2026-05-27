@@ -1,6 +1,6 @@
 {
   "name": "chain-api",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Crypto REST API for Bitcoin payment processing and custody",
   "main": "dist/main.js",
   "scripts": {
