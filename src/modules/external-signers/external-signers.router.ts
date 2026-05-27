@@ -25,8 +25,19 @@ import { z } from 'zod';
 import { externalSignersService } from './external-signers.service';
 import { signerPolicyService } from './signer-policy.service';
 import { signingTasksService } from '../signing-tasks/signing-tasks.service';
+import { resolvePermission } from '../../shared/actor-auth/context';
+import { ApiError } from '../../shared/errors/index';
 
 export const externalSignersRouter = Router();
+
+function checkActorAccess(req: Request, entity: string, action: 'read' | 'write'): void {
+  const ctx = (req as any).actorContext;
+  if (!ctx) return; // No X-Actor-Token = admin mode, pass through
+  const resolved = resolvePermission(ctx, entity, action);
+  if (resolved.level === 'none') {
+    throw new ApiError(403, 'INSUFFICIENT_PERMISSIONS', `Actor lacks ${entity}:${action} permission`);
+  }
+}
 
 // Map DB row (snake_case) to the protocol's SigningTask shape (camelCase).
 // The signer package uses `chain` (not `chainId`) per external-signer-protocol.
@@ -134,6 +145,7 @@ externalSignersRouter.put('/policies', (req: Request, res: Response, next: NextF
 // GET /v1/external-signers
 externalSignersRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
   try {
+    checkActorAccess(req, 'external-signer', 'read');
     const signers = externalSignersService.list(tenantId(req));
     res.json({ data: signers });
   } catch (err) { next(err); }

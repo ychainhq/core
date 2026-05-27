@@ -6,7 +6,29 @@
 
 import request from 'supertest';
 import express from 'express';
-import { bootstrapApp, teardownDb, AUTH } from './helpers';
+import crypto from 'crypto';
+import { bootstrapApp, teardownDb, AUTH, TEST_TENANT_ID } from './helpers';
+import { getDb } from '../../src/db/sqlite';
+
+function base64url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function makeActorToken(tenantId: string, secret: string, permissions: string[] = []): string {
+  const header = base64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64url(Buffer.from(JSON.stringify({
+    sub: 'user_rbac_test',
+    tenant_id: tenantId,
+    permissions,
+    teams: [],
+    roles: [],
+    iat: now,
+    exp: now + 3600,
+  })));
+  const sig = base64url(crypto.createHmac('sha256', secret).update(`${header}.${payload}`).digest());
+  return `${header}.${payload}.${sig}`;
+}
 
 let app: express.Application;
 
@@ -225,5 +247,53 @@ describe('External Signers — Revoke', () => {
       .set(AUTH);
 
     expect(getRes.body.data.status).toBe('revoked');
+  });
+});
+
+// ─── RBAC guard — external-signer:read ────────────────────────────────────────
+
+const ACTOR_SECRET_EXT = 'rbac-external-signer-secret-at-least-32!!!';
+
+describe('External Signers — RBAC guard (X-Actor-Token)', () => {
+  beforeAll(() => {
+    const db = getDb();
+    db.prepare(`UPDATE tenant_configs SET actor_token_secret = ? WHERE tenant_id = ?`)
+      .run(ACTOR_SECRET_EXT, TEST_TENANT_ID);
+  });
+
+  it('GET /v1/external-signers with token lacking external-signer:read → 403', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_EXT, []);
+    const res = await request(app)
+      .get('/v1/external-signers')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('INSUFFICIENT_PERMISSIONS');
+  });
+
+  it('GET /v1/external-signers with external-signer:read:all → 200', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_EXT, ['external-signer:read:all']);
+    const res = await request(app)
+      .get('/v1/external-signers')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('GET /v1/external-signers without X-Actor-Token → 200 (admin mode)', async () => {
+    const res = await request(app)
+      .get('/v1/external-signers')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('unrelated permission (wallet:read:all) still yields 403 for external-signer', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_EXT, ['wallet:read:all']);
+    const res = await request(app)
+      .get('/v1/external-signers')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(403);
   });
 });

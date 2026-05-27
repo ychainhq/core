@@ -1,5 +1,27 @@
 import request from 'supertest';
-import { bootstrapApp, AUTH, ADDR_1, ADDR_2, teardownDb, uniqueAddr } from './helpers';
+import crypto from 'crypto';
+import { bootstrapApp, AUTH, ADDR_1, ADDR_2, teardownDb, uniqueAddr, TEST_TENANT_ID } from './helpers';
+import { getDb } from '../../src/db/sqlite';
+
+function base64url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function makeActorToken(tenantId: string, secret: string, permissions: string[] = []): string {
+  const header = base64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64url(Buffer.from(JSON.stringify({
+    sub: 'user_rbac_test',
+    tenant_id: tenantId,
+    permissions,
+    teams: [],
+    roles: [],
+    iat: now,
+    exp: now + 3600,
+  })));
+  const sig = base64url(crypto.createHmac('sha256', secret).update(`${header}.${payload}`).digest());
+  return `${header}.${payload}.${sig}`;
+}
 
 const app = bootstrapApp();
 
@@ -235,5 +257,53 @@ describe('GET /v1/wallets/:walletId/balances', () => {
   it('returns 401 without auth', async () => {
     const res = await request(app).get('/v1/wallets/wallet_any/balances');
     expect(res.status).toBe(401);
+  });
+});
+
+// ─── RBAC guard — wallet:read ──────────────────────────────────────────────────
+
+const ACTOR_SECRET_WAL = 'rbac-wallet-secret-at-least-32-chars-here!!';
+
+describe('Wallets — RBAC guard (X-Actor-Token)', () => {
+  beforeAll(() => {
+    const db = getDb();
+    db.prepare(`UPDATE tenant_configs SET actor_token_secret = ? WHERE tenant_id = ?`)
+      .run(ACTOR_SECRET_WAL, TEST_TENANT_ID);
+  });
+
+  it('GET /v1/wallets with token lacking wallet:read → 403', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_WAL, []);
+    const res = await request(app)
+      .get('/v1/wallets')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('INSUFFICIENT_PERMISSIONS');
+  });
+
+  it('GET /v1/wallets with wallet:read:all → 200', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_WAL, ['wallet:read:all']);
+    const res = await request(app)
+      .get('/v1/wallets')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('GET /v1/wallets without X-Actor-Token → 200 (admin mode)', async () => {
+    const res = await request(app)
+      .get('/v1/wallets')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+  });
+
+  it('unrelated permission (withdrawal-batch:read:all) still yields 403 for wallet', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_WAL, ['withdrawal-batch:read:all']);
+    const res = await request(app)
+      .get('/v1/wallets')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(403);
   });
 });

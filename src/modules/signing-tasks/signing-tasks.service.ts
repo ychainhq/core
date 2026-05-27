@@ -138,6 +138,7 @@ export const signingTasksService = {
   list(tenantId: string, filters: {
     status?: string;
     chainId?: string;
+    requestType?: string;
     limit?: number;
     cursor?: string;
   } = {}): { data: SigningTask[]; nextCursor: string | null } {
@@ -148,6 +149,7 @@ export const signingTasksService = {
 
     if (filters.status) { query += ' AND status = ?'; params.push(filters.status); }
     if (filters.chainId) { query += ' AND chain_id = ?'; params.push(filters.chainId); }
+    if (filters.requestType) { query += ' AND request_type = ?'; params.push(filters.requestType); }
     if (filters.cursor) { query += ' AND id > ?'; params.push(filters.cursor); }
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);

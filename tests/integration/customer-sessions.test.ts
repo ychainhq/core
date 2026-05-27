@@ -366,6 +366,83 @@ describe('POST /v1/me/withdrawals', () => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /v1/me/withdrawals — toAddress filter
+// ---------------------------------------------------------------------------
+describe('GET /v1/me/withdrawals — toAddress filter', () => {
+  it('returns only withdrawals matching the given toAddress', async () => {
+    const { tenantId, auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const token = await issueSession(auth, customer.id);
+
+    const db = getDb();
+    const now = new Date().toISOString();
+    const addrA = ADDR_1;
+    const addrB = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+
+    const wdA = `wd_filter_a_${crypto.randomBytes(4).toString('hex')}`;
+    const wdB = `wd_filter_b_${crypto.randomBytes(4).toString('hex')}`;
+
+    db.prepare(`
+      INSERT INTO customer_withdrawals
+        (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, '1000', 'queued', ?, ?)
+    `).run(wdA, tenantId, customer.id, addrA, now, now);
+
+    db.prepare(`
+      INSERT INTO customer_withdrawals
+        (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, '2000', 'queued', ?, ?)
+    `).run(wdB, tenantId, customer.id, addrB, now, now);
+
+    const res = await request(app)
+      .get(`/v1/me/withdrawals?toAddress=${addrA}`)
+      .set({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(200);
+    const ids = res.body.data.map((w: any) => w.id);
+    expect(ids).toContain(wdA);
+    expect(ids).not.toContain(wdB);
+  });
+
+  it('returns empty list when no withdrawal matches the toAddress', async () => {
+    const { auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const token = await issueSession(auth, customer.id);
+
+    const res = await request(app)
+      .get('/v1/me/withdrawals?toAddress=bc1qnonexistentaddressxxxxxxxxxxxxxxxxxxxxxx')
+      .set({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(0);
+  });
+
+  it('returns all withdrawals when toAddress is not specified', async () => {
+    const { tenantId, auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const token = await issueSession(auth, customer.id);
+
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    ['wd_all_a', 'wd_all_b'].forEach(id => {
+      db.prepare(`
+        INSERT INTO customer_withdrawals
+          (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, '1000', 'queued', ?, ?)
+      `).run(`${id}_${crypto.randomBytes(3).toString('hex')}`, tenantId, customer.id, ADDR_1, now, now);
+    });
+
+    const res = await request(app)
+      .get('/v1/me/withdrawals')
+      .set({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /v1/withdrawals — tenant-facing (requires tenant API key)
 // ---------------------------------------------------------------------------
 describe('GET /v1/withdrawals (tenant-facing)', () => {

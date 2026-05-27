@@ -1,8 +1,19 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { walletsService } from './wallets.service';
+import { resolvePermission } from '../../shared/actor-auth/context';
+import { ApiError } from '../../shared/errors/index';
 
 export const walletsRouter = Router();
+
+function checkActorAccess(req: Request, entity: string, action: 'read' | 'write'): void {
+  const ctx = (req as any).actorContext;
+  if (!ctx) return; // No X-Actor-Token = admin mode, pass through
+  const resolved = resolvePermission(ctx, entity, action);
+  if (resolved.level === 'none') {
+    throw new ApiError(403, 'INSUFFICIENT_PERMISSIONS', `Actor lacks ${entity}:${action} permission`);
+  }
+}
 
 const createSchema = z.object({
   name: z.string().min(1).max(200),
@@ -30,6 +41,7 @@ walletsRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
 
 walletsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
   try {
+    checkActorAccess(req, 'wallet', 'read');
     const tenantId = (req as any).tenantId as string;
     const query = listQuerySchema.parse(req.query);
     const result = walletsService.list(tenantId, query);

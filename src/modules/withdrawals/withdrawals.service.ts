@@ -134,7 +134,7 @@ export const withdrawalsService = {
   list(
     tenantId: string,
     customerId: string,
-    filters: { status?: string; limit?: number; cursor?: string } = {}
+    filters: { status?: string; toAddress?: string; limit?: number; cursor?: string } = {}
   ): { data: CustomerWithdrawal[]; nextCursor: string | null } {
     const db = getDb();
     const limit = Math.min(filters.limit ?? 20, 100);
@@ -142,6 +142,7 @@ export const withdrawalsService = {
     const params: unknown[] = [tenantId, customerId];
 
     if (filters.status) { query += ' AND status = ?'; params.push(filters.status); }
+    if (filters.toAddress) { query += ' AND to_address LIKE ?'; params.push(filters.toAddress); }
     if (filters.cursor) { query += ' AND id > ?'; params.push(filters.cursor); }
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);

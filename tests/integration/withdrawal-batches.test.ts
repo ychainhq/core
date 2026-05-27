@@ -10,7 +10,28 @@ import request from 'supertest';
 import express from 'express';
 import crypto from 'crypto';
 import { bootstrapApp, teardownDb, AUTH } from './helpers';
+
 import { getDb } from '../../src/db/sqlite';
+
+function base64url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function makeActorToken(tenantId: string, secret: string, permissions: string[] = []): string {
+  const header = base64url(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64url(Buffer.from(JSON.stringify({
+    sub: 'user_rbac_test',
+    tenant_id: tenantId,
+    permissions,
+    teams: [],
+    roles: [],
+    iat: now,
+    exp: now + 3600,
+  })));
+  const sig = base64url(crypto.createHmac('sha256', secret).update(`${header}.${payload}`).digest());
+  return `${header}.${payload}.${sig}`;
+}
 
 let app: express.Application;
 
@@ -345,5 +366,53 @@ describe('Withdrawal Batches — CPFP', () => {
       .patch('/v1/tenant/withdrawal-batch-config')
       .set(AUTH)
       .send({ btcCpfpEnabled: false });
+  });
+});
+
+// ─── RBAC guard — withdrawal-batch:read ───────────────────────────────────────
+
+const ACTOR_SECRET_WDB = 'rbac-withdrawal-batch-secret-at-least-32!!';
+
+describe('Withdrawal Batches — RBAC guard (X-Actor-Token)', () => {
+  beforeAll(() => {
+    const db = getDb();
+    db.prepare(`UPDATE tenant_configs SET actor_token_secret = ? WHERE tenant_id = ?`)
+      .run(ACTOR_SECRET_WDB, TEST_TENANT_ID);
+  });
+
+  test('GET /v1/withdrawal-batches with token lacking withdrawal-batch:read → 403', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_WDB, []);
+    const res = await request(app)
+      .get('/v1/withdrawal-batches')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('INSUFFICIENT_PERMISSIONS');
+  });
+
+  test('GET /v1/withdrawal-batches with withdrawal-batch:read:all → 200', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_WDB, ['withdrawal-batch:read:all']);
+    const res = await request(app)
+      .get('/v1/withdrawal-batches')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(200);
+  });
+
+  test('GET /v1/withdrawal-batches without X-Actor-Token → 200 (admin mode)', async () => {
+    const res = await request(app)
+      .get('/v1/withdrawal-batches')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+  });
+
+  test('unrelated permission still yields 403 for withdrawal-batch', async () => {
+    const token = makeActorToken(TEST_TENANT_ID, ACTOR_SECRET_WDB, ['signing-task:read:all']);
+    const res = await request(app)
+      .get('/v1/withdrawal-batches')
+      .set({ ...AUTH, 'X-Actor-Token': token });
+
+    expect(res.status).toBe(403);
   });
 });
