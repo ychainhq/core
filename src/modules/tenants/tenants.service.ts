@@ -72,6 +72,7 @@ function withConfig(tenant: Tenant): TenantWithConfig {
 export interface BtcAssetConfig {
   chain: 'bitcoin';
   hotAddress?: string;
+  hotPubkeyHex?: string;
   coldAddress?: string;
   xpub?: string;
 }
@@ -82,6 +83,7 @@ export type AssetConfig = BtcAssetConfig;
 interface TreasuryWalletOptions {
   role: 'tenant_hot' | 'tenant_cold';
   address: string;
+  pubkeyHex?: string;
   addressRole: 'treasury_hot' | 'treasury_cold';
   walletName: string;
   accountType: 'tenant_hot_control' | 'tenant_cold_control';
@@ -148,7 +150,11 @@ async function importTreasuryAddress(tenantId: string, opts: TreasuryWalletOptio
 
   const adapter = new BitcoinAdapter();
   try {
-    await adapter.importAddressForTenant(opts.address, tenantId, opts.role);
+    if (opts.pubkeyHex) {
+      await adapter.importSolvableAddressForTenant(opts.pubkeyHex, tenantId, opts.role);
+    } else {
+      await adapter.importAddressForTenant(opts.address, tenantId, opts.role);
+    }
   } catch (err) {
     logger.warn('Failed to import treasury address into BTC Core FWallet (non-fatal)', {
       tenantId, address: opts.address, role: opts.role, err,
@@ -255,6 +261,7 @@ export const tenantsService = {
       ? {
         role: 'tenant_hot',
         address: asset.hotAddress,
+        pubkeyHex: asset.hotPubkeyHex,
         addressRole: 'treasury_hot',
         walletName: 'Tenant Hot Wallet (BTC)',
         accountType: 'tenant_hot_control',
@@ -379,6 +386,7 @@ export const tenantsService = {
       customerSessionTtlSeconds?: number;
       actorTokenSecret?: string | null;
       btcHotAddress?: string;
+      btcHotPubkeyHex?: string;
       btcColdAddress?: string;
     }
   ): Promise<TenantConfig> {
@@ -434,6 +442,7 @@ export const tenantsService = {
       await tenantsService.upsertTreasuryWallet(tenantId, {
         role: 'tenant_hot',
         address: input.btcHotAddress,
+        pubkeyHex: input.btcHotPubkeyHex,
         addressRole: 'treasury_hot',
         walletName: 'Tenant Hot Wallet (BTC)',
         accountType: 'tenant_hot_control',

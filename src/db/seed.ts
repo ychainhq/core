@@ -307,6 +307,7 @@ export async function runSeed(): Promise<void> {
       .get('tenant_default') as { btc_xpub: string | null } | undefined;
 
     let hotAddress: string | undefined;
+    let hotPubkeyHex: string | undefined;
     if (cfgRow9?.btc_xpub) {
       // BIP32 xpub uses testnet version bytes for both testnet and regtest (tpub prefix).
       // Address encoding must use the actual configured network.
@@ -322,6 +323,7 @@ export async function runSeed(): Promise<void> {
       const bip32seed = BIP32Factory(ecc);
       const accountNode9 = bip32seed.fromBase58(cfgRow9.btc_xpub, bip32Network);
       const hotNode = accountNode9.derive(1).derive(0);
+      hotPubkeyHex = Buffer.from(hotNode.publicKey).toString('hex');
       const { address: derivedHot } = bitcoin.payments.p2wpkh({
         pubkey: Buffer.from(hotNode.publicKey),
         network: addressNetwork,
@@ -330,7 +332,7 @@ export async function runSeed(): Promise<void> {
       logger.info('Derived treasury hot address for tenant_default', { hotAddress });
     }
 
-    await tenantsService.provisionBtcLWallets('tenant_default', { chain: 'bitcoin', hotAddress });
+    await tenantsService.provisionBtcLWallets('tenant_default', { chain: 'bitcoin', hotAddress, hotPubkeyHex });
     logger.info('Provisioned BTC LWallets for tenant_default');
   } else {
     logger.info('BTC LWallets already provisioned for tenant_default, skipping');

@@ -227,6 +227,20 @@ export class BitcoinAdapter implements IChainAdapter {
   }
 
   /**
+   * Import a P2WPKH treasury address using wpkh(<pubkey>) descriptor so that
+   * Bitcoin Core marks it as solvable. Required for walletcreatefundedpsbt with
+   * pre-selected inputs (used by the withdrawal batcher).
+   */
+  async importSolvableAddressForTenant(pubkeyHex: string, tenantId: string, label = ''): Promise<void> {
+    const walletName = btcWalletName(tenantId);
+    await this.rpc.importDescriptors(
+      [{ desc: `wpkh(${pubkeyHex})`, timestamp: 'now', label }],
+      walletName
+    );
+    logger.info('Solvable address imported into tenant wallet', { tenantId, walletName, label });
+  }
+
+  /**
    * Import an existing address with a specific scan start timestamp (Unix seconds).
    * BTC Core rescans blocks from that time forward — used on startup reconciliation
    * to recover addresses after a wallet reset.

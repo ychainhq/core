@@ -332,12 +332,27 @@ export const signingTasksService = {
       WHERE id = ?
     `).run(input.reasonCode, input.reasonMessage, input.rejectedAt ?? now, now, taskId);
 
-    // Release UTXO locks if this task has a batch
+    // Release UTXO locks and revert batch + withdrawals to queued so batcher retries
     if (task.withdrawal_batch_id) {
       try {
         utxoLockService.releaseLocksForBatch(tenantId, task.withdrawal_batch_id);
       } catch (err) {
         logger.warn('Failed to release UTXO locks on task rejection', { taskId, error: String(err) });
+      }
+      try {
+        db.prepare(`
+          UPDATE withdrawal_batches
+          SET status = 'failed', last_error = ?, updated_at = ?
+          WHERE id = ? AND tenant_id = ? AND status NOT IN ('broadcast','confirmed','cancelled','replaced')
+        `).run(`Signing task rejected: ${input.reasonCode} — ${input.reasonMessage}`, now, task.withdrawal_batch_id, tenantId);
+        db.prepare(`
+          UPDATE customer_withdrawals
+          SET status = 'queued', updated_at = ?
+          WHERE id IN (SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?)
+            AND status = 'batched'
+        `).run(now, task.withdrawal_batch_id);
+      } catch (err) {
+        logger.warn('Failed to revert batch/withdrawals on task rejection', { taskId, batchId: task.withdrawal_batch_id, error: String(err) });
       }
     }
 

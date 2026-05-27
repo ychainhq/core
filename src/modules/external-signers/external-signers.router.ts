@@ -28,6 +28,48 @@ import { signingTasksService } from '../signing-tasks/signing-tasks.service';
 
 export const externalSignersRouter = Router();
 
+// Map DB row (snake_case) to the protocol's SigningTask shape (camelCase).
+// The signer package uses `chain` (not `chainId`) per external-signer-protocol.
+export function toSignerTask(t: any): unknown {
+  return {
+    id: t.id,
+    tenantId: t.tenant_id,
+    signerId: t.signer_id,
+    requestType: t.request_type,
+    chain: t.chain_id,
+    assetId: t.asset_id,
+    withdrawalBatchId: t.withdrawal_batch_id,
+    sweepId: t.sweep_id,
+    amountRaw: t.amount_raw,
+    feeRaw: t.fee_raw,
+    feeRateSatVb: t.fee_rate_sat_vb != null ? Number(t.fee_rate_sat_vb) : null,
+    outputsCount: t.outputs_count,
+    payloadFormat: t.payload_format,
+    unsignedPayload: t.unsigned_payload,
+    unsignedPayloadHash: t.unsigned_payload_hash,
+    status: t.status,
+    decisionMode: t.decision_mode,
+    decisionReason: t.decision_reason,
+    claimedBySignerId: t.claimed_by_signer_id,
+    claimedAt: t.claimed_at,
+    expiresAt: t.expires_at,
+    signedPayload: t.signed_payload,
+    signedPayloadHash: t.signed_payload_hash,
+    signerFingerprint: t.signer_fingerprint,
+    signerResponseSignature: t.signer_response_signature,
+    signedAt: t.signed_at,
+    rejectionReasonCode: t.rejection_reason_code,
+    rejectionReasonMessage: t.rejection_reason_message,
+    rejectedAt: t.rejected_at,
+    txHash: t.tx_hash,
+    failureCode: t.failure_code,
+    failureMessage: t.failure_message,
+    retryCount: t.retry_count,
+    createdAt: t.created_at,
+    updatedAt: t.updated_at,
+  };
+}
+
 function tenantId(req: Request): string {
   return (req as any).tenantId as string;
 }
@@ -173,7 +215,7 @@ externalSignersRouter.get('/:signerId/tasks', (req: Request, res: Response, next
   try {
     const limit = Math.min(parseInt((req.query['limit'] as string) || '10', 10), 50);
     const tasks = signingTasksService.listAvailableForSigner(tenantId(req), req.params['signerId']!, limit);
-    res.json({ items: tasks });
+    res.json({ items: tasks.map(toSignerTask) });
   } catch (err) { next(err); }
 });
 
@@ -185,7 +227,7 @@ externalSignersRouter.post('/:signerId/tasks/:taskId/claim', async (req: Request
       req.params['taskId']!,
       req.params['signerId']!
     );
-    res.json({ data: task });
+    res.json({ data: toSignerTask(task) });
   } catch (err) { next(err); }
 });
 
