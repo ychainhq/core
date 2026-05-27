@@ -103,6 +103,25 @@ PATCH /v1/tenant/config
 5. `getById` z `accessFilter` → 404 dla braku dostępu (nie 403) — nie ujawniamy istnienia rekordu.
 6. Przy tworzeniu encji: wypełnij `owner_user_id = ctx?.actorId` i `owner_team_id = ctx?.teams[0]`.
 
+### Sub-zasoby klienta (withdrawals, deposits per-customer)
+
+Sub-zasoby nie mają własnego security envelope — dziedziczą dostęp od encji `customer`. Zasady:
+
+1. Gdy endpoint przyjmuje `customerId` jako parametr (path lub query): wywołaj `customersService.getById(tenantId, customerId, accessFilter)` **przed** pobraniem sub-zasobu. Rzuca `NotFoundError` (404) gdy aktor nie ma dostępu — nie ujawniamy istnienia rekordu.
+2. Dla list bez `customerId` (widok admin tenanta): wywołaj lokalną `getCustomerAccessFilter(req, 'read')` — rzuca 403 gdy aktor nie ma żadnego poziomu `customer:read`. Pełne filtrowanie po team/assigned wymaga JOIN z tabelą customers — dokumentuj jako known gap jeśli nie implementujesz.
+3. **Nigdy** nie pomijaj weryfikacji klienta przy filtrowaniu po `customerId` — bez niej aktor może odczytać dane klientów spoza swojego scope uprawnień.
+
+Wzorzec lokalnej funkcji w routerze sub-zasobu:
+```typescript
+function getCustomerAccessFilter(req: Request, action: 'read' | 'write'): AccessFilter {
+  const ctx = req.actorContext;
+  if (!ctx) return adminAllFilter(tenantId(req));
+  const resolved = resolvePermission(ctx, 'customer', action);
+  if (resolved.level === 'none') throw new ApiError(403, 'INSUFFICIENT_PERMISSIONS', `Actor lacks customer:${action} permission`);
+  return buildAccessFilter(resolved, ctx);
+}
+```
+
 ### Dodanie nowej chronionej encji
 
 1. Dodaj security envelope columns w migracji SQL.

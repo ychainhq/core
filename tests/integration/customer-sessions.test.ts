@@ -14,8 +14,10 @@
  * - GET /v1/withdrawals/:id — tenant-facing detail
  */
 import request from 'supertest';
+import crypto from 'crypto';
 import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr, ADDR_1 } from './helpers';
 import { ledgerService } from '../../src/modules/ledger/ledger.service';
+import { getDb } from '../../src/db/sqlite';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -407,6 +409,87 @@ describe('GET /v1/me/withdrawals/:id', () => {
     const res = await request(app)
       .get('/v1/me/withdrawals/wd_doesnotexist')
       .set({ Authorization: `Bearer ${token}` });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /v1/withdrawals?customerId= — filter by customer
+// ---------------------------------------------------------------------------
+describe('GET /v1/withdrawals?customerId= (customer filter)', () => {
+  it('returns only withdrawals belonging to the specified customer', async () => {
+    const { tenantId, auth } = await createTenantWithKey();
+    const custA = await createCustomer(auth, `ref_cust_a_${Date.now()}`);
+    const custB = await createCustomer(auth, `ref_cust_b_${Date.now()}`);
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    const wdA = `wd_${crypto.randomBytes(8).toString('hex')}`;
+    const wdB = `wd_${crypto.randomBytes(8).toString('hex')}`;
+
+    db.prepare(`
+      INSERT INTO customer_withdrawals
+        (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', '5000', 'queued', ?, ?)
+    `).run(wdA, tenantId, custA.id, now, now);
+
+    db.prepare(`
+      INSERT INTO customer_withdrawals
+        (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', '3000', 'queued', ?, ?)
+    `).run(wdB, tenantId, custB.id, now, now);
+
+    const res = await request(app)
+      .get(`/v1/withdrawals?customerId=${custA.id}`)
+      .set(auth);
+
+    expect(res.status).toBe(200);
+    const ids = res.body.data.map((w: any) => w.id);
+    expect(ids).toContain(wdA);
+    expect(ids).not.toContain(wdB);
+  });
+
+  it('returns empty list for a customer with no withdrawals', async () => {
+    const { auth } = await createTenantWithKey();
+    const custC = await createCustomer(auth, `ref_cust_c_${Date.now()}`);
+
+    const res = await request(app)
+      .get(`/v1/withdrawals?customerId=${custC.id}`)
+      .set(auth);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(0);
+  });
+
+  it('does not return withdrawals from another tenant when filtering by customerId', async () => {
+    const { tenantId: tenantA, auth: authA } = await createTenantWithKey();
+    const { tenantId: tenantB, auth: authB } = await createTenantWithKey();
+    const custA = await createCustomer(authA, `ref_iso_a_${Date.now()}`);
+    const custB = await createCustomer(authB, `ref_iso_b_${Date.now()}`);
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    const wdA = `wd_${crypto.randomBytes(8).toString('hex')}`;
+    const wdB = `wd_${crypto.randomBytes(8).toString('hex')}`;
+
+    db.prepare(`
+      INSERT INTO customer_withdrawals
+        (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', '1000', 'queued', ?, ?)
+    `).run(wdA, tenantA, custA.id, now, now);
+
+    db.prepare(`
+      INSERT INTO customer_withdrawals
+        (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', '2000', 'queued', ?, ?)
+    `).run(wdB, tenantB, custB.id, now, now);
+
+    // Tenant B querying with custA's id: custA doesn't exist in tenantB → 404 (RBAC guard)
+    const res = await request(app)
+      .get(`/v1/withdrawals?customerId=${custA.id}`)
+      .set(authB);
+
+    // The customer access guard rejects the request before listing withdrawals
     expect(res.status).toBe(404);
   });
 });

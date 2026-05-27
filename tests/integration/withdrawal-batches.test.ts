@@ -46,11 +46,19 @@ describe('Tenant Withdrawal Batch Config', () => {
       .set(AUTH);
 
     expect(res.status).toBe(200);
-    // Default config — may be from defaults since no row exists yet
     expect(res.body.data).toBeDefined();
   });
 
-  test('PATCH /v1/tenant/withdrawal-batch-config — updates config', async () => {
+  test('GET /v1/tenant/withdrawal-batch-config — includes withdrawal_fee_coverage', async () => {
+    const res = await request(app)
+      .get('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.withdrawal_fee_coverage).toBe('tenant_pays');
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — updates btc fields', async () => {
     const res = await request(app)
       .patch('/v1/tenant/withdrawal-batch-config')
       .set(AUTH)
@@ -62,7 +70,47 @@ describe('Tenant Withdrawal Batch Config', () => {
       });
 
     expect(res.status).toBe(200);
-    expect(res.body.data.btc_max_outputs_per_batch ?? res.body.data.btcMaxOutputsPerBatch ?? 100).toBeDefined();
+    expect(res.body.data.btc_max_outputs_per_batch).toBe(100);
+    expect(res.body.data.btc_max_fee_rate_sat_vb).toBe(30);
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — updates withdrawalFeeCoverage to sender_pays', async () => {
+    const res = await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ withdrawalFeeCoverage: 'sender_pays' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.withdrawal_fee_coverage).toBe('sender_pays');
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — updates withdrawalFeeCoverage to recipient_pays', async () => {
+    const res = await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ withdrawalFeeCoverage: 'recipient_pays' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.withdrawal_fee_coverage).toBe('recipient_pays');
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — reverts to tenant_pays', async () => {
+    const res = await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ withdrawalFeeCoverage: 'tenant_pays' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.withdrawal_fee_coverage).toBe('tenant_pays');
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — rejects invalid withdrawalFeeCoverage', async () => {
+    const res = await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ withdrawalFeeCoverage: 'nobody_pays' });
+
+    expect(res.status).toBe(400);
   });
 });
 

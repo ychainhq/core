@@ -626,6 +626,85 @@ CREATE TABLE jobs (
 );
 ```
 
+#### Tabela: `customer_withdrawals`
+
+```sql
+CREATE TABLE customer_withdrawals (
+  id              TEXT PRIMARY KEY,           -- 'wd_...'
+  tenant_id       TEXT NOT NULL REFERENCES tenants(id),
+  customer_id     TEXT NOT NULL REFERENCES customers(id),
+  chain_id        TEXT NOT NULL DEFAULT 'bitcoin',
+  asset_id        TEXT NOT NULL DEFAULT 'bitcoin:BTC',
+  to_address      TEXT NOT NULL,
+  amount_raw      TEXT NOT NULL,             -- sats requested by customer
+  fee_raw         TEXT,                      -- fee in sats (set when PSBT built)
+  psbt            TEXT,                      -- base64 PSBT sent for signing
+  signed_psbt     TEXT,
+  tx_hash         TEXT,
+  status          TEXT NOT NULL DEFAULT 'pending_signature',
+  -- 'queued' | 'batched' | 'pending_signature' | 'broadcast' | 'confirmed' | 'failed'
+  error           TEXT,
+  idempotency_key TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+```
+
+#### Tabela: `withdrawal_batches`
+
+```sql
+CREATE TABLE withdrawal_batches (
+  id                      TEXT PRIMARY KEY,  -- 'wdb_...'
+  tenant_id               TEXT NOT NULL REFERENCES tenants(id),
+  chain_id                TEXT NOT NULL DEFAULT 'bitcoin',
+  asset_id                TEXT NOT NULL DEFAULT 'bitcoin:BTC',
+  status                  TEXT NOT NULL DEFAULT 'pending_approval',
+  -- 'pending_approval' | 'approved' | 'pending_signature' | 'broadcast' | 'confirmed'
+  -- | 'failed' | 'rejected' | 'cancelled'
+  outputs_count           INTEGER NOT NULL DEFAULT 0,
+  total_output_raw        TEXT,              -- sats
+  fee_raw                 TEXT,              -- fee in sats
+  fee_rate_sat_vb         TEXT,
+  psbt                    TEXT,
+  signed_psbt             TEXT,
+  tx_hash                 TEXT,
+  rbf_enabled             INTEGER NOT NULL DEFAULT 1,
+  decision_mode           TEXT NOT NULL DEFAULT 'manual',
+  signer_id               TEXT,
+  approved_by             TEXT,
+  rejection_reason        TEXT,
+  rejected_by             TEXT,
+  attempt_count           INTEGER NOT NULL DEFAULT 0,
+  replaced_by_batch_id    TEXT,
+  replacement_of_batch_id TEXT,
+  created_at              TEXT NOT NULL,
+  updated_at              TEXT NOT NULL
+);
+```
+
+#### Tabela: `tenant_withdrawal_batch_configs`
+
+Konfiguracja polityki batchowania i opłat dla tenanta. Jeden wiersz per tenant.
+
+```sql
+CREATE TABLE tenant_withdrawal_batch_configs (
+  tenant_id                TEXT PRIMARY KEY REFERENCES tenants(id),
+  btc_batching_enabled     INTEGER NOT NULL DEFAULT 1,
+  btc_min_outputs_per_batch INTEGER NOT NULL DEFAULT 1,
+  btc_max_outputs_per_batch INTEGER NOT NULL DEFAULT 200,
+  btc_max_batch_age_seconds INTEGER NOT NULL DEFAULT 30,
+  btc_max_fee_rate_sat_vb  INTEGER NOT NULL DEFAULT 50,
+  btc_target_blocks        INTEGER NOT NULL DEFAULT 6,
+  btc_rbf_enabled          INTEGER NOT NULL DEFAULT 1,
+  btc_cpfp_enabled         INTEGER NOT NULL DEFAULT 0,
+  withdrawal_fee_coverage  TEXT NOT NULL DEFAULT 'tenant_pays',
+  -- 'tenant_pays'    — platform absorbs fee; recipient receives full amount
+  -- 'sender_pays'    — customer billed amount + fee (debit = amount + fee)
+  -- 'recipient_pays' — recipient receives amount − fee
+  updated_at               TEXT NOT NULL
+);
+```
+
 ---
 
 ## 6. REST API v2
@@ -796,7 +875,7 @@ Auth: `X-Admin-Key` header (lub Bearer z flagą is_admin). Dostępne wyłącznie
 | Method | Path | Opis |
 |--------|------|------|
 | POST | `/v1/withdrawals` | Utwórz żądanie wypłaty |
-| GET | `/v1/withdrawals` | Lista wypłat tenanta |
+| GET | `/v1/withdrawals` | Lista wypłat tenanta. Query param `customerId` filtruje po konkretnym kliencie; RBAC: aktor bez dostępu do klienta otrzyma 404. |
 | GET | `/v1/withdrawals/:withdrawalId` | Szczegóły wypłaty |
 | POST | `/v1/withdrawals/:withdrawalId/submit-signed` | Wyślij podpisaną transakcję (manual signing) |
 

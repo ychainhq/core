@@ -684,10 +684,15 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }, async ({ chain, address, ...input }: any) => safeTool(() => page(depositsService.list(tenantId, { ...input, chain, address }), input)));
 
   server.registerTool('chainapi_list_withdrawals', {
-    description: 'List tenant customer withdrawals.',
-    inputSchema: { ...paging, status: z.string().optional() },
+    description: 'List tenant customer withdrawals. Pass customerId to filter by a specific customer.',
+    inputSchema: { ...paging, status: z.string().optional(), customerId: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(withdrawalsService.listForTenant(tenantId, input), input)));
+  }, async ({ customerId, ...input }: any) => safeTool(() => {
+    const result = customerId
+      ? withdrawalsService.list(tenantId, customerId, input)
+      : withdrawalsService.listForTenant(tenantId, input);
+    return page(result, input);
+  }));
 
   server.registerTool('chainapi_get_withdrawal', {
     description: 'Get withdrawal details.',
