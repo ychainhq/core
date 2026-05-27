@@ -6,6 +6,7 @@ export const withdrawalsRouter = Router();
 
 const listQuerySchema = z.object({
   status: z.string().optional(),
+  customerId: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   cursor: z.string().optional(),
 });
@@ -22,7 +23,10 @@ function tenantId(req: Request): string {
 withdrawalsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = listQuerySchema.parse(req.query);
-    const result = withdrawalsService.listForTenant(tenantId(req), query);
+    const filters = { status: query.status, limit: query.limit, cursor: query.cursor };
+    const result = query.customerId
+      ? withdrawalsService.list(tenantId(req), query.customerId, filters)
+      : withdrawalsService.listForTenant(tenantId(req), filters);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },

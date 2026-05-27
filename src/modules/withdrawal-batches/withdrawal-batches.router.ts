@@ -162,6 +162,7 @@ const configPatchSchema = z.object({
   btcRbfEnabled: z.boolean().optional(),
   btcCpfpEnabled: z.boolean().optional(),
   btcBatchRetryMaxAttempts: z.number().int().min(0).max(10).optional(),
+  withdrawalFeeCoverage: z.enum(['tenant_pays', 'sender_pays', 'recipient_pays']).optional(),
 }).strict();
 
 withdrawalBatchConfigRouter.patch('/', (req: Request, res: Response, next: NextFunction) => {
@@ -189,6 +190,7 @@ withdrawalBatchConfigRouter.patch('/', (req: Request, res: Response, next: NextF
       btcRbfEnabled: 'btc_rbf_enabled',
       btcCpfpEnabled: 'btc_cpfp_enabled',
       btcBatchRetryMaxAttempts: 'btc_batch_retry_max_attempts',
+      withdrawalFeeCoverage: 'withdrawal_fee_coverage',
     };
 
     for (const [camel, snake] of Object.entries(map)) {

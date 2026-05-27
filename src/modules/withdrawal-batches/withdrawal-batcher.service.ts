@@ -106,6 +106,7 @@ interface BatchConfig {
   btc_rbf_strategy: string;
   btc_cpfp_enabled: number;
   btc_batch_retry_max_attempts: number;
+  withdrawal_fee_coverage: 'tenant_pays' | 'sender_pays' | 'recipient_pays';
 }
 
 function getDefaultConfig(): BatchConfig {
@@ -130,6 +131,7 @@ function getDefaultConfig(): BatchConfig {
     btc_rbf_strategy: 'opt_in',
     btc_cpfp_enabled: 0,
     btc_batch_retry_max_attempts: 3,
+    withdrawal_fee_coverage: 'tenant_pays',
   };
 }
 
