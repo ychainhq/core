@@ -325,6 +325,7 @@ export class DepositMonitorWorker {
     amountDisplay: string;
     confirmations: number;
     status: string;
+    prevStatus?: string;
   }): void {
     this.ensureDepositPendingLedgerEntry(input);
 
@@ -337,16 +338,18 @@ export class DepositMonitorWorker {
       confirmations: input.confirmations,
       status: input.status,
     }, { depositId: input.depositId }, input.chainId, input.walletId, input.tenantId);
-    ticklerService.record({
-      tenantId: input.tenantId,
-      category: 'deposit',
-      subcategory: 'confirmed',
-      entityId: input.depositId,
-      actorLogin: 'system:deposit-monitor',
-      field1: input.txHash,
-      field2: String(input.confirmations),
-      field3: input.status,
-    });
+    if (input.prevStatus === undefined || input.prevStatus !== input.status) {
+      ticklerService.record({
+        tenantId: input.tenantId,
+        category: 'deposit',
+        subcategory: 'confirmed',
+        entityId: input.depositId,
+        actorLogin: 'system:deposit-monitor',
+        field1: input.txHash,
+        field2: String(input.confirmations),
+        field3: input.status,
+      });
+    }
 
     const deposit = depositsService.getByIdInternal(input.depositId);
     if (deposit.payment_request_id) {
@@ -537,6 +540,7 @@ export class DepositMonitorWorker {
           amountDisplay,
           confirmations,
           status,
+          prevStatus: existing.status,
         });
       }
     }
