@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { tenantsService } from './tenants.service';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const tenantsAdminRouter = Router();
 
@@ -58,6 +60,15 @@ tenantsAdminRouter.post('/', async (req: Request, res: Response, next: NextFunct
     const body = createSchema.parse(req.body);
     const tenant = tenantsService.create(body);
     await tenantsService.provision(tenant.id, body.assets);
+    ticklerService.record({
+      tenantId: null,
+      category: 'platform',
+      subcategory: 'tenant.created',
+      entityId: tenant.id,
+      actorLogin: resolveActorLogin(req),
+      field1: tenant.name,
+      newValue: tenant,
+    });
     res.status(201).json({ data: tenant });
   } catch (err) {
     next(err);
@@ -92,7 +103,17 @@ tenantsAdminRouter.get('/:tenantId', (req: Request, res: Response, next: NextFun
 tenantsAdminRouter.patch('/:tenantId', (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = updateSchema.parse(req.body);
+    const prev = tenantsService.getById(req.params['tenantId']!);
     const tenant = tenantsService.update(req.params['tenantId']!, body);
+    ticklerService.record({
+      tenantId: null,
+      category: 'platform',
+      subcategory: body.status && body.status !== prev.status ? 'tenant.suspended' : 'tenant.updated',
+      entityId: tenant.id,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prev,
+      newValue: tenant,
+    });
     res.json({ data: tenant });
   } catch (err) {
     next(err);
@@ -113,8 +134,18 @@ tenantsAdminRouter.get('/:tenantId/config', (req: Request, res: Response, next: 
 tenantsAdminRouter.patch('/:tenantId/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = configSchema.parse(req.body);
-    const config = await tenantsService.updateConfig(req.params['tenantId']!, body);
-    res.json({ data: config });
+    const prev = tenantsService.getById(req.params['tenantId']!);
+    const tenantConfig = await tenantsService.updateConfig(req.params['tenantId']!, body);
+    ticklerService.record({
+      tenantId: null,
+      category: 'platform',
+      subcategory: 'tenant.config_updated',
+      entityId: req.params['tenantId']!,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prev.config,
+      newValue: tenantConfig,
+    });
+    res.json({ data: tenantConfig });
   } catch (err) {
     next(err);
   }
@@ -125,6 +156,16 @@ tenantsAdminRouter.post('/:tenantId/api-keys', (req: Request, res: Response, nex
   try {
     const body = apiKeySchema.parse(req.body);
     const result = tenantsService.generateApiKey(req.params['tenantId']!, body.name);
+    ticklerService.record({
+      tenantId: null,
+      category: 'platform',
+      subcategory: 'tenant.api_key_created',
+      entityId: req.params['tenantId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: result.keyId,
+      field2: body.name,
+      newValue: { keyId: result.keyId, name: body.name },
+    });
     res.status(201).json({
       data: {
         keyId: result.keyId,

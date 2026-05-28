@@ -479,6 +479,14 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | GET | `/v1/webhook-deliveries` | ✅ | ✅ | ❌ |
 | POST | `/v1/webhook-deliveries/:deliveryId/retry` | ✅ | ✅ | ❌ |
 
+### Ticklers (Audit Log)
+
+| Method | Path | MVP | Testy | MCP |
+|--------|------|-----|-------|-----|
+| GET | `/v1/ticklers` | ✅ | ✅ | ✅ `chainapi_list_ticklers` |
+| GET | `/admin/v1/ticklers` | ✅ | ✅ | ✅ `chainapi_admin_list_ticklers` |
+| GET | `/admin/v1/tenants/:tenantId/ticklers` | ✅ | ✅ | ✅ `chainapi_admin_list_tenant_ticklers` |
+
 ## Zasady utrzymania dokumentacji
 
 1. **Tabela endpointów powyżej** — aktualizuj przy każdej zmianie API (add/modify/remove endpoint).
@@ -495,3 +503,7 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 - Klucze API przechowywane jako SHA-256 hash — raw key nigdy nie trafia do bazy.
 - Sekrety webhook zwracane wyłącznie przy tworzeniu.
 - Brak kluczy prywatnych — silnik ich nie przyjmuje i nie przechowuje.
+- **Każda mutacja danych musi wywołać `ticklerService.record()`** — ticklery są immutable audit logiem umożliwiającym pełną rekonstrukcję historii. Brak ticklera = niekompletny audit trail.
+- Tabela `ticklers` jest write-once: nigdy nie modyfikuj ani nie usuwaj wierszy. Tylko INSERT.
+- Workers używają `actorLogin: 'system:{worker-name}'`; router-level endpointy używają `resolveActorLogin(req)`.
+- Tickler call ZAWSZE po udanej mutacji (nie przed), aby entity_id był znany.

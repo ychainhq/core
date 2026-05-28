@@ -3,6 +3,7 @@ import { transactionsService } from '../modules/transactions/transactions.servic
 import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
+import { ticklerService } from '../shared/tickler/tickler.service';
 
 /**
  * TxStatusWorker
@@ -86,6 +87,18 @@ export class TxStatusWorker {
               confirmations: status.confirmations,
               blockHeight: status.blockHeight,
             }, chainId, undefined, tx.tenant_id ?? undefined);
+
+            ticklerService.record({
+              tenantId: tx.tenant_id ?? null,
+              category: 'transaction',
+              subcategory: 'status_changed',
+              entityId: tx.id,
+              actorLogin: 'system:tx-status',
+              field1: tx.tx_hash ?? null,
+              field2: oldStatus,
+              field3: newStatus,
+              field4: String(status.confirmations),
+            });
           }
         }
       } catch (err) {

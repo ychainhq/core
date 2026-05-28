@@ -46,7 +46,8 @@ export function adminAuthMiddleware(req: Request, res: Response, next: NextFunct
       : undefined);
 
   try {
-    resolveAdminKey(adminKey);
+    const auth = resolveAdminKey(adminKey);
+    req.adminKeyName = auth.adminKeyName;
     next();
   } catch (err) {
     next(err);

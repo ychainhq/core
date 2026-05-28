@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { paymentRequestsService } from './payment-requests.service';
 import { idempotencyService } from '../idempotency/idempotency.service';
 import { NotImplementedError } from '../../shared/errors/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const paymentRequestsRouter = Router();
 
@@ -59,6 +61,18 @@ paymentRequestsRouter.post('/', async (req: Request, res: Response, next: NextFu
     const body = createSchema.parse(req.body);
     const paymentRequest = paymentRequestsService.create(tenantId, body);
 
+    ticklerService.record({
+      tenantId,
+      category: 'payment_request',
+      subcategory: 'created',
+      entityId: paymentRequest.id,
+      actorLogin: resolveActorLogin(req),
+      field1: paymentRequest.chain_id,
+      field2: paymentRequest.amount_raw,
+      field3: body.customerId ?? null,
+      newValue: paymentRequest,
+    });
+
     const result = { data: paymentRequest };
     if (idempotencyKey) {
       idempotencyService.save(tenantId, idempotencyKey, 'payment_request', result, 201);
@@ -104,7 +118,17 @@ paymentRequestsRouter.get('/:paymentRequestId', (req: Request, res: Response, ne
 paymentRequestsRouter.post('/:paymentRequestId/cancel', (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
+    const prev = paymentRequestsService.getById(tenantId, req.params['paymentRequestId']!);
     const pr = paymentRequestsService.cancel(tenantId, req.params['paymentRequestId']!);
+    ticklerService.record({
+      tenantId,
+      category: 'payment_request',
+      subcategory: 'cancelled',
+      entityId: pr.id,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prev,
+      newValue: pr,
+    });
     res.json({ data: pr });
   } catch (err) {
     next(err);

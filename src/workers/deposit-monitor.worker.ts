@@ -8,6 +8,7 @@ import { satoshiToBtc } from '../shared/money/index';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 import { getDb } from '../db/sqlite';
+import { ticklerService } from '../shared/tickler/tickler.service';
 
 /**
  * DepositMonitorWorker
@@ -336,6 +337,16 @@ export class DepositMonitorWorker {
       confirmations: input.confirmations,
       status: input.status,
     }, { depositId: input.depositId }, input.chainId, input.walletId, input.tenantId);
+    ticklerService.record({
+      tenantId: input.tenantId,
+      category: 'deposit',
+      subcategory: 'confirmed',
+      entityId: input.depositId,
+      actorLogin: 'system:deposit-monitor',
+      field1: input.txHash,
+      field2: String(input.confirmations),
+      field3: input.status,
+    });
 
     const deposit = depositsService.getByIdInternal(input.depositId);
     if (deposit.payment_request_id) {
@@ -433,6 +444,18 @@ export class DepositMonitorWorker {
 
       if (isNew) {
         logger.info('New deposit detected', { depositId: deposit.id, txHash: utxo.txHash, address, amount: amountDisplay });
+        ticklerService.record({
+          tenantId,
+          category: 'deposit',
+          subcategory: 'detected',
+          entityId: deposit.id,
+          actorLogin: 'system:deposit-monitor',
+          field1: utxo.txHash,
+          field2: address,
+          field3: amountRaw,
+          field4: customerId ?? null,
+          newValue: deposit,
+        });
 
         // Check for matching payment request
         const pendingPRs = pendingPaymentRequestsByAddress.get(address) ?? [];

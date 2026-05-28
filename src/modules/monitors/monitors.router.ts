@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { monitorsService } from './monitors.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { logger } from '../../shared/logging/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const monitorsRouter = Router();
 
@@ -44,6 +46,16 @@ monitorsRouter.post('/addresses', async (req: Request, res: Response, next: Next
       }
     }
 
+    ticklerService.record({
+      tenantId,
+      category: 'address',
+      subcategory: 'monitor.created',
+      entityId: monitor.id,
+      actorLogin: resolveActorLogin(req),
+      field1: body.chain,
+      field2: body.address,
+      newValue: monitor,
+    });
     res.status(201).json({ data: monitor });
   } catch (err) {
     next(err);
@@ -74,6 +86,16 @@ monitorsRouter.delete('/addresses/:monitorId', (req: Request, res: Response, nex
   try {
     const tenantId = (req as any).tenantId as string;
     const monitor = monitorsService.deactivate(tenantId, req.params['monitorId']!);
+    ticklerService.record({
+      tenantId,
+      category: 'address',
+      subcategory: 'monitor.deactivated',
+      entityId: monitor.id,
+      actorLogin: resolveActorLogin(req),
+      field1: monitor.chain_id,
+      field2: monitor.address,
+      prevValue: monitor,
+    });
     res.json({ data: monitor });
   } catch (err) {
     next(err);

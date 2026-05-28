@@ -31,6 +31,7 @@ import { externalSignersRouter } from './modules/external-signers/external-signe
 import { signingTasksRouter } from './modules/signing-tasks/signing-tasks.router';
 import { withdrawalBatchesRouter, withdrawalBatchConfigRouter } from './modules/withdrawal-batches/withdrawal-batches.router';
 import { signerSignaturesRouter } from './modules/external-signers/signer-signatures.router';
+import { tenantTicklersRouter, adminTicklersRouter } from './modules/ticklers/ticklers.router';
 import { assetsService } from './modules/assets/assets.service';
 import { registerMcpRoutes } from './mcp/register';
 
@@ -60,6 +61,7 @@ export function createApp(): express.Application {
   // ---- Admin routes (X-Admin-Key auth) ----
   app.use('/admin/v1', adminAuthMiddleware);
   app.use('/admin/v1/tenants', tenantsAdminRouter);
+  app.use('/admin/v1', adminTicklersRouter);
 
   // ---- Customer self-service — must be registered BEFORE the tenant authMiddleware
   //      so that customer JWTs are handled by customerAuthMiddleware, not rejected
@@ -160,6 +162,9 @@ export function createApp(): express.Application {
 
   // ---- Tenant batch config (under /v1/tenant/withdrawal-batch-config) ----
   app.use('/v1/tenant/withdrawal-batch-config', withdrawalBatchConfigRouter);
+
+  // ---- Ticklers (audit log) ----
+  app.use('/v1/ticklers', tenantTicklersRouter);
 
   // ---- Webhooks ----
   app.use('/v1/webhooks', webhooksRouter);

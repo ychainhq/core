@@ -11,6 +11,7 @@ import { getDb } from '../db/sqlite';
 import { withdrawalBatcherService } from '../modules/withdrawal-batches/withdrawal-batcher.service';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
+import { ticklerService } from '../shared/tickler/tickler.service';
 
 const BATCH_WORKER_INTERVAL_MS = parseInt(
   process.env['BATCH_WORKER_INTERVAL_MS'] ?? '30000',
@@ -90,6 +91,16 @@ export class WithdrawalBatcherWorker {
               tenantId: tenant_id,
               batchId: batch.id,
               outputsCount: batch.outputs_count,
+            });
+            ticklerService.record({
+              tenantId: tenant_id,
+              category: 'withdrawal_batch',
+              subcategory: 'created',
+              entityId: batch.id,
+              actorLogin: 'system:withdrawal-batcher',
+              field1: String(batch.outputs_count),
+              field2: batch.status,
+              newValue: batch,
             });
           }
         } catch (err) {

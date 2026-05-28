@@ -1,5 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 import { customersService } from './customers.service';
 import { customersProfileService } from './customers-profile.service';
 import { customersIdentifiersService } from './customers-identifiers.service';
@@ -126,6 +128,16 @@ customersRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
       ownerUserId: ctx?.actorId ?? null,
       ownerTeamId: ctx?.teams[0] ?? null,
     });
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'created',
+      entityId: customer.id,
+      actorLogin: resolveActorLogin(req),
+      field1: customer.party_type,
+      field2: customer.reference ?? null,
+      newValue: customer,
+    });
     res.status(201).json({ data: customer });
   } catch (err) { next(err); }
 });
@@ -157,7 +169,19 @@ customersRouter.patch('/:customerId', (req: Request, res: Response, next: NextFu
   try {
     const filter = getAccessFilter(req, 'write');
     const body = updateSchema.parse(req.body);
+    const prev = customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const customer = customersService.update(tenantId(req), req.params['customerId']!, body, filter);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: body.status && body.status !== prev.status ? 'status_changed' : 'updated',
+      entityId: customer.id,
+      actorLogin: resolveActorLogin(req),
+      field1: body.status ? prev.status : null,
+      field2: body.status ?? null,
+      prevValue: prev,
+      newValue: customer,
+    });
     res.json({ data: customer });
   } catch (err) { next(err); }
 });
@@ -166,7 +190,17 @@ customersRouter.patch('/:customerId', (req: Request, res: Response, next: NextFu
 customersRouter.post('/:customerId/disable', (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
+    const prev = customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const customer = customersService.disable(tenantId(req), req.params['customerId']!, filter);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'disabled',
+      entityId: customer.id,
+      actorLogin: resolveActorLogin(req),
+      prevValue: { status: prev.status },
+      newValue: { status: customer.status },
+    });
     res.json({ data: customer });
   } catch (err) { next(err); }
 });
@@ -292,7 +326,18 @@ customersRouter.put('/:customerId/profile', (req: Request, res: Response, next: 
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter); // access guard
     const body = upsertProfileSchema.parse(req.body);
+    const prevProfile = customersProfileService.get(tenantId(req), req.params['customerId']!);
     const profile = customersProfileService.upsert(tenantId(req), req.params['customerId']!, body as any);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'profile.upserted',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: body.partyType,
+      prevValue: prevProfile,
+      newValue: profile,
+    });
     res.json({ data: profile });
   } catch (err) { next(err); }
 });
@@ -344,6 +389,17 @@ customersRouter.post('/:customerId/identifiers', (req: Request, res: Response, n
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createIdentifierSchema.parse(req.body);
     const identifier = customersIdentifiersService.create(tenantId(req), req.params['customerId']!, body);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'identifier.added',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: identifier.id,
+      field2: identifier.type,
+      field3: identifier.value,
+      newValue: identifier,
+    });
     res.status(201).json({ data: identifier });
   } catch (err) { next(err); }
 });
@@ -364,9 +420,21 @@ customersRouter.patch('/:customerId/identifiers/:identifierId', (req: Request, r
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateIdentifierSchema.parse(req.body);
+    const prev = customersIdentifiersService.getById(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
     const identifier = customersIdentifiersService.update(
       tenantId(req), req.params['customerId']!, req.params['identifierId']!, body
     );
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'identifier.updated',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: identifier.id,
+      field2: identifier.type,
+      prevValue: prev,
+      newValue: identifier,
+    });
     res.json({ data: identifier });
   } catch (err) { next(err); }
 });
@@ -376,7 +444,18 @@ customersRouter.delete('/:customerId/identifiers/:identifierId', (req: Request, 
   try {
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const prev = customersIdentifiersService.getById(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
     customersIdentifiersService.delete(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'identifier.deleted',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: prev.id,
+      field2: prev.type,
+      prevValue: prev,
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });
@@ -427,6 +506,16 @@ customersRouter.post('/:customerId/relationships', (req: Request, res: Response,
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createRelationshipSchema.parse(req.body);
     const relationship = customersRelationshipsService.create(tenantId(req), req.params['customerId']!, body as any);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'relationship.added',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: relationship.id,
+      field2: relationship.relationship_type,
+      newValue: relationship,
+    });
     res.status(201).json({ data: relationship });
   } catch (err) { next(err); }
 });
@@ -447,9 +536,21 @@ customersRouter.patch('/:customerId/relationships/:relationshipId', (req: Reques
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateRelationshipSchema.parse(req.body);
+    const prev = customersRelationshipsService.getById(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
     const relationship = customersRelationshipsService.update(
       tenantId(req), req.params['customerId']!, req.params['relationshipId']!, body as any
     );
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'relationship.updated',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: relationship.id,
+      field2: relationship.relationship_type,
+      prevValue: prev,
+      newValue: relationship,
+    });
     res.json({ data: relationship });
   } catch (err) { next(err); }
 });
@@ -459,7 +560,18 @@ customersRouter.delete('/:customerId/relationships/:relationshipId', (req: Reque
   try {
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const prev = customersRelationshipsService.getById(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
     customersRelationshipsService.delete(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'relationship.deleted',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: prev.id,
+      field2: prev.relationship_type,
+      prevValue: prev,
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });
@@ -514,7 +626,17 @@ customersRouter.put('/:customerId/aml-kyc', (req: Request, res: Response, next: 
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertAmlKycSchema.parse(req.body);
+    const prevAmlKyc = customersAmlKycService.get(tenantId(req), req.params['customerId']!);
     const amlKyc = customersAmlKycService.upsert(tenantId(req), req.params['customerId']!, body);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'aml_kyc.updated',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prevAmlKyc,
+      newValue: amlKyc,
+    });
     res.json({ data: amlKyc });
   } catch (err) { next(err); }
 });
@@ -568,7 +690,17 @@ customersRouter.put('/:customerId/data-governance', (req: Request, res: Response
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertDataGovernanceSchema.parse(req.body);
+    const prevDg = customersDataGovernanceService.get(tenantId(req), req.params['customerId']!);
     const dg = customersDataGovernanceService.upsert(tenantId(req), req.params['customerId']!, body);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'data_governance.updated',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prevDg,
+      newValue: dg,
+    });
     res.json({ data: dg });
   } catch (err) { next(err); }
 });
@@ -619,7 +751,17 @@ customersRouter.put('/:customerId/contact', (req: Request, res: Response, next: 
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertContactSchema.parse(req.body);
+    const prevContact = customersContactService.get(tenantId(req), req.params['customerId']!);
     const contact = customersContactService.upsert(tenantId(req), req.params['customerId']!, body as any);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'contact.updated',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prevContact,
+      newValue: contact,
+    });
     res.json({ data: contact });
   } catch (err) { next(err); }
 });
@@ -691,6 +833,16 @@ customersRouter.post('/:customerId/documents', (req: Request, res: Response, nex
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createDocumentSchema.parse(req.body);
     const doc = customersDocumentsService.create(tenantId(req), req.params['customerId']!, body as any);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'document.added',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: doc.id,
+      field2: doc.document_type,
+      newValue: doc,
+    });
     res.status(201).json({ data: doc });
   } catch (err) { next(err); }
 });
@@ -711,9 +863,21 @@ customersRouter.patch('/:customerId/documents/:documentId', (req: Request, res: 
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateDocumentSchema.parse(req.body);
+    const prevDoc = customersDocumentsService.getById(tenantId(req), req.params['customerId']!, req.params['documentId']!);
     const doc = customersDocumentsService.update(
       tenantId(req), req.params['customerId']!, req.params['documentId']!, body as any
     );
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'document.updated',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: doc.id,
+      field2: doc.document_type,
+      prevValue: prevDoc,
+      newValue: doc,
+    });
     res.json({ data: doc });
   } catch (err) { next(err); }
 });
@@ -723,7 +887,18 @@ customersRouter.delete('/:customerId/documents/:documentId', (req: Request, res:
   try {
     const filter = getAccessFilter(req, 'write');
     customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const prevDoc = customersDocumentsService.getById(tenantId(req), req.params['customerId']!, req.params['documentId']!);
     customersDocumentsService.delete(tenantId(req), req.params['customerId']!, req.params['documentId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'customer',
+      subcategory: 'document.deleted',
+      entityId: req.params['customerId']!,
+      actorLogin: resolveActorLogin(req),
+      field1: prevDoc.id,
+      field2: prevDoc.document_type,
+      prevValue: prevDoc,
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });

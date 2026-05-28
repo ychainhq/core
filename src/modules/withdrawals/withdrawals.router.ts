@@ -6,6 +6,8 @@ import { ApiError } from '../../shared/errors/index';
 import { AccessFilter } from '../../shared/actor-auth/types';
 import { resolvePermission } from '../../shared/actor-auth/context';
 import { buildAccessFilter, adminAllFilter } from '../../shared/actor-auth/filter';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const withdrawalsRouter = Router();
 
@@ -82,6 +84,15 @@ withdrawalsRouter.post('/:withdrawalId/submit-signed', async (req: Request, res:
       req.params['withdrawalId']!,
       body.signedPsbt
     );
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'withdrawal',
+      subcategory: 'signed_submitted',
+      entityId: updated.id,
+      actorLogin: resolveActorLogin(req),
+      field1: updated.status,
+      newValue: updated,
+    });
     res.json({ data: updated });
   } catch (err) {
     next(err);

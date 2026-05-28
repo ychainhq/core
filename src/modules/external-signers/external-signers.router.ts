@@ -27,6 +27,8 @@ import { signerPolicyService } from './signer-policy.service';
 import { signingTasksService } from '../signing-tasks/signing-tasks.service';
 import { resolvePermission } from '../../shared/actor-auth/context';
 import { ApiError } from '../../shared/errors/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const externalSignersRouter = Router();
 
@@ -107,6 +109,16 @@ externalSignersRouter.post('/enroll', (req: Request, res: Response, next: NextFu
   try {
     const body = enrollSchema.parse(req.body);
     const signer = externalSignersService.enroll(tenantId(req), body);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'external_signer',
+      subcategory: 'enrolled',
+      entityId: signer.id,
+      actorLogin: resolveActorLogin(req),
+      field1: signer.name,
+      field2: (signer as any).edition ?? null,
+      newValue: signer,
+    });
     res.status(201).json({ data: signer });
   } catch (err) { next(err); }
 });
@@ -119,7 +131,7 @@ externalSignersRouter.get('/policies', (req: Request, res: Response, next: NextF
   } catch (err) { next(err); }
 });
 
-// PUT /v1/external-signers/policies
+// PUT /v1/external-signers/policies — MUST be before /:signerId
 const policyItemSchema = z.object({
   signerId: z.string().optional(),
   chainId: z.string().optional(),
@@ -138,6 +150,14 @@ externalSignersRouter.put('/policies', (req: Request, res: Response, next: NextF
   try {
     const body = z.object({ policies: z.array(policyItemSchema) }).parse(req.body);
     const result = signerPolicyService.upsertPolicies(tenantId(req), body.policies);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'external_signer',
+      subcategory: 'policies_updated',
+      actorLogin: resolveActorLogin(req),
+      field1: String(body.policies.length),
+      newValue: result,
+    });
     res.json({ data: result });
   } catch (err) { next(err); }
 });
@@ -168,7 +188,17 @@ const patchSignerSchema = z.object({
 externalSignersRouter.patch('/:signerId', (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = patchSignerSchema.parse(req.body);
+    const prev = externalSignersService.getById(tenantId(req), req.params['signerId']!);
     const signer = externalSignersService.update(tenantId(req), req.params['signerId']!, body);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'external_signer',
+      subcategory: 'updated',
+      entityId: signer.id,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prev,
+      newValue: signer,
+    });
     res.json({ data: signer });
   } catch (err) { next(err); }
 });
@@ -177,6 +207,15 @@ externalSignersRouter.patch('/:signerId', (req: Request, res: Response, next: Ne
 externalSignersRouter.post('/:signerId/enable', (req: Request, res: Response, next: NextFunction) => {
   try {
     const signer = externalSignersService.enable(tenantId(req), req.params['signerId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'external_signer',
+      subcategory: 'enabled',
+      entityId: signer.id,
+      actorLogin: resolveActorLogin(req),
+      field1: signer.name,
+      newValue: signer,
+    });
     res.json({ data: signer });
   } catch (err) { next(err); }
 });
@@ -185,6 +224,15 @@ externalSignersRouter.post('/:signerId/enable', (req: Request, res: Response, ne
 externalSignersRouter.post('/:signerId/disable', (req: Request, res: Response, next: NextFunction) => {
   try {
     const signer = externalSignersService.disable(tenantId(req), req.params['signerId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'external_signer',
+      subcategory: 'disabled',
+      entityId: signer.id,
+      actorLogin: resolveActorLogin(req),
+      field1: signer.name,
+      newValue: signer,
+    });
     res.json({ data: signer });
   } catch (err) { next(err); }
 });
@@ -192,7 +240,17 @@ externalSignersRouter.post('/:signerId/disable', (req: Request, res: Response, n
 // DELETE /v1/external-signers/:signerId (soft delete = revoke)
 externalSignersRouter.delete('/:signerId', (req: Request, res: Response, next: NextFunction) => {
   try {
+    const prev = externalSignersService.getById(tenantId(req), req.params['signerId']!);
     externalSignersService.delete(tenantId(req), req.params['signerId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'external_signer',
+      subcategory: 'deleted',
+      entityId: prev.id,
+      actorLogin: resolveActorLogin(req),
+      field1: prev.name,
+      prevValue: prev,
+    });
     res.status(204).end();
   } catch (err) { next(err); }
 });

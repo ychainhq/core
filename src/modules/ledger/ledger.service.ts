@@ -3,6 +3,7 @@ import { getDb } from '../../db/sqlite';
 import { NotFoundError } from '../../shared/errors/index';
 import { addSatoshi } from '../../shared/money/index';
 import { toUnixTs } from '../../shared/time/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
 
 export interface LedgerAccount {
   id: string;
@@ -234,6 +235,18 @@ export const ledgerService = {
     );
 
     const entry = mapEntry(db.prepare('SELECT * FROM ledger_entries WHERE id = ?').get(id));
+    const account = db.prepare('SELECT tenant_id FROM ledger_accounts WHERE id = ?').get(input.ledgerAccountId) as { tenant_id: string | null } | undefined;
+    ticklerService.record({
+      tenantId: account?.tenant_id ?? null,
+      category: 'ledger',
+      subcategory: 'entry.posted',
+      entityId: id,
+      field1: input.ledgerAccountId,
+      field2: input.type,
+      field3: input.amountRaw,
+      field4: input.referenceType ?? null,
+      field5: input.referenceId ?? null,
+    });
     return {
       entry: entry!,
       balance: { pending: newPending.toString(), settled: newSettled.toString(), total: (newPending + newSettled).toString() },

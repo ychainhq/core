@@ -705,6 +705,37 @@ CREATE TABLE tenant_withdrawal_batch_configs (
 );
 ```
 
+#### Tabela: `ticklers`
+
+Immutable audit log — write-once, never modified or deleted. Records every create/update/delete operation at the engine layer.
+
+```sql
+CREATE TABLE ticklers (
+  id          TEXT PRIMARY KEY,           -- 'tck_...'
+  occurred_at INTEGER NOT NULL,           -- Unix ms
+  tenant_id   TEXT REFERENCES tenants(id), -- NULL = global/platform event
+  category    TEXT NOT NULL,             -- 'platform'|'tenant'|'customer'|'wallet'|'address'|
+                                          -- 'payment_request'|'deposit'|'transaction'|
+                                          -- 'ledger'|'webhook'|'withdrawal'|'withdrawal_batch'|
+                                          -- 'signing_task'|'external_signer'|'sweep'
+  subcategory TEXT NOT NULL,             -- e.g. 'created', 'cancelled', 'tenant.api_key_created'
+  entity_id   TEXT,                      -- ID of the affected entity
+  actor_login TEXT,                      -- who triggered: 'key:name'|'admin:name'|'customer:id'|'system:worker'
+  field1      TEXT,                      -- generic fields (semantics depend on category/subcategory)
+  field2      TEXT,
+  field3      TEXT,
+  field4      TEXT,
+  field5      TEXT,
+  prev_value  TEXT,                      -- JSON snapshot before mutation
+  new_value   TEXT                       -- JSON snapshot after mutation
+);
+CREATE INDEX idx_ticklers_tenant_id    ON ticklers(tenant_id);
+CREATE INDEX idx_ticklers_occurred_at  ON ticklers(occurred_at DESC);
+CREATE INDEX idx_ticklers_category     ON ticklers(category, subcategory);
+CREATE INDEX idx_ticklers_entity_id    ON ticklers(entity_id);
+CREATE INDEX idx_ticklers_actor_login  ON ticklers(actor_login);
+```
+
 ---
 
 ## 6. REST API v2
@@ -923,6 +954,25 @@ Protokół integracji z zewnętrznym signerem (OSS/Enterprise daemon). Signer po
 | POST | `/v1/withdrawal-batches/:batchId/cpfp` | Utwórz transakcję CPFP dla odblokowania |
 | GET | `/v1/tenant/withdrawal-batch-config` | Konfiguracja batchowania tenanta |
 | PATCH | `/v1/tenant/withdrawal-batch-config` | Aktualizuj konfigurację batchowania |
+
+### 6.17 Ticklers (audit log)
+
+Immutable audit log. Read-only via API — writes happen automatically on every mutation.
+
+**Tenant API** (`Bearer <api-key>`):
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/v1/ticklers` | Lista ticklerów tenanta (własne, bez globalnych) |
+
+Query params: `category`, `subcategory`, `entity_id`, `actor_login`, `from` (ms), `to` (ms), `limit`, `cursor`.
+
+**Admin API** (`X-Admin-Key`):
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/admin/v1/ticklers` | Lista wszystkich ticklerów (globalne + wszystkie tenanty) |
+| GET | `/admin/v1/tenants/:tenantId/ticklers` | Lista ticklerów jednego tenanta |
 
 ---
 

@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { tenantsService } from './tenants.service';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const tenantSelfRouter = Router();
 
@@ -42,7 +44,17 @@ tenantSelfRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 tenantSelfRouter.patch('/', (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = updateProfileSchema.parse(req.body);
+    const prev = tenantsService.getById(tenantId(req));
     const tenant = tenantsService.update(tenantId(req), body);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'tenant',
+      subcategory: 'self.updated',
+      entityId: tenant.id,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prev,
+      newValue: tenant,
+    });
     res.json({ data: tenant });
   } catch (err) {
     next(err);
@@ -63,8 +75,18 @@ tenantSelfRouter.get('/config', (req: Request, res: Response, next: NextFunction
 tenantSelfRouter.patch('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = updateConfigSchema.parse(req.body);
-    const config = await tenantsService.updateConfig(tenantId(req), body);
-    res.json({ data: config });
+    const prev = tenantsService.getById(tenantId(req));
+    const cfg = await tenantsService.updateConfig(tenantId(req), body);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'tenant',
+      subcategory: 'config.updated',
+      entityId: tenantId(req),
+      actorLogin: resolveActorLogin(req),
+      prevValue: prev.config,
+      newValue: cfg,
+    });
+    res.json({ data: cfg });
   } catch (err) {
     next(err);
   }

@@ -14,6 +14,8 @@ import { z } from 'zod';
 import { signingTasksService } from './signing-tasks.service';
 import { resolvePermission } from '../../shared/actor-auth/context';
 import { ApiError } from '../../shared/errors/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const signingTasksRouter = Router();
 
@@ -66,6 +68,16 @@ signingTasksRouter.post('/:taskId/approve', (req: Request, res: Response, next: 
     const body = approveSchema.parse(req.body);
     const approvedBy = body.approvedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
     const task = signingTasksService.approveTask(tenantId(req), req.params['taskId']!, approvedBy);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'signing_task',
+      subcategory: 'operator_approved',
+      entityId: task.id,
+      actorLogin: resolveActorLogin(req),
+      field1: approvedBy,
+      field2: (task as any).chain_id ?? null,
+      newValue: task,
+    });
     res.json({ data: task });
   } catch (err) { next(err); }
 });
@@ -81,6 +93,17 @@ signingTasksRouter.post('/:taskId/reject', (req: Request, res: Response, next: N
     const body = rejectSchema.parse(req.body);
     const rejectedBy = body.rejectedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
     const task = signingTasksService.manualRejectTask(tenantId(req), req.params['taskId']!, rejectedBy, body.reason);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'signing_task',
+      subcategory: 'operator_rejected',
+      entityId: task.id,
+      actorLogin: resolveActorLogin(req),
+      field1: rejectedBy,
+      field2: body.reason,
+      field3: (task as any).chain_id ?? null,
+      newValue: task,
+    });
     res.json({ data: task });
   } catch (err) { next(err); }
 });

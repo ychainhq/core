@@ -5,6 +5,8 @@ import { adapterRegistry } from '../../chain-adapters/registry';
 import { ledgerService } from '../ledger/ledger.service';
 import { logger } from '../../shared/logging/index';
 import { ValidationError } from '../../shared/errors/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const sweepsRouter = Router();
 
@@ -89,6 +91,17 @@ sweepsRouter.post('/:sweepId/submit-signed', async (req: Request, res: Response,
         referenceId: sweep.id,
       });
     }
+
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'sweep',
+      subcategory: 'signed_submitted',
+      entityId: sweep.id,
+      actorLogin: resolveActorLogin(req),
+      field1: txHash,
+      field2: updated.status,
+      newValue: updated,
+    });
 
     logger.info('Sweep broadcast', { sweepId: sweep.id, txHash, tenantId: tenantId(req) });
 

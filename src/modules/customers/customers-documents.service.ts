@@ -190,6 +190,10 @@ export const customersDocumentsService = {
     );
   },
 
+  getById(tenantId: string, customerId: string, documentId: string): CustomerDocument {
+    return mapDocument(guardDocument(tenantId, customerId, documentId));
+  },
+
   delete(tenantId: string, customerId: string, documentId: string): void {
     const db = getDb();
     guardDocument(tenantId, customerId, documentId);

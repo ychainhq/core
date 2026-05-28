@@ -9,6 +9,7 @@
 import { signingTasksService } from '../modules/signing-tasks/signing-tasks.service';
 import { utxoLockService } from '../shared/utxo-lock/utxo-lock.service';
 import { logger } from '../shared/logging/index';
+import { ticklerService } from '../shared/tickler/tickler.service';
 
 const EXPIRY_WORKER_INTERVAL_MS = parseInt(
   process.env['SIGNING_TASK_EXPIRY_INTERVAL_MS'] ?? '60000',
@@ -49,6 +50,13 @@ export class SigningTaskExpiryWorker {
     const expiredCount = signingTasksService.expireAllOverdue();
     if (expiredCount > 0) {
       logger.info('SigningTaskExpiryWorker: expired tasks', { count: expiredCount });
+      ticklerService.record({
+        tenantId: null,
+        category: 'signing_task',
+        subcategory: 'bulk_expired',
+        actorLogin: 'system:signing-task-expiry',
+        field1: String(expiredCount),
+      });
     }
 
     // Cleanup any lingering expired UTXO locks (safety net)

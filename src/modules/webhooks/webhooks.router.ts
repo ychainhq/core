@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { webhooksService } from './webhooks.service';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const webhooksRouter = Router();
 export const webhookDeliveriesRouter = Router();
@@ -41,6 +43,15 @@ webhooksRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
     const tenantId = (req as any).tenantId as string;
     const body = createSchema.parse(req.body);
     const { webhook, secret } = webhooksService.create(tenantId, body);
+    ticklerService.record({
+      tenantId,
+      category: 'webhook',
+      subcategory: 'created',
+      entityId: webhook.id,
+      actorLogin: resolveActorLogin(req),
+      field1: webhook.url,
+      newValue: webhook,
+    });
     // Return secret only on creation
     res.status(201).json({
       data: {
@@ -88,7 +99,17 @@ webhooksRouter.patch('/:webhookId', (req: Request, res: Response, next: NextFunc
   try {
     const tenantId = (req as any).tenantId as string;
     const body = updateSchema.parse(req.body);
+    const prev = webhooksService.getById(tenantId, req.params['webhookId']!);
     const webhook = webhooksService.update(tenantId, req.params['webhookId']!, body);
+    ticklerService.record({
+      tenantId,
+      category: 'webhook',
+      subcategory: 'updated',
+      entityId: webhook.id,
+      actorLogin: resolveActorLogin(req),
+      prevValue: prev,
+      newValue: webhook,
+    });
     res.json({ data: webhook });
   } catch (err) {
     next(err);
@@ -99,7 +120,17 @@ webhooksRouter.patch('/:webhookId', (req: Request, res: Response, next: NextFunc
 webhooksRouter.delete('/:webhookId', (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
+    const prev = webhooksService.getById(tenantId, req.params['webhookId']!);
     const webhook = webhooksService.deactivate(tenantId, req.params['webhookId']!);
+    ticklerService.record({
+      tenantId,
+      category: 'webhook',
+      subcategory: 'deleted',
+      entityId: webhook.id,
+      actorLogin: resolveActorLogin(req),
+      field1: webhook.url,
+      prevValue: prev,
+    });
     res.json({ data: webhook });
   } catch (err) {
     next(err);

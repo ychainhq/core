@@ -154,6 +154,10 @@ export const customersIdentifiersService = {
     );
   },
 
+  getById(tenantId: string, customerId: string, identifierId: string): CustomerIdentifier {
+    return mapIdentifier(guardIdentifier(tenantId, customerId, identifierId));
+  },
+
   delete(tenantId: string, customerId: string, identifierId: string): void {
     const db = getDb();
     guardIdentifier(tenantId, customerId, identifierId);

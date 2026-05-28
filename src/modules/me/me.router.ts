@@ -8,6 +8,8 @@ import { customersProfileService } from '../customers/customers-profile.service'
 import { customersContactService } from '../customers/customers-contact.service';
 import { customersDocumentsService } from '../customers/customers-documents.service';
 import { customersAmlKycService } from '../customers/customers-aml-kyc.service';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const meRouter = Router();
 
@@ -88,6 +90,15 @@ meRouter.post('/deposit-address', async (req: Request, res: Response, next: Next
   try {
     const { tenantId, customerId } = ctx(req);
     const result = await depositAddressService.generateForCustomer(tenantId, customerId);
+    ticklerService.record({
+      tenantId,
+      category: 'address',
+      subcategory: 'deposit_generated',
+      entityId: result.address,
+      actorLogin: `customer:${customerId}`,
+      field1: customerId,
+      newValue: result,
+    });
     res.status(201).json({ data: result });
   } catch (err) {
     next(err);
@@ -103,6 +114,17 @@ meRouter.post('/withdrawals', async (req: Request, res: Response, next: NextFunc
       toAddress: body.toAddress,
       amountSats: body.amountSats,
       idempotencyKey: body.idempotencyKey,
+    });
+    ticklerService.record({
+      tenantId,
+      category: 'withdrawal',
+      subcategory: 'created',
+      entityId: withdrawal.id,
+      actorLogin: `customer:${customerId}`,
+      field1: body.toAddress,
+      field2: body.amountSats,
+      field3: customerId,
+      newValue: withdrawal,
     });
     res.status(201).json({ data: withdrawal });
   } catch (err) {
@@ -192,7 +214,16 @@ meRouter.put('/profile', (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const body = profileSchema.parse(req.body);
-    res.json({ data: customersProfileService.upsert(tenantId, customerId, body as any) });
+    const profile = customersProfileService.upsert(tenantId, customerId, body as any);
+    ticklerService.record({
+      tenantId,
+      category: 'customer',
+      subcategory: 'profile.self_upserted',
+      entityId: customerId,
+      actorLogin: `customer:${customerId}`,
+      newValue: profile,
+    });
+    res.json({ data: profile });
   } catch (err) {
     next(err);
   }
@@ -233,7 +264,16 @@ meRouter.put('/contact', (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const body = contactSchema.parse(req.body);
-    res.json({ data: customersContactService.upsert(tenantId, customerId, body as any) });
+    const contact = customersContactService.upsert(tenantId, customerId, body as any);
+    ticklerService.record({
+      tenantId,
+      category: 'customer',
+      subcategory: 'contact.self_updated',
+      entityId: customerId,
+      actorLogin: `customer:${customerId}`,
+      newValue: contact,
+    });
+    res.json({ data: contact });
   } catch (err) {
     next(err);
   }
@@ -290,6 +330,16 @@ meRouter.post('/documents', (req: Request, res: Response, next: NextFunction) =>
       ...body,
       verification_status: 'pending',
       uploaded_by: customerId,
+    });
+    ticklerService.record({
+      tenantId,
+      category: 'customer',
+      subcategory: 'document.self_uploaded',
+      entityId: customerId,
+      actorLogin: `customer:${customerId}`,
+      field1: doc.id,
+      field2: doc.document_type,
+      newValue: doc,
     });
     res.status(201).json({ data: doc });
   } catch (err) {

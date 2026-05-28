@@ -5,6 +5,8 @@ import { idempotencyService } from '../idempotency/idempotency.service';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError } from '../../shared/errors/index';
 import { satoshiToBtc } from '../../shared/money/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const ledgerRouter = Router();
 
@@ -52,6 +54,16 @@ ledgerRouter.post('/accounts', (req: Request, res: Response, next: NextFunction)
     }
 
     const account = ledgerService.createAccount(tenantId, body);
+    ticklerService.record({
+      tenantId,
+      category: 'ledger',
+      subcategory: 'account.created',
+      entityId: account.id,
+      actorLogin: resolveActorLogin(req),
+      field1: account.account_type,
+      field2: body.customerId ?? null,
+      newValue: account,
+    });
     res.status(201).json({ data: account });
   } catch (err) {
     next(err);
@@ -158,6 +170,18 @@ ledgerRouter.post('/transfers', async (req: Request, res: Response, next: NextFu
       assetId: body.assetId,
       amountRaw: body.amount,
       reference: body.reference,
+    });
+
+    ticklerService.record({
+      tenantId,
+      category: 'ledger',
+      subcategory: 'transfer',
+      entityId: debit.id,
+      actorLogin: resolveActorLogin(req),
+      field1: body.fromLedgerAccountId,
+      field2: body.toLedgerAccountId,
+      field3: body.amount,
+      newValue: { debit, credit },
     });
 
     const result = { data: { debit, credit } };

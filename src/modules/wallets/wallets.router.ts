@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { walletsService } from './wallets.service';
 import { resolvePermission } from '../../shared/actor-auth/context';
 import { ApiError } from '../../shared/errors/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const walletsRouter = Router();
 
@@ -33,6 +35,16 @@ walletsRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
     const tenantId = (req as any).tenantId as string;
     const body = createSchema.parse(req.body);
     const wallet = walletsService.create(tenantId, body);
+    ticklerService.record({
+      tenantId,
+      category: 'wallet',
+      subcategory: 'created',
+      entityId: wallet.id,
+      actorLogin: resolveActorLogin(req),
+      field1: wallet.wallet_role,
+      field2: wallet.name,
+      newValue: wallet,
+    });
     res.status(201).json({ data: wallet });
   } catch (err) {
     next(err);

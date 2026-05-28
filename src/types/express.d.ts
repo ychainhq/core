@@ -6,6 +6,7 @@ declare module 'express-serve-static-core' {
     tenantId?: string;
     apiKeyId?: string;
     apiKeyName?: string;
+    adminKeyName?: string;
     customerId?: string;
     /**
      * Resolved actor context from X-Actor-Token header.

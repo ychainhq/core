@@ -4,6 +4,8 @@ import { addressesService } from './addresses.service';
 import { adapterRegistry } from '../../chain-adapters/registry';
 import { detectAddressType } from '../../shared/validation/bitcoin';
 import { config } from '../../config/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const addressesRouter = Router({ mergeParams: true });
 export const validateAddressRouter = Router({ mergeParams: true });
@@ -62,6 +64,17 @@ addressesRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
     const address = addressesService.addToWallet(tenantId, walletId, {
       ...body,
       customerId: body.customerId,
+    });
+    ticklerService.record({
+      tenantId,
+      category: 'address',
+      subcategory: 'registered',
+      entityId: address.id,
+      actorLogin: resolveActorLogin(req),
+      field1: address.chain_id,
+      field2: walletId,
+      field3: body.customerId ?? null,
+      newValue: address,
     });
     res.status(201).json({ data: address });
   } catch (err) {

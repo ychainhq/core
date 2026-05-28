@@ -3,6 +3,7 @@ import * as z from 'zod/v4';
 import { McpAuthContext, requireAdmin } from '../context';
 import { safeTool } from '../errors';
 import { tenantsService } from '../../modules/tenants/tenants.service';
+import { ticklerService } from '../../shared/tickler/tickler.service';
 
 const paging = {
   limit: z.number().int().min(1).max(100).optional(),
@@ -104,6 +105,45 @@ export function registerAdminTools(server: McpServer, ctx: McpAuthContext): void
         warning: 'Store this key securely. It will not be shown again.',
       },
     };
+  }));
+
+  // ---- Ticklers ----
+
+  server.registerTool('chainapi_admin_list_ticklers', {
+    description: 'List all audit log entries (ticklers) across all tenants, including global platform events.',
+    inputSchema: {
+      tenantId: z.string().optional(),
+      category: z.string().optional(),
+      subcategory: z.string().optional(),
+      entity_id: z.string().optional(),
+      actor_login: z.string().optional(),
+      from: z.number().int().optional(),
+      to: z.number().int().optional(),
+      ...paging,
+    },
+    annotations: readOnly,
+  }, async ({ tenantId: tId, ...input }: any) => safeTool(() => {
+    const result = ticklerService.list({ tenantId: tId ?? undefined, includeGlobal: true, ...input });
+    return page(result, input);
+  }));
+
+  server.registerTool('chainapi_admin_list_tenant_ticklers', {
+    description: 'List audit log entries (ticklers) for a specific tenant, optionally including global platform events for that tenant.',
+    inputSchema: {
+      tenantId: z.string().min(1),
+      includeGlobal: z.boolean().optional(),
+      category: z.string().optional(),
+      subcategory: z.string().optional(),
+      entity_id: z.string().optional(),
+      actor_login: z.string().optional(),
+      from: z.number().int().optional(),
+      to: z.number().int().optional(),
+      ...paging,
+    },
+    annotations: readOnly,
+  }, async ({ tenantId: tId, includeGlobal, ...input }: any) => safeTool(() => {
+    const result = ticklerService.list({ tenantId: tId, includeGlobal: includeGlobal ?? false, ...input });
+    return page(result, input);
   }));
 }
 

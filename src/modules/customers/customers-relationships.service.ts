@@ -195,6 +195,10 @@ export const customersRelationshipsService = {
     );
   },
 
+  getById(tenantId: string, customerId: string, relationshipId: string): CustomerRelationship {
+    return mapRelationship(guardRelationship(tenantId, customerId, relationshipId));
+  },
+
   delete(tenantId: string, customerId: string, relationshipId: string): void {
     const db = getDb();
     guardRelationship(tenantId, customerId, relationshipId);

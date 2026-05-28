@@ -31,6 +31,7 @@ import { monitorsService } from '../../modules/monitors/monitors.service';
 import { externalSignersService } from '../../modules/external-signers/external-signers.service';
 import { signerPolicyService } from '../../modules/external-signers/signer-policy.service';
 import { signingTasksService } from '../../modules/signing-tasks/signing-tasks.service';
+import { ticklerService } from '../../shared/tickler/tickler.service';
 
 const paging = {
   limit: z.number().int().min(1).max(100).optional(),
@@ -988,4 +989,23 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     },
     annotations: write,
   }, async ({ signerId, taskId, ...body }: any) => safeTool(async () => ({ data: await signingTasksService.rejectTask(tenantId, taskId, signerId, body) })));
+
+  // ---- Ticklers ----
+
+  server.registerTool('chainapi_list_ticklers', {
+    description: 'List audit log entries (ticklers) for this tenant. Immutable record of all create/update/delete operations.',
+    inputSchema: {
+      category: z.string().optional(),
+      subcategory: z.string().optional(),
+      entity_id: z.string().optional(),
+      actor_login: z.string().optional(),
+      from: z.number().int().optional(),
+      to: z.number().int().optional(),
+      ...paging,
+    },
+    annotations: readOnly,
+  }, async (input: any) => safeTool(() => {
+    const result = ticklerService.list({ tenantId, includeGlobal: false, ...input });
+    return page(result, input);
+  }));
 }

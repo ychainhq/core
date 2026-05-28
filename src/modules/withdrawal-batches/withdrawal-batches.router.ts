@@ -19,6 +19,8 @@ import { z } from 'zod';
 import { withdrawalBatcherService } from './withdrawal-batcher.service';
 import { resolvePermission } from '../../shared/actor-auth/context';
 import { ApiError } from '../../shared/errors/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
+import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const withdrawalBatchesRouter = Router();
 export const withdrawalBatchConfigRouter = Router();
@@ -71,6 +73,16 @@ withdrawalBatchesRouter.post('/:batchId/approve', (req: Request, res: Response, 
     const body = approveSchema.parse(req.body);
     const approvedBy = body.approvedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
     const batch = withdrawalBatcherService.approveBatch(tenantId(req), req.params['batchId']!, approvedBy);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'withdrawal_batch',
+      subcategory: 'approved',
+      entityId: batch.id,
+      actorLogin: resolveActorLogin(req),
+      field1: approvedBy,
+      field2: batch.status,
+      newValue: batch,
+    });
     res.json({ data: batch });
   } catch (err) { next(err); }
 });
@@ -86,6 +98,17 @@ withdrawalBatchesRouter.post('/:batchId/reject', (req: Request, res: Response, n
     const body = rejectSchema.parse(req.body);
     const rejectedBy = body.rejectedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
     const batch = withdrawalBatcherService.rejectBatch(tenantId(req), req.params['batchId']!, rejectedBy, body.reason);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'withdrawal_batch',
+      subcategory: 'rejected',
+      entityId: batch.id,
+      actorLogin: resolveActorLogin(req),
+      field1: rejectedBy,
+      field2: body.reason,
+      field3: batch.status,
+      newValue: batch,
+    });
     res.json({ data: batch });
   } catch (err) { next(err); }
 });
@@ -94,6 +117,15 @@ withdrawalBatchesRouter.post('/:batchId/reject', (req: Request, res: Response, n
 withdrawalBatchesRouter.post('/:batchId/retry', (req: Request, res: Response, next: NextFunction) => {
   try {
     const batch = withdrawalBatcherService.retryBatch(tenantId(req), req.params['batchId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'withdrawal_batch',
+      subcategory: 'retry',
+      entityId: batch.id,
+      actorLogin: resolveActorLogin(req),
+      field1: batch.status,
+      newValue: batch,
+    });
     res.json({ data: batch });
   } catch (err) { next(err); }
 });
@@ -102,6 +134,15 @@ withdrawalBatchesRouter.post('/:batchId/retry', (req: Request, res: Response, ne
 withdrawalBatchesRouter.post('/:batchId/cancel', (req: Request, res: Response, next: NextFunction) => {
   try {
     const batch = withdrawalBatcherService.cancelBatch(tenantId(req), req.params['batchId']!);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'withdrawal_batch',
+      subcategory: 'cancelled',
+      entityId: batch.id,
+      actorLogin: resolveActorLogin(req),
+      field1: batch.status,
+      newValue: batch,
+    });
     res.json({ data: batch });
   } catch (err) { next(err); }
 });
@@ -120,6 +161,16 @@ withdrawalBatchesRouter.post('/:batchId/rbf-bump', (req: Request, res: Response,
         req.params['batchId']!,
         body.newFeeRateSatVb
       );
+      ticklerService.record({
+        tenantId: tenantId(req),
+        category: 'withdrawal_batch',
+        subcategory: 'rbf_bumped',
+        entityId: batch.id,
+        actorLogin: resolveActorLogin(req),
+        field1: String(body.newFeeRateSatVb),
+        field2: batch.status,
+        newValue: batch,
+      });
       res.json({ data: batch });
     } catch (err) { next(err); }
   })();
@@ -139,6 +190,16 @@ withdrawalBatchesRouter.post('/:batchId/cpfp', (req: Request, res: Response, nex
         req.params['batchId']!,
         body.targetFeeRateSatVb
       );
+      ticklerService.record({
+        tenantId: tenantId(req),
+        category: 'withdrawal_batch',
+        subcategory: 'cpfp_created',
+        entityId: batch.id,
+        actorLogin: resolveActorLogin(req),
+        field1: body.targetFeeRateSatVb != null ? String(body.targetFeeRateSatVb) : null,
+        field2: batch.status,
+        newValue: batch,
+      });
       res.json({ data: batch });
     } catch (err) { next(err); }
   })();
@@ -213,6 +274,13 @@ withdrawalBatchConfigRouter.patch('/', (req: Request, res: Response, next: NextF
     }
 
     const config = withdrawalBatcherService.upsertBatchConfig(tenantId(req), updates as any);
+    ticklerService.record({
+      tenantId: tenantId(req),
+      category: 'withdrawal_batch',
+      subcategory: 'config_updated',
+      actorLogin: resolveActorLogin(req),
+      newValue: config,
+    });
     res.json({ data: config });
   } catch (err) { next(err); }
 });
