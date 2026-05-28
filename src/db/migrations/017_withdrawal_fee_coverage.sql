@@ -5,4 +5,4 @@
 -- recipient_pays = customer balance debited amount_raw, recipient gets amount_raw - fee
 
 ALTER TABLE tenant_withdrawal_batch_configs
-  ADD COLUMN withdrawal_fee_coverage TEXT NOT NULL DEFAULT 'tenant_pays';
+  ADD COLUMN IF NOT EXISTS withdrawal_fee_coverage TEXT NOT NULL DEFAULT 'tenant_pays';
