@@ -342,17 +342,12 @@ export const signingTasksService = {
         logger.warn('Failed to release UTXO locks on task rejection', { taskId, error: String(err) });
       }
       try {
-        db.prepare(`
-          UPDATE withdrawal_batches
-          SET status = 'failed', last_error = ?, updated_at = ?
-          WHERE id = ? AND tenant_id = ? AND status NOT IN ('broadcast','confirmed','cancelled','replaced')
-        `).run(`Signing task rejected: ${input.reasonCode} — ${input.reasonMessage}`, now, task.withdrawal_batch_id, tenantId);
-        db.prepare(`
-          UPDATE customer_withdrawals
-          SET status = 'queued', updated_at = ?
-          WHERE id IN (SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?)
-            AND status = 'batched'
-        `).run(now, task.withdrawal_batch_id);
+        const batcher = await getBatcherService();
+        batcher.onSigningTaskRejected(
+          tenantId,
+          task.withdrawal_batch_id,
+          `Signing task rejected: ${input.reasonCode} — ${input.reasonMessage}`
+        );
       } catch (err) {
         logger.warn('Failed to revert batch/withdrawals on task rejection', { taskId, batchId: task.withdrawal_batch_id, error: String(err) });
       }
@@ -469,6 +464,16 @@ export const signingTasksService = {
     }
 
     return overdue.length;
+  },
+
+  markSubmitted(taskId: string, txHash: string): void {
+    const db = getDb();
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE signing_tasks
+      SET status = 'submitted', submitted_at = ?, tx_hash = ?, updated_at = ?
+      WHERE id = ?
+    `).run(now, txHash, now, taskId);
   },
 
   recordAudit(

@@ -326,6 +326,36 @@ export const withdrawalsService = {
     return withdrawalsService.getByIdInternal(id);
   },
 
+  markBatched(ids: string[]): void {
+    if (ids.length === 0) return;
+    const db = getDb();
+    const now = new Date().toISOString();
+    const placeholders = ids.map(() => '?').join(', ');
+    db.prepare(
+      `UPDATE customer_withdrawals SET status = 'batched', updated_at = ? WHERE id IN (${placeholders})`
+    ).run(now, ...ids);
+  },
+
+  requeue(ids: string[]): void {
+    if (ids.length === 0) return;
+    const db = getDb();
+    const now = new Date().toISOString();
+    const placeholders = ids.map(() => '?').join(', ');
+    db.prepare(
+      `UPDATE customer_withdrawals SET status = 'queued', updated_at = ? WHERE id IN (${placeholders}) AND status = 'batched'`
+    ).run(now, ...ids);
+  },
+
+  markBroadcast(ids: string[], txHash: string): void {
+    if (ids.length === 0) return;
+    const db = getDb();
+    const now = new Date().toISOString();
+    const placeholders = ids.map(() => '?').join(', ');
+    db.prepare(
+      `UPDATE customer_withdrawals SET status = 'broadcast', tx_hash = ?, updated_at = ? WHERE id IN (${placeholders})`
+    ).run(txHash, now, ...ids);
+  },
+
   /**
    * Submit a signed PSBT for a withdrawal (called by signing daemon).
    * Finalizes, broadcasts, and debits the customer ledger.

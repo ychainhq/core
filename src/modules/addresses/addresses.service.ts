@@ -5,6 +5,7 @@ import { adapterRegistry } from '../../chain-adapters/registry';
 import { detectAddressType } from '../../shared/validation/bitcoin';
 import { config } from '../../config/index';
 import { toUnixTs } from '../../shared/time/index';
+import { monitorsService } from '../monitors/monitors.service';
 
 export interface Address {
   id: string;
@@ -94,12 +95,13 @@ export const addressesService = {
     }
 
     // Also add to watched_addresses if not already present
-    const monitorId = `mon_${crypto.randomBytes(8).toString('hex')}`;
     try {
-      db.prepare(`
-        INSERT OR IGNORE INTO watched_addresses (id, tenant_id, chain_id, address, wallet_id, label, events, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, '["incoming"]', 1, ?, ?)
-      `).run(monitorId, tenantId, input.chain, input.address, walletId, input.label ?? null, now, now);
+      monitorsService.ensureWatched(tenantId, {
+        chainId: input.chain,
+        address: input.address,
+        walletId,
+        label: input.label,
+      });
     } catch {
       // Non-critical — might already be watched
     }

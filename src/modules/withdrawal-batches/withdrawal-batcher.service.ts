@@ -19,6 +19,7 @@ import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
 import { externalSignersService } from '../external-signers/external-signers.service';
 import { signerPolicyService } from '../external-signers/signer-policy.service';
 import { signingTasksService } from '../signing-tasks/signing-tasks.service';
+import { withdrawalsService } from '../withdrawals/withdrawals.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 
 // BTC dust threshold for P2WPKH outputs (546 sats)
@@ -238,9 +239,7 @@ export const withdrawalBatcherService = {
       if (amount < DUST_THRESHOLD_SATS) {
         if (config.btc_dust_policy === 'reject') {
           logger.warn('Dust withdrawal skipped', { tenantId, withdrawalId: wd.id, amount: wd.amount_raw });
-          await db.prepare(
-            `UPDATE customer_withdrawals SET status = 'failed', error = 'dust_output', updated_at = ? WHERE id = ?`
-          ).run(new Date().toISOString(), wd.id);
+          withdrawalsService.updateStatus(wd.id, 'failed', { error: 'dust_output' });
           continue;
         }
       }
@@ -333,11 +332,8 @@ export const withdrawalBatcherService = {
         INSERT INTO withdrawal_batch_items (batch_id, withdrawal_id, amount_raw, to_address)
         VALUES (?, ?, ?, ?)
       `).run(batchId, wd.id, wd.amount_raw, wd.to_address);
-
-      db.prepare(`
-        UPDATE customer_withdrawals SET status = 'batched', updated_at = ? WHERE id = ?
-      `).run(now, wd.id);
     }
+    withdrawalsService.markBatched(validWithdrawals.map((wd: any) => wd.id));
 
     // Lock UTXOs
     let lockedUtxos: any[];
@@ -353,10 +349,7 @@ export const withdrawalBatcherService = {
 
       // Undo batch items and revert withdrawal statuses
       db.prepare('DELETE FROM withdrawal_batch_items WHERE batch_id = ?').run(batchId);
-      for (const wd of validWithdrawals) {
-        db.prepare(`UPDATE customer_withdrawals SET status = 'queued', updated_at = ? WHERE id = ?`)
-          .run(now, wd.id);
-      }
+      withdrawalsService.requeue(validWithdrawals.map((wd: any) => wd.id));
       db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(batchId);
       return null;
     }
@@ -382,10 +375,7 @@ export const withdrawalBatcherService = {
 
       utxoLockService.releaseLocksForBatch(tenantId, batchId);
       db.prepare('DELETE FROM withdrawal_batch_items WHERE batch_id = ?').run(batchId);
-      for (const wd of validWithdrawals) {
-        db.prepare(`UPDATE customer_withdrawals SET status = 'queued', updated_at = ? WHERE id = ?`)
-          .run(now, wd.id);
-      }
+      withdrawalsService.requeue(validWithdrawals.map((wd: any) => wd.id));
       db.prepare(`UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?`)
         .run(String(err), now, batchId);
       return withdrawalBatcherService.getBatchById(tenantId, batchId);
@@ -528,12 +518,7 @@ export const withdrawalBatcherService = {
 
     // Release UTXO locks and revert withdrawal statuses
     utxoLockService.releaseLocksForBatch(tenantId, batchId);
-
-    db.prepare(`
-      UPDATE customer_withdrawals
-      SET status = 'queued', updated_at = ?
-      WHERE id IN (SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?)
-    `).run(now, batchId);
+    withdrawalsService.requeue(withdrawalBatcherService._getWithdrawalIds(batchId));
 
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
@@ -551,12 +536,7 @@ export const withdrawalBatcherService = {
     db.prepare(`UPDATE withdrawal_batches SET status = 'cancelled', updated_at = ? WHERE id = ?`).run(now, batchId);
 
     utxoLockService.releaseLocksForBatch(tenantId, batchId);
-
-    db.prepare(`
-      UPDATE customer_withdrawals
-      SET status = 'queued', updated_at = ?
-      WHERE id IN (SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?)
-    `).run(now, batchId);
+    withdrawalsService.requeue(withdrawalBatcherService._getWithdrawalIds(batchId));
 
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
@@ -572,11 +552,7 @@ export const withdrawalBatcherService = {
     const now = new Date().toISOString();
 
     // Revert withdrawals to queued so batcher picks them up again
-    db.prepare(`
-      UPDATE customer_withdrawals
-      SET status = 'queued', updated_at = ?
-      WHERE id IN (SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?)
-    `).run(now, batchId);
+    withdrawalsService.requeue(withdrawalBatcherService._getWithdrawalIds(batchId));
 
     db.prepare(`
       UPDATE withdrawal_batches
@@ -664,21 +640,13 @@ export const withdrawalBatcherService = {
     `).run(rawTx, txHash, signingTask.signed_payload, now, now, batchId);
 
     // Assign txHash to all withdrawals in batch
-    db.prepare(`
-      UPDATE customer_withdrawals
-      SET status = 'broadcast', tx_hash = ?, updated_at = ?
-      WHERE id IN (SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?)
-    `).run(txHash, now, batchId);
+    withdrawalsService.markBroadcast(withdrawalBatcherService._getWithdrawalIds(batchId), txHash);
 
     // Mark UTXOs as spent
     utxoLockService.markSpentForBatch(tenantId, batchId);
 
     // Mark signing task as submitted
-    db.prepare(`
-      UPDATE signing_tasks
-      SET status = 'submitted', submitted_at = ?, tx_hash = ?, updated_at = ?
-      WHERE id = ?
-    `).run(now, txHash, now, batch.signing_task_id);
+    signingTasksService.markSubmitted(batch.signing_task_id, txHash);
 
     logger.info('Withdrawal batch broadcast', { batchId, tenantId, txHash, outputsCount: batch.outputs_count });
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
@@ -776,10 +744,7 @@ export const withdrawalBatcherService = {
 
     // Transfer UTXO locks from original to replacement batch and reset TTL
     const newExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    db.prepare(`
-      UPDATE utxo_locks SET batch_id = ?, expires_at = ?
-      WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
-    `).run(newBatchId, newExpiry, tenantId, batchId);
+    utxoLockService.reassignLocks(tenantId, batchId, newBatchId, newExpiry);
 
     // Mark original as replaced
     db.prepare(`
@@ -805,8 +770,7 @@ export const withdrawalBatcherService = {
       actualFeeSats = psbtResult.fee ? String(Math.round(psbtResult.fee * 1e8)) : String(newFeeRateSatVb * 200);
     } catch (err: any) {
       // Roll back: restore original batch, re-assign locks, delete new batch
-      db.prepare(`UPDATE utxo_locks SET batch_id = ? WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'`)
-        .run(batchId, tenantId, newBatchId);
+      utxoLockService.reassignLocks(tenantId, newBatchId, batchId);
       db.prepare(`UPDATE withdrawal_batches SET status = 'broadcast', replaced_by_batch_id = NULL, updated_at = ? WHERE id = ?`)
         .run(now, batchId);
       db.prepare('DELETE FROM withdrawal_batch_items WHERE batch_id = ?').run(newBatchId);
@@ -938,28 +902,18 @@ export const withdrawalBatcherService = {
       batchId, now, now
     );
 
-    // Atomically lock the change UTXO
-    const lockResult = db.prepare(`
-      UPDATE cached_utxos SET is_locked = 1
-      WHERE tenant_id = ? AND tx_hash = ? AND vout = ? AND is_locked = 0 AND is_spent = 0
-    `).run(tenantId, changeUtxo.tx_hash, changeUtxo.vout);
-
-    if (lockResult.changes === 0) {
+    // Atomically lock the change UTXO via utxoLockService
+    let cpfpLockId: string;
+    try {
+      cpfpLockId = utxoLockService.lockSingleUtxo(
+        tenantId, cpfpBatchId, 'bitcoin', changeUtxo, 15 * 60 * 1000
+      );
+    } catch {
       db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(cpfpBatchId);
       throw new ValidationError(
         `Change UTXO ${changeUtxo.tx_hash}:${changeUtxo.vout} was concurrently locked`
       );
     }
-
-    const lockId = `ulk_${crypto.randomBytes(8).toString('hex')}`;
-    db.prepare(`
-      INSERT INTO utxo_locks (id, tenant_id, batch_id, chain_id, tx_hash, vout, amount_raw, status, locked_at, expires_at)
-      VALUES (?, ?, ?, 'bitcoin', ?, ?, ?, 'locked', ?, ?)
-    `).run(
-      lockId, tenantId, cpfpBatchId,
-      changeUtxo.tx_hash, changeUtxo.vout, changeUtxo.amount_raw,
-      now, new Date(Date.now() + 15 * 60 * 1000).toISOString()
-    );
 
     // Build CPFP PSBT: spend change → same change address
     const adapter = new BitcoinAdapter();
@@ -974,9 +928,7 @@ export const withdrawalBatcherService = {
       );
       psbtBase64 = psbtResult.psbt;
     } catch (err: any) {
-      db.prepare(`UPDATE cached_utxos SET is_locked = 0 WHERE tenant_id = ? AND tx_hash = ? AND vout = ?`)
-        .run(tenantId, changeUtxo.tx_hash, changeUtxo.vout);
-      db.prepare(`UPDATE utxo_locks SET status = 'released', released_at = ? WHERE id = ?`).run(now, lockId);
+      utxoLockService.releaseSingleUtxo(tenantId, 'bitcoin', cpfpLockId, changeUtxo);
       db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(cpfpBatchId);
       throw new UnprocessableEntityError(`Failed to build CPFP PSBT: ${err.message}`);
     }
@@ -1008,5 +960,35 @@ export const withdrawalBatcherService = {
 
     logger.info('CPFP batch created', { parentBatchId: batchId, cpfpBatchId, tenantId, effectiveFeeRateSatVb });
     return withdrawalBatcherService.getBatchById(tenantId, cpfpBatchId);
+  },
+
+  /**
+   * Returns withdrawal IDs associated with a batch via withdrawal_batch_items.
+   * Internal helper for methods that need to delegate to withdrawalsService.
+   */
+  _getWithdrawalIds(batchId: string): string[] {
+    const db = getDb();
+    return (
+      db.prepare('SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?')
+        .all(batchId) as Array<{ withdrawal_id: string }>
+    ).map(r => r.withdrawal_id);
+  },
+
+  /**
+   * Called by signingTasksService when a signing task is rejected.
+   * Marks the batch as failed and requeues its withdrawals.
+   */
+  onSigningTaskRejected(tenantId: string, batchId: string, reason: string): void {
+    const db = getDb();
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE withdrawal_batches
+      SET status = 'failed', last_error = ?, updated_at = ?
+      WHERE id = ? AND tenant_id = ?
+        AND status NOT IN ('broadcast', 'confirmed', 'cancelled', 'replaced')
+    `).run(reason, now, batchId, tenantId);
+
+    const ids = withdrawalBatcherService._getWithdrawalIds(batchId);
+    withdrawalsService.requeue(ids);
   },
 };

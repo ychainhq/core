@@ -211,6 +211,97 @@ export const utxoLockService = {
   },
 
   /**
+   * Lock a single UTXO for a batch atomically.
+   * Used by CPFP where a single change UTXO is reserved outside normal coin selection.
+   * Returns the generated lock ID.
+   * Throws if the UTXO is already locked.
+   */
+  lockSingleUtxo(
+    tenantId: string,
+    batchId: string,
+    chainId: string,
+    utxo: { tx_hash: string; vout: number; amount_raw: string },
+    ttlMs = LOCK_TTL_SECONDS * 1000
+  ): string {
+    const db = getDb();
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+
+    return db.transaction(() => {
+      const result = db.prepare(`
+        UPDATE cached_utxos
+        SET is_locked = 1
+        WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
+          AND is_locked = 0 AND is_spent = 0
+      `).run(tenantId, chainId, utxo.tx_hash, utxo.vout);
+
+      if (result.changes === 0) {
+        throw new Error(
+          `UTXO ${utxo.tx_hash}:${utxo.vout} was concurrently locked or already spent`
+        );
+      }
+
+      const lockId = `ulk_${crypto.randomBytes(8).toString('hex')}`;
+      db.prepare(`
+        INSERT INTO utxo_locks (id, tenant_id, batch_id, chain_id, tx_hash, vout, amount_raw, status, locked_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'locked', ?, ?)
+      `).run(lockId, tenantId, batchId, chainId, utxo.tx_hash, utxo.vout, utxo.amount_raw, now, expiresAt);
+
+      logger.debug('Single UTXO locked', { tenantId, batchId, txHash: utxo.tx_hash, vout: utxo.vout });
+      return lockId;
+    })();
+  },
+
+  /**
+   * Release a single UTXO lock by lock ID.
+   * Used by CPFP rollback path.
+   */
+  releaseSingleUtxo(
+    tenantId: string,
+    chainId: string,
+    lockId: string,
+    utxo: { tx_hash: string; vout: number }
+  ): void {
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE cached_utxos SET is_locked = 0
+        WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
+      `).run(tenantId, chainId, utxo.tx_hash, utxo.vout);
+
+      db.prepare(`
+        UPDATE utxo_locks SET status = 'released', released_at = ? WHERE id = ?
+      `).run(now, lockId);
+    })();
+  },
+
+  /**
+   * Reassign existing locked UTXOs from one batch to another.
+   * Used by RBF to transfer lock ownership to the replacement batch.
+   */
+  reassignLocks(
+    tenantId: string,
+    fromBatchId: string,
+    toBatchId: string,
+    newExpiresAt?: string
+  ): void {
+    const db = getDb();
+    if (newExpiresAt !== undefined) {
+      db.prepare(`
+        UPDATE utxo_locks SET batch_id = ?, expires_at = ?
+        WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
+      `).run(toBatchId, newExpiresAt, tenantId, fromBatchId);
+    } else {
+      db.prepare(`
+        UPDATE utxo_locks SET batch_id = ?
+        WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
+      `).run(toBatchId, tenantId, fromBatchId);
+    }
+  },
+
+  /**
    * Cleanup expired UTXO locks.
    * Called by the signing task expiry worker.
    */

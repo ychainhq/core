@@ -140,6 +140,27 @@ export const monitorsService = {
     return { ...existing, is_active: false };
   },
 
+  /**
+   * Insert OR IGNORE a watched_addresses row.
+   * Used by addresses.service when registering a new address so it gets monitored
+   * without duplicating business logic or throwing on conflict.
+   */
+  ensureWatched(tenantId: string, input: {
+    chainId: string;
+    address: string;
+    walletId?: string;
+    label?: string;
+  }): void {
+    const db = getDb();
+    const id = `mon_${crypto.randomBytes(8).toString('hex')}`;
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO watched_addresses
+        (id, tenant_id, chain_id, address, wallet_id, label, events, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, '["incoming"]', 1, ?, ?)
+    `).run(id, tenantId, input.chainId, input.address, input.walletId ?? null, input.label ?? null, now, now);
+  },
+
   // Used by workers — intentionally cross-tenant
   getActiveByChain(chainId: string): WatchedAddress[] {
     const db = getDb();

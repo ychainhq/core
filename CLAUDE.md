@@ -507,3 +507,34 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 - Tabela `ticklers` jest write-once: nigdy nie modyfikuj ani nie usuwaj wierszy. Tylko INSERT.
 - Workers używają `actorLogin: 'system:{worker-name}'`; router-level endpointy używają `resolveActorLogin(req)`.
 - Tickler call ZAWSZE po udanej mutacji (nie przed), aby entity_id był znany.
+
+### Enkapsulacja SQL — właścicielstwo tabel
+
+Każdy serwis jest **jedynym właścicielem** swoich tabel. SQL (INSERT/UPDATE/DELETE) na danej tabeli może się znajdować tylko w serwisie-właścicielu.
+
+| Serwis-właściciel | Tabele |
+|-------------------|--------|
+| `withdrawals.service` | `customer_withdrawals` |
+| `withdrawal-batcher.service` | `withdrawal_batches`, `withdrawal_batch_items`, `tenant_withdrawal_batch_configs` |
+| `signing-tasks.service` | `signing_tasks`, `signer_signature_audit` |
+| `utxo-lock.service` (shared) | `utxo_locks`, `cached_utxos` |
+| `deposits.service` | `deposits` |
+| `ledger.service` | `ledger_accounts`, `ledger_entries` |
+| `addresses.service` | `addresses` |
+| `monitors.service` | `watched_addresses` |
+| `customers.service` | `customers` |
+| `wallets.service` | `wallets` |
+| `transactions.service` | `transactions` |
+| `webhooks.service` | `webhooks`, `webhook_deliveries` |
+| `external-signers.service` | `external_signers`, `external_signer_policies` |
+| `sweeps.service` | `sweeps` |
+| `payment-requests.service` | `payment_requests` |
+| `tenants.service` | `tenants`, `tenant_configs` |
+| `tickler.service` | `ticklers` |
+| `idempotency.service` | `idempotency_keys` |
+
+**Reguły:**
+- Jeśli serwis A potrzebuje zmutować dane należące do serwisu B → wywołaj metodę serwisu B, nie pisz SQL bezpośrednio.
+- Operacje INSERT na danej tabeli mogą być tylko w jednym serwisie. Nigdy nie twórz rekordu z zewnętrznego serwisu.
+- Shared services (`utxo-lock`, `tickler`, `idempotency`) są wyjątkiem — są zaprojektowane do współdzielenia, ale nadal mają wyłączne właścicielstwo swoich tabel.
+- Naruszenie tej zasady = circular dependency lub god-service — oba są sygnałem złej architektury.
