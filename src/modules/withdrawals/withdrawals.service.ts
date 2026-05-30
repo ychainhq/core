@@ -56,6 +56,7 @@ export const withdrawalsService = {
       toAddress: string;
       amountSats: string;
       idempotencyKey?: string;
+      forceExternal?: boolean;
     }
   ): Promise<CustomerWithdrawal> {
     const db = getDb();
@@ -87,7 +88,7 @@ export const withdrawalsService = {
     }
 
     // On-platform detection: is toAddress a registered customer deposit address for this tenant?
-    const platformAddr = db
+    const platformAddr = input.forceExternal ? undefined : db
       .prepare(
         "SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1"
       )

@@ -359,3 +359,85 @@ describe('POST /v1/me/withdrawals — tenant isolation', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 8. GET /v1/addresses/resolve — platform address detection endpoint
+// ---------------------------------------------------------------------------
+describe('GET /v1/addresses/resolve — platform address detection', () => {
+  it('returns isInternal=true and customerId for a registered platform deposit address', async () => {
+    const { auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const addr = await registerDepositAddress(auth, customer.id);
+
+    const res = await request(app)
+      .get(`/v1/addresses/resolve?address=${encodeURIComponent(addr)}`)
+      .set(auth);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isInternal).toBe(true);
+    expect(res.body.data.customerId).toBe(customer.id);
+  });
+
+  it('returns isInternal=false and customerId=null for an external (non-platform) address', async () => {
+    const { auth } = await createTenantWithKey();
+
+    const res = await request(app)
+      .get(`/v1/addresses/resolve?address=${encodeURIComponent(uniqueAddr())}`)
+      .set(auth);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isInternal).toBe(false);
+    expect(res.body.data.customerId).toBeNull();
+  });
+
+  it('returns isInternal=false for a deposit address registered on a different tenant', async () => {
+    const { auth: authA } = await createTenantWithKey();
+    const { auth: authB } = await createTenantWithKey();
+
+    const customerB = await createCustomer(authB);
+    const addrOnTenantB = await registerDepositAddress(authB, customerB.id);
+
+    // Querying from tenant A — must not see tenant B's address as internal
+    const res = await request(app)
+      .get(`/v1/addresses/resolve?address=${encodeURIComponent(addrOnTenantB)}`)
+      .set(authA);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isInternal).toBe(false);
+    expect(res.body.data.customerId).toBeNull();
+  });
+
+  it('returns 400 when address query param is missing', async () => {
+    const { auth } = await createTenantWithKey();
+    const res = await request(app).get('/v1/addresses/resolve').set(auth);
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. forceExternal — bypasses internal transfer detection
+// ---------------------------------------------------------------------------
+describe('POST /v1/me/withdrawals — forceExternal bypasses internal routing', () => {
+  it('queues as external and reserves ledger balance even when toAddress is a platform deposit address', async () => {
+    const { tenantId, auth } = await createTenantWithKey();
+    const sender = await createCustomer(auth);
+    const recipient = await createCustomer(auth);
+
+    creditCustomer(tenantId, sender.id, '300000');
+    const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
+
+    const token = await issueSession(auth, sender.id);
+    const res = await request(app)
+      .post('/v1/me/withdrawals')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({ toAddress: recipientDepositAddr, amountSats: '100000', forceExternal: true });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.status).toBe('queued');
+    expect(res.body.data.withdrawal_type).toBe('external');
+    // Ledger reservation reduced settled balance (external path books withdrawal_reserve immediately)
+    expect(getSettledBalance(tenantId, sender.id)).toBe(200000n);
+    // Recipient balance untouched — no internal transfer occurred
+    expect(getSettledBalance(tenantId, recipient.id)).toBe(0n);
+  });
+});

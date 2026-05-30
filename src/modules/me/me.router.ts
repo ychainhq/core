@@ -24,6 +24,7 @@ const withdrawalSchema = z.object({
   toAddress: z.string().min(1),
   amountSats: z.string().regex(/^\d+$/, 'amountSats must be a positive integer string'),
   idempotencyKey: z.string().optional(),
+  forceExternal: z.boolean().optional(),
 });
 
 function ctx(req: Request): { tenantId: string; customerId: string } {
@@ -114,6 +115,7 @@ meRouter.post('/withdrawals', async (req: Request, res: Response, next: NextFunc
       toAddress: body.toAddress,
       amountSats: body.amountSats,
       idempotencyKey: body.idempotencyKey,
+      forceExternal: body.forceExternal,
     });
     // Internal transfers tickle themselves inside the service to avoid duplicate audit entries
     if (withdrawal.withdrawal_type !== 'internal') {

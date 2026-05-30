@@ -10,7 +10,7 @@ import { errorHandler } from './shared/errors/index';
 import { chainsRouter } from './modules/chains/chains.router';
 import { assetsRouter } from './modules/assets/assets.router';
 import { walletsRouter } from './modules/wallets/wallets.router';
-import { addressesRouter, validateAddressRouter } from './modules/addresses/addresses.router';
+import { addressesRouter, validateAddressRouter, resolveAddressRouter } from './modules/addresses/addresses.router';
 import { monitorsRouter } from './modules/monitors/monitors.router';
 import { balancesRouter, walletBalancesRouter } from './modules/balances/balances.router';
 import { utxosRouter, walletUtxosRouter } from './modules/bitcoin/utxos.router';
@@ -110,6 +110,9 @@ export function createApp(): express.Application {
 
   // ---- Address validation ----
   app.use('/v1/chains/:chain/addresses/validate', validateAddressRouter);
+
+  // ---- Address resolve (internal transfer detection) ----
+  app.use('/v1/addresses/resolve', resolveAddressRouter);
 
   // ---- Bitcoin UTXOs for address ----
   app.use('/v1/chains/bitcoin/addresses/:address/utxos', utxosRouter);

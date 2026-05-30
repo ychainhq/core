@@ -9,6 +9,7 @@ import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
 export const addressesRouter = Router({ mergeParams: true });
 export const validateAddressRouter = Router({ mergeParams: true });
+export const resolveAddressRouter = Router({ mergeParams: true });
 
 const addAddressSchema = z.object({
   chain: z.string().min(1),
@@ -77,6 +78,23 @@ addressesRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
       newValue: address,
     });
     res.status(201).json({ data: address });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /v1/addresses/resolve?address=<addr>
+// Returns whether the given address is a registered platform deposit address for this tenant.
+resolveAddressRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId as string;
+    const { address } = z.object({ address: z.string().min(1) }).parse(req.query);
+    const { getDb } = require('../../db/sqlite');
+    const db = getDb();
+    const row = db
+      .prepare("SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1")
+      .get(address, tenantId) as { customer_id: string } | undefined;
+    res.json({ data: { isInternal: !!row, customerId: row?.customer_id ?? null } });
   } catch (err) {
     next(err);
   }
