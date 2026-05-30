@@ -262,6 +262,7 @@ export const ledgerService = {
     assetId: string;
     amountRaw: string;
     reference?: string;
+    isPending?: boolean;
   }): { debit: LedgerEntry; credit: LedgerEntry } {
     const db = getDb();
 
@@ -283,6 +284,7 @@ export const ledgerService = {
         amountRaw: (-BigInt(input.amountRaw)).toString(),
         referenceType: 'transfer',
         referenceId: transferId,
+        isPending: input.isPending,
         metadata: input.reference ? { reference: input.reference } : undefined,
       });
 
@@ -292,6 +294,7 @@ export const ledgerService = {
         amountRaw: input.amountRaw,
         referenceType: 'transfer',
         referenceId: transferId,
+        isPending: input.isPending,
         metadata: input.reference ? { reference: input.reference } : undefined,
       });
 

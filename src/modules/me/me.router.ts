@@ -115,17 +115,20 @@ meRouter.post('/withdrawals', async (req: Request, res: Response, next: NextFunc
       amountSats: body.amountSats,
       idempotencyKey: body.idempotencyKey,
     });
-    ticklerService.record({
-      tenantId,
-      category: 'withdrawal',
-      subcategory: 'created',
-      entityId: withdrawal.id,
-      actorLogin: `customer:${customerId}`,
-      field1: body.toAddress,
-      field2: body.amountSats,
-      field3: customerId,
-      newValue: withdrawal,
-    });
+    // Internal transfers tickle themselves inside the service to avoid duplicate audit entries
+    if (withdrawal.withdrawal_type !== 'internal') {
+      ticklerService.record({
+        tenantId,
+        category: 'withdrawal',
+        subcategory: 'created',
+        entityId: withdrawal.id,
+        actorLogin: `customer:${customerId}`,
+        field1: body.toAddress,
+        field2: body.amountSats,
+        field3: customerId,
+        newValue: withdrawal,
+      });
+    }
     res.status(201).json({ data: withdrawal });
   } catch (err) {
     next(err);

@@ -6,6 +6,7 @@ import { webhooksService } from '../webhooks/webhooks.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { logger } from '../../shared/logging/index';
 import { toUnixTs } from '../../shared/time/index';
+import { ticklerService } from '../../shared/tickler/tickler.service';
 
 export interface CustomerWithdrawal {
   id: string;
@@ -22,6 +23,8 @@ export interface CustomerWithdrawal {
   status: string;
   error: string | null;
   idempotency_key: string | null;
+  withdrawal_type: 'external' | 'internal';
+  recipient_customer_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -29,6 +32,8 @@ export interface CustomerWithdrawal {
 function mapWithdrawal(row: any): CustomerWithdrawal {
   return {
     ...row,
+    withdrawal_type: row.withdrawal_type ?? 'external',
+    recipient_customer_id: row.recipient_customer_id ?? null,
     created_at: toUnixTs(row.created_at),
     updated_at: toUnixTs(row.updated_at),
   };
@@ -38,9 +43,9 @@ export const withdrawalsService = {
   /**
    * Initiate a customer withdrawal.
    *
-   * High-throughput path: validate and reserve customer balance, then enqueue
-   * the withdrawal. The withdrawal batcher is the only component that performs
-   * hot-wallet UTXO selection and PSBT construction.
+   * If toAddress belongs to another customer on the same tenant, the transfer
+   * is settled immediately as an internal ledger transfer (withdrawal_type='internal').
+   * Otherwise the external path is used: balance reservation + batched broadcast.
    */
   async create(
     tenantId: string,
@@ -67,18 +72,38 @@ export const withdrawalsService = {
       throw new ValidationError('amountSats must be greater than zero');
     }
 
-    // Check customer_available balance
-    const account = ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId);
-    if (!account) {
+    // Check sender balance
+    const senderAccount = ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId);
+    if (!senderAccount) {
       throw new UnprocessableEntityError('No BTC ledger account found for this customer');
     }
-    const balance = ledgerService.getBalance(account.id);
+    const balance = ledgerService.getBalance(senderAccount.id);
     if (BigInt(balance.settled) < amountBigInt) {
       throw new UnprocessableEntityError(
         `Insufficient balance: available ${balance.settled} sats, requested ${input.amountSats} sats`
       );
     }
 
+    // On-platform detection: is toAddress a registered customer deposit address for this tenant?
+    const platformAddr = db
+      .prepare(
+        "SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1"
+      )
+      .get(input.toAddress, tenantId) as { customer_id: string } | undefined;
+
+    if (platformAddr) {
+      return withdrawalsService._executeInternalTransfer(db, {
+        tenantId,
+        senderCustomerId: customerId,
+        recipientCustomerId: platformAddr.customer_id,
+        senderAccount,
+        amountBigInt,
+        toAddress: input.toAddress,
+        idempotencyKey: input.idempotencyKey,
+      });
+    }
+
+    // External path — validate BTC address before reserving
     const adapter = new BitcoinAdapter();
     if (!adapter.isValidAddress(input.toAddress)) {
       throw new ValidationError(`Invalid bitcoin address: ${input.toAddress}`);
@@ -91,8 +116,8 @@ export const withdrawalsService = {
     db.prepare(`
       INSERT INTO customer_withdrawals
         (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
-         status, idempotency_key, created_at, updated_at)
-      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, NULL, NULL, 'queued', ?, ?, ?)
+         status, idempotency_key, withdrawal_type, recipient_customer_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, NULL, NULL, 'queued', ?, 'external', NULL, ?, ?)
     `).run(
       id, tenantId, customerId,
       input.toAddress, input.amountSats,
@@ -102,7 +127,7 @@ export const withdrawalsService = {
 
     // Reserve customer balance immediately — prevents double-spend while PSBT awaits signing
     ledgerService.addEntry({
-      ledgerAccountId: account.id,
+      ledgerAccountId: senderAccount.id,
       type: 'withdrawal_reserve',
       amountRaw: (-amountBigInt).toString(),
       referenceType: 'customer_withdrawal',
@@ -128,6 +153,101 @@ export const withdrawalsService = {
     );
 
     logger.info('Customer withdrawal queued', { id, tenantId, customerId, amountSats: input.amountSats });
+    return withdrawal;
+  },
+
+  _executeInternalTransfer(
+    db: ReturnType<typeof getDb>,
+    opts: {
+      tenantId: string;
+      senderCustomerId: string;
+      recipientCustomerId: string;
+      senderAccount: { id: string };
+      amountBigInt: bigint;
+      toAddress: string;
+      idempotencyKey?: string;
+    }
+  ): CustomerWithdrawal {
+    const { tenantId, senderCustomerId, recipientCustomerId, senderAccount, amountBigInt, toAddress, idempotencyKey } = opts;
+
+    if (senderCustomerId === recipientCustomerId) {
+      throw new ValidationError('Cannot transfer to your own deposit address');
+    }
+
+    // Verify recipient is active
+    const recipient = db
+      .prepare("SELECT id, status FROM customers WHERE id = ? AND tenant_id = ?")
+      .get(recipientCustomerId, tenantId) as { id: string; status: string } | undefined;
+    if (!recipient || recipient.status !== 'active') {
+      throw new UnprocessableEntityError('Recipient customer is not active');
+    }
+
+    // Verify recipient has a BTC ledger account
+    const recipientAccount = ledgerService.findAccountByCustomerAndAsset(tenantId, recipientCustomerId, 'bitcoin:BTC');
+    if (!recipientAccount) {
+      throw new UnprocessableEntityError('Recipient has no BTC ledger account');
+    }
+
+    const id = `wd_${crypto.randomBytes(8).toString('hex')}`;
+    const now = new Date().toISOString();
+
+    const doTransfer = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO customer_withdrawals
+          (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
+           status, idempotency_key, withdrawal_type, recipient_customer_id, created_at, updated_at)
+        VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, '0', NULL, 'confirmed', ?, 'internal', ?, ?, ?)
+      `).run(
+        id, tenantId, senderCustomerId,
+        toAddress, amountBigInt.toString(),
+        idempotencyKey ?? null,
+        recipientCustomerId,
+        now, now
+      );
+
+      ledgerService.transfer({
+        fromLedgerAccountId: senderAccount.id,
+        toLedgerAccountId: recipientAccount.id,
+        assetId: 'bitcoin:BTC',
+        amountRaw: amountBigInt.toString(),
+        reference: id,
+        isPending: false,
+      });
+    });
+
+    doTransfer();
+
+    const withdrawal = withdrawalsService.getByIdInternal(id);
+
+    ticklerService.record({
+      tenantId,
+      category: 'withdrawal',
+      subcategory: 'internal_transfer',
+      entityId: id,
+      actorLogin: `customer:${senderCustomerId}`,
+      field1: toAddress,
+      field2: amountBigInt.toString(),
+      field3: senderCustomerId,
+      field4: recipientCustomerId,
+      newValue: withdrawal,
+    });
+
+    webhooksService.queueEvent(
+      'withdrawal.internal_transfer',
+      {
+        withdrawalId: id,
+        tenantId,
+        senderCustomerId,
+        recipientCustomerId,
+        toAddress,
+        amountSats: amountBigInt.toString(),
+      },
+      'bitcoin',
+      undefined,
+      tenantId
+    );
+
+    logger.info('Internal transfer completed', { id, tenantId, senderCustomerId, recipientCustomerId, amountSats: amountBigInt.toString() });
     return withdrawal;
   },
 
