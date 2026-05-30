@@ -161,6 +161,34 @@ describe('POST /v1/me/withdrawals — internal transfer (on-platform address)', 
     expect(found.withdrawal_type).toBe('internal');
     expect(found.status).toBe('confirmed');
   });
+
+  it('creates a deposit record visible in recipient deposit list', async () => {
+    const { tenantId, auth } = await createTenantWithKey();
+    const sender = await createCustomer(auth);
+    const recipient = await createCustomer(auth);
+
+    creditCustomer(tenantId, sender.id, '200000');
+    const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
+
+    const token = await issueSession(auth, sender.id);
+    await request(app)
+      .post('/v1/me/withdrawals')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({ toAddress: recipientDepositAddr, amountSats: '75000' });
+
+    const depositsRes = await request(app)
+      .get(`/v1/customers/${recipient.id}/deposits`)
+      .set(auth);
+
+    expect(depositsRes.status).toBe(200);
+    const dep = depositsRes.body.data.find((d: any) => d.address === recipientDepositAddr);
+    expect(dep).toBeDefined();
+    expect(dep.amount_raw).toBe('75000');
+    expect(dep.status).toBe('confirmed');
+    expect(dep.customer_id).toBe(recipient.id);
+    expect(dep.metadata?.internal_transfer).toBe(true);
+    expect(dep.metadata?.sender_customer_id).toBe(sender.id);
+  });
 });
 
 // ---------------------------------------------------------------------------

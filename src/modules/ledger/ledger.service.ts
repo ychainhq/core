@@ -91,6 +91,7 @@ export const ledgerService = {
 
   listAccounts(tenantId: string, filters: {
     walletId?: string;
+    customerId?: string;
     limit?: number;
     cursor?: string;
   } = {}): { data: LedgerAccount[]; nextCursor: string | null } {
@@ -100,6 +101,7 @@ export const ledgerService = {
     const params: unknown[] = [tenantId];
 
     if (filters.walletId) { query += ' AND wallet_id = ?'; params.push(filters.walletId); }
+    if (filters.customerId) { query += ' AND customer_id = ?'; params.push(filters.customerId); }
     if (filters.cursor) { query += ' AND id > ?'; params.push(filters.cursor); }
 
     query += ' ORDER BY id LIMIT ?';

@@ -2,10 +2,12 @@ import crypto from 'crypto';
 import { getDb } from '../../db/sqlite';
 import { NotFoundError, UnprocessableEntityError, ValidationError } from '../../shared/errors/index';
 import { ledgerService } from '../ledger/ledger.service';
+import { depositsService } from '../deposits/deposits.service';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { logger } from '../../shared/logging/index';
 import { toUnixTs } from '../../shared/time/index';
+import { satoshiToBtc } from '../../shared/money/index';
 import { ticklerService } from '../../shared/tickler/tickler.service';
 
 export interface CustomerWithdrawal {
@@ -213,9 +215,23 @@ export const withdrawalsService = {
         reference: id,
         isPending: false,
       });
+
+      return depositsService.upsert({
+        tenantId,
+        customerId: recipientCustomerId,
+        chainId: 'bitcoin',
+        assetId: 'bitcoin:BTC',
+        address: toAddress,
+        amountRaw: amountBigInt.toString(),
+        amountDisplay: satoshiToBtc(amountBigInt),
+        txHash: `internal:${id}`,
+        confirmations: 1,
+        status: 'confirmed',
+        metadata: { internal_transfer: true, sender_customer_id: senderCustomerId },
+      });
     });
 
-    doTransfer();
+    const deposit = doTransfer();
 
     const withdrawal = withdrawalsService.getByIdInternal(id);
 
@@ -230,6 +246,19 @@ export const withdrawalsService = {
       field3: senderCustomerId,
       field4: recipientCustomerId,
       newValue: withdrawal,
+    });
+
+    ticklerService.record({
+      tenantId,
+      category: 'deposit',
+      subcategory: 'internal_transfer',
+      entityId: deposit.id,
+      actorLogin: `customer:${senderCustomerId}`,
+      field1: toAddress,
+      field2: amountBigInt.toString(),
+      field3: recipientCustomerId,
+      field4: id,
+      newValue: deposit,
     });
 
     webhooksService.queueEvent(
