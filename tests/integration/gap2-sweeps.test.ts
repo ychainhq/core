@@ -324,3 +324,45 @@ describe('Sweep — finalizeSweepFromSigningTask rejects wrong status', () => {
     ).rejects.toThrow("expected 'pending_signature'");
   });
 });
+
+describe('Sweep — submitSignedTask auto-finalize passes input.signedPayload (Bug 3 regression)', () => {
+  // Regression: task.signed_payload is null before the UPDATE happens.
+  // submitSignedTask must use input.signedPayload, not task.signed_payload,
+  // otherwise finalizeSweepFromSigningTask receives null and Bitcoin Core
+  // throws "JSON value of type null is not of expected type string".
+  it('calls finalizeSweepFromSigningTask with input.signedPayload, not null', async () => {
+    const sweep = makeSweep();
+    const task = makeSigningTask(sweep.id, null);
+    sweepsService.linkSigningTask(sweep.id, task.id);
+
+    // Claim the task (required before submit)
+    await signingTasksService.claimTask(TEST_TENANT_ID, task.id, 'test-signer-regression');
+
+    // Spy on finalizeSweepFromSigningTask to capture the payload it receives
+    const spy = jest
+      .spyOn(sweepsService, 'finalizeSweepFromSigningTask')
+      .mockResolvedValue(sweep as any); // avoid Bitcoin Core call in tests
+
+    const signedPayload = Buffer.from('fake-signed-psbt-regression').toString('base64');
+    const crypto = require('crypto');
+    const signedHash = crypto.createHash('sha256').update(signedPayload).digest('hex');
+
+    await signingTasksService.submitSignedTask(TEST_TENANT_ID, task.id, 'test-signer-regression', {
+      signedPayload,
+      signedPayloadHash: signedHash,
+      signerFingerprint: 'btc:test:regression',
+    });
+
+    // Wait for setImmediate (auto-finalize fires asynchronously)
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    // Critical assertion: must receive the real signed payload, NOT null
+    expect(spy).toHaveBeenCalledWith(TEST_TENANT_ID, sweep.id, signedPayload);
+    const receivedPayload = spy.mock.calls[0]![2];
+    expect(receivedPayload).not.toBeNull();
+    expect(receivedPayload).toBe(signedPayload);
+
+    spy.mockRestore();
+  });
+});

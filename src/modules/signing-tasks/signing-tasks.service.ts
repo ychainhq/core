@@ -300,7 +300,8 @@ export const signingTasksService = {
     // Auto-finalize sweep — fire-and-forget, errors are logged not thrown
     if (task.sweep_id) {
       const sweepId = task.sweep_id;
-      const signedPayload = task.signed_payload!;
+      // Use input.signedPayload — task was loaded before the UPDATE so task.signed_payload is still null
+      const signedPayload = input.signedPayload;
       setImmediate(async () => {
         try {
           const { sweepsService } = await import('../sweeps/sweeps.service');
