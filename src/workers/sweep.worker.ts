@@ -2,6 +2,10 @@ import { getDb } from '../db/sqlite';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
+import { externalSignersService } from '../modules/external-signers/external-signers.service';
+import { signerPolicyService } from '../modules/external-signers/signer-policy.service';
+import { signingTasksService } from '../modules/signing-tasks/signing-tasks.service';
+import { ticklerService } from '../shared/tickler/tickler.service';
 import { btcToSatoshi } from '../shared/money/index';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
@@ -106,11 +110,63 @@ export class SweepWorker {
 
     if (depositAddresses.length === 0) return;
 
-    // Check if there's already a pending sweep — avoid duplicate PSBTs
+    // If there's already a pending sweep that has a signing_task, nothing to do.
+    // If the pending sweep has no signing_task_id (created before migration 020 or before this fix),
+    // we must create a signing task for it so the signer daemon can pick it up.
     const existingPending = db
-      .prepare("SELECT id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1")
-      .get(tenantId);
-    if (existingPending) return;
+      .prepare("SELECT id, psbt, amount_raw, fee_raw, signing_task_id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1")
+      .get(tenantId) as { id: string; psbt: string | null; amount_raw: string; fee_raw: string | null; signing_task_id: string | null } | undefined;
+
+    if (existingPending) {
+      if (existingPending.signing_task_id) {
+        return; // Already has a signing task — signer will handle it
+      }
+
+      // Recover: create missing signing task for the orphaned pending sweep
+      if (existingPending.psbt) {
+        logger.warn('SweepWorker: recovering orphaned pending sweep — creating missing signing task', {
+          sweepId: existingPending.id, tenantId,
+        });
+
+        const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
+        const policyDecision = signerPolicyService.evaluateDecision(
+          tenantId, selectedSigner?.id ?? null, 'bitcoin', 'bitcoin:BTC',
+          existingPending.amount_raw, 5, 1
+        );
+
+        const signingTask = signingTasksService.create({
+          tenantId,
+          signerId: selectedSigner?.id ?? null,
+          requestType: 'btc_sweep',
+          chainId: 'bitcoin',
+          assetId: 'bitcoin:BTC',
+          sweepId: existingPending.id,
+          amountRaw: existingPending.amount_raw,
+          feeRaw: existingPending.fee_raw ?? undefined,
+          payloadFormat: 'btc_psbt',
+          unsignedPayload: existingPending.psbt,
+          decisionMode: policyDecision.mode,
+          decisionReason: policyDecision.reason,
+        });
+
+        sweepsService.linkSigningTask(existingPending.id, signingTask.id);
+
+        ticklerService.record({
+          tenantId,
+          category: 'sweep',
+          subcategory: 'signing_task_recovered',
+          entityId: existingPending.id,
+          actorLogin: 'system:sweep-worker',
+          field1: signingTask.id,
+          field2: policyDecision.mode,
+        });
+
+        logger.info('SweepWorker: orphaned sweep recovered', {
+          sweepId: existingPending.id, signingTaskId: signingTask.id, tenantId,
+        });
+      }
+      return;
+    }
 
     // Collect UTXOs across all deposit addresses (minConfirmations = 1 for finality)
     const sweepableUtxos: Array<{ address: string; txHash: string; vout: number; amount: string }> = [];
@@ -185,11 +241,59 @@ export class SweepWorker {
       psbt: psbtBase64,
     });
 
-    // Fire webhook to signing daemon
+    // Select signer and evaluate policy — same pattern as withdrawal-batcher
+    const selectedSigner = externalSignersService.selectSigner(
+      tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt'
+    );
+
+    const policyDecision = signerPolicyService.evaluateDecision(
+      tenantId,
+      selectedSigner?.id ?? null,
+      'bitcoin',
+      'bitcoin:BTC',
+      outputSats.toString(),
+      feeRateSatPerVbyte,
+      sweepableUtxos.length
+    );
+
+    // Create signing task so the signer daemon can poll and claim it
+    const signingTask = signingTasksService.create({
+      tenantId,
+      signerId: selectedSigner?.id ?? null,
+      requestType: 'btc_sweep',
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      sweepId: sweep.id,
+      amountRaw: outputSats.toString(),
+      feeRaw: feeSats.toString(),
+      feeRateSatVb: feeRateSatPerVbyte.toString(),
+      payloadFormat: 'btc_psbt',
+      unsignedPayload: psbtBase64,
+      decisionMode: policyDecision.mode,
+      decisionReason: policyDecision.reason,
+    });
+
+    // Backlink via service — enkapsulacja SQL (worker nie pisze bezpośrednio do sweeps)
+    sweepsService.linkSigningTask(sweep.id, signingTask.id);
+
+    // Tickler — każda mutacja musi być zalogowana
+    ticklerService.record({
+      tenantId,
+      category: 'sweep',
+      subcategory: 'created',
+      entityId: sweep.id,
+      actorLogin: 'system:sweep-worker',
+      field1: signingTask.id,
+      field2: policyDecision.mode,
+      newValue: sweep,
+    });
+
+    // Fire webhook for backward compatibility (tenants without polling signer)
     webhooksService.queueEvent(
       'sweep.ready_for_signing',
       {
         sweepId: sweep.id,
+        signingTaskId: signingTask.id,
         psbt: psbtBase64,
         fromAddresses: sweep.from_addresses,
         toAddress: sweep.to_address,
@@ -202,6 +306,11 @@ export class SweepWorker {
       tenantId
     );
 
-    logger.info('SweepWorker: sweep created and webhook fired', { sweepId: sweep.id, tenantId });
+    logger.info('SweepWorker: sweep and signing task created', {
+      sweepId: sweep.id,
+      signingTaskId: signingTask.id,
+      decisionMode: policyDecision.mode,
+      tenantId,
+    });
   }
 }

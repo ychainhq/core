@@ -297,6 +297,22 @@ export const signingTasksService = {
       });
     }
 
+    // Auto-finalize sweep — fire-and-forget, errors are logged not thrown
+    if (task.sweep_id) {
+      const sweepId = task.sweep_id;
+      const signedPayload = task.signed_payload!;
+      setImmediate(async () => {
+        try {
+          const { sweepsService } = await import('../sweeps/sweeps.service');
+          await sweepsService.finalizeSweepFromSigningTask(tenantId, sweepId, signedPayload);
+          logger.info('Sweep finalized after signing task', { sweepId, taskId, tenantId });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error('Failed to auto-finalize sweep after signing', { sweepId, taskId, tenantId, error: msg });
+        }
+      });
+    }
+
     return signingTasksService.getByIdInternal(taskId);
   },
 

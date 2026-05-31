@@ -7,9 +7,12 @@
  * - POST /v1/sweeps/:sweepId/submit-signed returns 400 if not pending_signature
  * - btcSweepThresholdSats stored and returned in tenant config
  * - Sweep is tenant-scoped (cross-tenant access denied)
+ * - Signing task flow: sweep creates signing_task, signer can list/claim/submit
  */
 import request from 'supertest';
-import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr } from './helpers';
+import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr, AUTH } from './helpers';
+import { sweepsService } from '../../src/modules/sweeps/sweeps.service';
+import { signingTasksService } from '../../src/modules/signing-tasks/signing-tasks.service';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -176,5 +179,148 @@ describe('Tenant config — sweep threshold', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.btc_sweep_threshold_sats).toBe('100000');
+  });
+});
+
+// ─── Signing task flow ────────────────────────────────────────────────────────
+
+const TEST_TENANT_ID = 'tenant_default';
+
+function makeSweep() {
+  return sweepsService.create(TEST_TENANT_ID, {
+    chainId: 'bitcoin',
+    assetId: 'bitcoin:BTC',
+    fromAddresses: [uniqueAddr(), uniqueAddr()],
+    toAddress: uniqueAddr(),
+    amountRaw: '950000',
+    feeRaw: '5000',
+    psbt: Buffer.from('fake-psbt-sweep').toString('base64'),
+  });
+}
+
+function makeSigningTask(sweepId: string, signerId: string | null = null) {
+  return signingTasksService.create({
+    tenantId: TEST_TENANT_ID,
+    signerId,
+    requestType: 'btc_sweep',
+    chainId: 'bitcoin',
+    assetId: 'bitcoin:BTC',
+    sweepId,
+    amountRaw: '945000',
+    feeRaw: '5000',
+    feeRateSatVb: '5',
+    payloadFormat: 'btc_psbt',
+    unsignedPayload: Buffer.from('fake-psbt-sweep').toString('base64'),
+    decisionMode: 'auto',
+  });
+}
+
+describe('Sweep — signing_task_id field', () => {
+  it('linkSigningTask sets signing_task_id on sweep', () => {
+    const sweep = makeSweep();
+    expect(sweep.signing_task_id).toBeNull();
+
+    const task = makeSigningTask(sweep.id);
+    sweepsService.linkSigningTask(sweep.id, task.id);
+
+    const updated = sweepsService.getByIdInternal(sweep.id);
+    expect(updated.signing_task_id).toBe(task.id);
+  });
+
+  it('GET /v1/sweeps/:sweepId returns signing_task_id', async () => {
+    const sweep = makeSweep();
+    const task = makeSigningTask(sweep.id);
+    sweepsService.linkSigningTask(sweep.id, task.id);
+
+    const res = await request(app).get(`/v1/sweeps/${sweep.id}`).set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.signing_task_id).toBe(task.id);
+  });
+});
+
+describe('Sweep — signing task visible to signer', () => {
+  it('listAvailableForSigner includes btc_sweep task', () => {
+    const sweep = makeSweep();
+    const task = makeSigningTask(sweep.id);
+    sweepsService.linkSigningTask(sweep.id, task.id);
+
+    const tasks = signingTasksService.listAvailableForSigner(TEST_TENANT_ID, 'any-signer-id', 10);
+    const found = tasks.find((t) => t.id === task.id);
+    expect(found).toBeDefined();
+    expect(found!.request_type).toBe('btc_sweep');
+    expect(found!.sweep_id).toBe(sweep.id);
+  });
+
+  it('listAvailableForSigner returns sweep task with signer_id=null (open to any signer)', () => {
+    const sweep = makeSweep();
+    const task = makeSigningTask(sweep.id, null);
+
+    const tasks = signingTasksService.listAvailableForSigner(TEST_TENANT_ID, 'signer_xyz', 10);
+    expect(tasks.some((t) => t.id === task.id)).toBe(true);
+  });
+});
+
+describe('Sweep — signer can claim sweep task via HTTP', () => {
+  async function enrollSigner(name: string, fp: string) {
+    const enrollRes = await request(app)
+      .post('/v1/external-signers/enroll')
+      .set(AUTH)
+      .send({
+        name,
+        edition: 'community',
+        publicKey: `ed25519:${fp}`,
+        signerFingerprint: fp,
+        capabilities: { chains: ['bitcoin'], assets: ['bitcoin:BTC'], formats: ['btc_psbt'] },
+      });
+    const signerId = enrollRes.body.data.id;
+    await request(app)
+      .post(`/v1/external-signers/${signerId}/heartbeat`)
+      .set(AUTH)
+      .send({
+        status: 'healthy',
+        version: '1.0.0',
+        capabilities: { chains: ['bitcoin'], assets: ['bitcoin:BTC'], formats: ['btc_psbt'] },
+        time: new Date().toISOString(),
+      });
+    return signerId;
+  }
+
+  it('signer sees btc_sweep task in task list', async () => {
+    const signerId = await enrollSigner('sweep-signer-list', `fp:sweep:list:${Date.now()}`);
+    const sweep = makeSweep();
+    makeSigningTask(sweep.id, signerId);
+
+    const res = await request(app)
+      .get(`/v1/external-signers/${signerId}/tasks`)
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    const task = res.body.items.find((t: any) => t.sweepId === sweep.id);
+    expect(task).toBeDefined();
+    expect(task.requestType).toBe('btc_sweep');
+  });
+
+  it('signer can claim sweep task', async () => {
+    const signerId = await enrollSigner('sweep-signer-claim', `fp:sweep:claim:${Date.now()}`);
+    const sweep = makeSweep();
+    const task = makeSigningTask(sweep.id, signerId);
+
+    const res = await request(app)
+      .post(`/v1/external-signers/${signerId}/tasks/${task.id}/claim`)
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('claimed');
+  });
+});
+
+describe('Sweep — finalizeSweepFromSigningTask rejects wrong status', () => {
+  it('throws ValidationError when sweep is not pending_signature', async () => {
+    const sweep = makeSweep();
+    sweepsService.updateStatus(sweep.id, 'broadcast', { txHash: 'txhash_fake' });
+
+    await expect(
+      sweepsService.finalizeSweepFromSigningTask(TEST_TENANT_ID, sweep.id, 'signedpsbt==')
+    ).rejects.toThrow("expected 'pending_signature'");
   });
 });

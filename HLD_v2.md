@@ -705,6 +705,35 @@ CREATE TABLE tenant_withdrawal_batch_configs (
 );
 ```
 
+#### Tabela: `sweeps`
+
+Konsolidacja UTXO z adresów depozytowych klientów na portfel hot tenanta.
+
+```sql
+CREATE TABLE sweeps (
+  id              TEXT PRIMARY KEY,             -- 'sweep_...'
+  tenant_id       TEXT NOT NULL REFERENCES tenants(id),
+  chain_id        TEXT NOT NULL DEFAULT 'bitcoin',
+  asset_id        TEXT NOT NULL DEFAULT 'bitcoin:BTC',
+  from_addresses  TEXT NOT NULL,               -- JSON array of source addresses
+  to_address      TEXT NOT NULL,               -- tenant_hot wallet address
+  amount_raw      TEXT NOT NULL,               -- total sats before fee
+  fee_raw         TEXT,                        -- estimated fee in sats
+  psbt            TEXT,                        -- base64 unsigned PSBT
+  signed_psbt     TEXT,                        -- signed PSBT returned by signer
+  tx_hash         TEXT,                        -- set after broadcast
+  signing_task_id TEXT REFERENCES signing_tasks(id),  -- signing task for this sweep
+  status          TEXT NOT NULL DEFAULT 'pending_signature',
+  -- 'pending_signature' | 'broadcast' | 'confirmed' | 'failed'
+  error           TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sweeps_tenant        ON sweeps(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_sweeps_status        ON sweeps(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_sweeps_signing_task  ON sweeps(signing_task_id);
+```
+
 #### Tabela: `ticklers`
 
 Immutable audit log — write-once, never modified or deleted. Records every create/update/delete operation at the engine layer.
@@ -967,7 +996,14 @@ Protokół integracji z zewnętrznym signerem (OSS/Enterprise daemon). Signer po
 
 ### 6.17 Sweeps (konsolidacja UTXO — Bitcoin)
 
-Worker `SweepWorker` co minutę sprawdza skumulowane UTXO na adresach depozytowych. Gdy suma przekroczy próg, tworzy PSBT i czeka na podpis zewnętrznego sygnatariusza.
+Worker `SweepWorker` co minutę sprawdza skumulowane UTXO na adresach depozytowych. Gdy suma przekroczy próg:
+1. Buduje unsigned PSBT przez Bitcoin Core (`createpsbt` + `utxoupdatepsbt`).
+2. Tworzy rekord `sweeps` (status `pending_signature`).
+3. Tworzy `signing_task` (`request_type = 'btc_sweep'`) z linkiem `sweep_id` — signer daemon pobiera go przez polling.
+4. Linkiem wstecznym uzupełnia `sweeps.signing_task_id`.
+5. Po podpisaniu przez signera (`signing_task` → `signed`) silnik automatycznie wykonuje `finalizePsbt` + broadcast i ustawia status sweepа na `broadcast`.
+
+Webhook `sweep.ready_for_signing` jest wysyłany jako backward-compatibility dla tenantów bez polling signera.
 
 | Method | Path | Opis |
 |--------|------|------|
@@ -975,7 +1011,7 @@ Worker `SweepWorker` co minutę sprawdza skumulowane UTXO na adresach depozytowy
 | GET | `/v1/sweeps/summary` | Podsumowanie stanu: przeliczone UTXO, postęp do progu, oczekujący sweep |
 | GET | `/v1/sweeps` | Lista sweepów tenanta (paginacja cursor-based, filtr `status`) |
 | GET | `/v1/sweeps/:sweepId` | Szczegóły sweepа |
-| POST | `/v1/sweeps/:sweepId/submit-signed` | Prześlij podpisany PSBT — silnik robi finalizePsbt + broadcast |
+| POST | `/v1/sweeps/:sweepId/submit-signed` | Prześlij podpisany PSBT ręcznie — silnik robi finalizePsbt + broadcast (fallback bez signera) |
 
 ### 6.18 Ticklers (audit log)
 
@@ -1124,6 +1160,15 @@ Wszystkie endpointy wymagają `Authorization: Bearer <customer-jwt>` (token wyst
 | `failed` | Błąd (coin selection, signing, broadcast) |
 | `cancelled` | Anulowana przez operatora |
 | `replaced` | Zastąpiona nową transakcją (RBF bump) |
+
+### Sweep statusy
+
+| Status | Opis |
+|--------|------|
+| `pending_signature` | PSBT gotowe, signing_task utworzony — oczekuje na podpis przez signer daemon |
+| `broadcast` | TX wyemitowana do sieci (auto-finalize po signing_task.signed) |
+| `confirmed` | TX potwierdzona on-chain (SweepConfirmationWorker) |
+| `failed` | Błąd broadcastu lub podpisania |
 
 ---
 

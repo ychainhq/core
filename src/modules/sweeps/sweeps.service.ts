@@ -6,6 +6,16 @@ import { adapterRegistry } from '../../chain-adapters/registry';
 import { ledgerService } from '../ledger/ledger.service';
 import { logger } from '../../shared/logging/index';
 
+// Lazy import — avoids circular dependency (tickler → sweeps → tickler)
+let _ticklerService: typeof import('../../shared/tickler/tickler.service').ticklerService | null = null;
+async function getTicklerService() {
+  if (!_ticklerService) {
+    const mod = await import('../../shared/tickler/tickler.service');
+    _ticklerService = mod.ticklerService;
+  }
+  return _ticklerService;
+}
+
 export interface Sweep {
   id: string;
   tenant_id: string;
@@ -18,6 +28,7 @@ export interface Sweep {
   psbt: string | null;
   signed_psbt: string | null;
   tx_hash: string | null;
+  signing_task_id: string | null;
   status: string;
   error: string | null;
   created_at: number;
@@ -136,6 +147,69 @@ export const sweepsService = {
     params.push(id);
     db.prepare(`UPDATE sweeps SET ${sets.join(', ')} WHERE id = ?`).run(...params);
     return sweepsService.getByIdInternal(id);
+  },
+
+  linkSigningTask(sweepId: string, taskId: string): void {
+    const db = getDb();
+    const now = new Date().toISOString();
+    db.prepare('UPDATE sweeps SET signing_task_id = ?, updated_at = ? WHERE id = ?')
+      .run(taskId, now, sweepId);
+  },
+
+  async finalizeSweepFromSigningTask(
+    tenantId: string,
+    sweepId: string,
+    signedPsbt: string
+  ): Promise<Sweep> {
+    const sweep = sweepsService.getById(tenantId, sweepId);
+
+    if (sweep.status !== 'pending_signature') {
+      throw new ValidationError(
+        `Sweep ${sweepId} is in status '${sweep.status}', expected 'pending_signature'`
+      );
+    }
+
+    const adapter = adapterRegistry.get('bitcoin');
+    let txHash: string;
+    try {
+      const finalizedResult = await adapter.finalizePsbt(signedPsbt);
+      if (!finalizedResult.complete) {
+        throw new Error('PSBT is not fully signed — missing signatures');
+      }
+      txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
+    } catch (err: any) {
+      sweepsService.updateStatus(sweepId, 'failed', { error: String(err) });
+      throw err;
+    }
+
+    const updated = sweepsService.updateStatus(sweepId, 'broadcast', { signedPsbt, txHash });
+
+    const sitAccount = ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
+    if (sitAccount) {
+      ledgerService.addEntry({
+        ledgerAccountId: sitAccount.id,
+        type: 'sweep_broadcast',
+        amountRaw: sweep.amount_raw,
+        referenceType: 'sweep',
+        referenceId: sweep.id,
+      });
+    }
+
+    // Tickler obowiązkowy — ta ścieżka omija router (auto-finalize przez signing task)
+    const tickler = await getTicklerService();
+    tickler.record({
+      tenantId,
+      category: 'sweep',
+      subcategory: 'signed_submitted',
+      entityId: sweepId,
+      actorLogin: 'system:signing-task',
+      field1: txHash,
+      field2: updated.status,
+      newValue: updated,
+    });
+
+    logger.info('Sweep auto-finalized via signing task', { sweepId, txHash, tenantId });
+    return updated;
   },
 
   async submitSigned(tenantId: string, sweepId: string, signedPsbt: string): Promise<Sweep> {
