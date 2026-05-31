@@ -415,7 +415,60 @@ describe('GET /v1/addresses/resolve — platform address detection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 9. forceExternal — bypasses internal transfer detection
+// 9. GET /v1/me/addresses/resolve — customer self-service endpoint
+// ---------------------------------------------------------------------------
+describe('GET /v1/me/addresses/resolve — customer self-service address detection', () => {
+  it('returns isInternal=true for a platform deposit address on the same tenant', async () => {
+    const { auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const addr = await registerDepositAddress(auth, customer.id);
+    const token = await issueSession(auth, customer.id);
+
+    const res = await request(app)
+      .get(`/v1/me/addresses/resolve?address=${encodeURIComponent(addr)}`)
+      .set({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isInternal).toBe(true);
+    expect(res.body.data.customerId).toBe(customer.id);
+  });
+
+  it('returns isInternal=false for an external (non-platform) address', async () => {
+    const { auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const token = await issueSession(auth, customer.id);
+
+    const res = await request(app)
+      .get(`/v1/me/addresses/resolve?address=${encodeURIComponent(uniqueAddr())}`)
+      .set({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isInternal).toBe(false);
+    expect(res.body.data.customerId).toBeNull();
+  });
+
+  it('returns 400 when address param is missing', async () => {
+    const { auth } = await createTenantWithKey();
+    const customer = await createCustomer(auth);
+    const token = await issueSession(auth, customer.id);
+
+    const res = await request(app)
+      .get('/v1/me/addresses/resolve')
+      .set({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('requires a valid customer session (no auth → 401)', async () => {
+    const res = await request(app)
+      .get('/v1/me/addresses/resolve?address=bc1qtest');
+
+    expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. forceExternal — bypasses internal transfer detection
 // ---------------------------------------------------------------------------
 describe('POST /v1/me/withdrawals — forceExternal bypasses internal routing', () => {
   it('queues as external and reserves ledger balance even when toAddress is a platform deposit address', async () => {

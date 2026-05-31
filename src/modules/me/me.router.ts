@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { customersService } from '../customers/customers.service';
 import { depositAddressService } from '../customers/deposit-address.service';
 import { withdrawalsService } from '../withdrawals/withdrawals.service';
+import { addressesService } from '../addresses/addresses.service';
 import { customersProfileService } from '../customers/customers-profile.service';
 import { customersContactService } from '../customers/customers-contact.service';
 import { customersDocumentsService } from '../customers/customers-documents.service';
@@ -66,6 +67,18 @@ meRouter.get('/deposits', (req: Request, res: Response, next: NextFunction) => {
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /v1/me/addresses/resolve?address=<addr>
+meRouter.get('/addresses/resolve', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { tenantId } = ctx(req);
+    const { address } = z.object({ address: z.string().min(1) }).parse(req.query);
+    const result = addressesService.resolveCustomerDeposit(tenantId, address);
+    res.json({ data: result });
   } catch (err) {
     next(err);
   }

@@ -5,6 +5,7 @@ import { safeTool } from '../errors';
 import { customersService } from '../../modules/customers/customers.service';
 import { depositAddressService } from '../../modules/customers/deposit-address.service';
 import { withdrawalsService } from '../../modules/withdrawals/withdrawals.service';
+import { addressesService } from '../../modules/addresses/addresses.service';
 import { customersProfileService } from '../../modules/customers/customers-profile.service';
 import { customersContactService } from '../../modules/customers/customers-contact.service';
 import { customersDocumentsService } from '../../modules/customers/customers-documents.service';
@@ -63,6 +64,12 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
     annotations: readOnly,
   }, async (input: any) => safeTool(() => page(customersService.getAddresses(tenantId, customerId, input), input)));
 
+  server.registerTool('chainapi_me_resolve_address', {
+    description: 'Check if an address is a registered internal deposit address for this tenant (customer self-service). Returns isInternal=true and customerId if the address belongs to another customer on this tenant. Use before initiating a withdrawal to detect on-platform transfers.',
+    inputSchema: { address: z.string().min(1) },
+    annotations: readOnly,
+  }, async ({ address }: any) => safeTool(() => ({ data: addressesService.resolveCustomerDeposit(tenantId, address) })));
+
   server.registerTool('chainapi_me_create_deposit_address', {
     description: 'Generate a new BTC deposit address for the authenticated customer.',
     inputSchema: {},
@@ -70,11 +77,12 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
   }, async () => safeTool(async () => ({ data: await depositAddressService.generateForCustomer(tenantId, customerId) })));
 
   server.registerTool('chainapi_me_create_withdrawal', {
-    description: 'Create a customer withdrawal request and signing payload.',
+    description: 'Create a customer withdrawal request. If toAddress is a registered deposit address of another customer on this tenant, an instant internal ledger transfer is performed (no fee, no blockchain). Set forceExternal=true to force blockchain routing even for on-platform addresses.',
     inputSchema: {
       toAddress: z.string().min(1),
       amountSats: z.string().regex(/^\d+$/),
       idempotencyKey: z.string().optional(),
+      forceExternal: z.boolean().optional(),
     },
     annotations: { ...write, idempotentHint: true },
   }, async (input: any) => safeTool(async () => ({ data: await withdrawalsService.create(tenantId, customerId, input) })));

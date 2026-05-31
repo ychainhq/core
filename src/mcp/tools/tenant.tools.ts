@@ -576,6 +576,12 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     return { data: { valid, address, chain, format } };
   }));
 
+  server.registerTool('chainapi_resolve_address', {
+    description: 'Check if an address is a registered internal deposit address for this tenant. Returns isInternal=true and customerId if the address belongs to a customer on this tenant. Useful before initiating a withdrawal to detect on-platform transfers.',
+    inputSchema: { address: z.string().min(1) },
+    annotations: readOnly,
+  }, async ({ address }: any) => safeTool(() => ({ data: addressesService.resolveCustomerDeposit(tenantId, address) })));
+
   server.registerTool('chainapi_get_wallet_balances', {
     description: 'Get on-chain balances for a wallet.',
     inputSchema: { walletId: z.string().min(1) },

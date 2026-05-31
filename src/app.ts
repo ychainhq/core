@@ -38,6 +38,23 @@ import { registerMcpRoutes } from './mcp/register';
 export function createApp(): express.Application {
   const app = express();
 
+  // mcp-remote and some MCP clients don't send the Accept header required by the
+  // Streamable HTTP spec. Inject it into both req.headers AND req.rawHeaders
+  // because Hono (used by the MCP SDK transport) reads rawHeaders, not headers.
+  app.use('/mcp', (req: Request, _res: Response, next: express.NextFunction) => {
+    if (!req.headers['accept']?.includes('text/event-stream')) {
+      req.headers['accept'] = 'application/json, text/event-stream';
+      const raw = (req as any).rawHeaders as string[];
+      const idx = raw.findIndex((v: string, i: number) => i % 2 === 0 && v.toLowerCase() === 'accept');
+      if (idx !== -1) {
+        raw[idx + 1] = 'application/json, text/event-stream';
+      } else {
+        raw.push('Accept', 'application/json, text/event-stream');
+      }
+    }
+    next();
+  });
+
   // Body parsing
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: false }));

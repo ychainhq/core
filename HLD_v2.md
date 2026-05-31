@@ -823,6 +823,7 @@ Auth: `X-Admin-Key` header (lub Bearer z flagą is_admin). Dostępne wyłącznie
 | Method | Path | Opis |
 |--------|------|------|
 | POST | `/v1/chains/:chain/addresses/validate` | Waliduj adres |
+| GET | `/v1/addresses/resolve?address=<addr>` | Sprawdź czy adres jest zarejestrowanym adresem depozytowym tego tenanta. Odpowiedź: `{ isInternal: bool, customerId: string\|null }` |
 | POST | `/v1/wallets/:walletId/addresses` | Zarejestruj adres (opcjonalne: `customerId`, `addressRole`) |
 | GET | `/v1/wallets/:walletId/addresses` | Lista adresów walleta |
 | POST | `/v1/monitors/addresses` | Dodaj adres do monitoringu (opcjonalne: `customerId`) |
@@ -903,9 +904,18 @@ Auth: `X-Admin-Key` header (lub Bearer z flagą is_admin). Dostępne wyłącznie
 
 ### 6.13 Withdrawals (wypłaty klientów)
 
+**Customer self-service** (`Bearer <customer-jwt>`) — patrz też sekcja 6.18:
+
 | Method | Path | Opis |
 |--------|------|------|
-| POST | `/v1/withdrawals` | Utwórz żądanie wypłaty |
+| POST | `/v1/me/withdrawals` | Utwórz żądanie wypłaty (body: `toAddress`, `amountSats`, `idempotencyKey?`, `forceExternal?`). Jeśli `toAddress` jest zarejestrowanym adresem depozytowym innego klienta tego tenanta — natychmiastowy transfer wewnętrzny (bez fee, bez blockchainu). `forceExternal: true` wymusza routing przez blockchain. |
+| GET | `/v1/me/withdrawals` | Lista wypłat klienta (filtry: `status`, `toAddress`) |
+| GET | `/v1/me/withdrawals/:withdrawalId` | Szczegóły wypłaty klienta |
+
+**Tenant API** (`Bearer <api-key>`):
+
+| Method | Path | Opis |
+|--------|------|------|
 | GET | `/v1/withdrawals` | Lista wypłat tenanta. Query param `customerId` filtruje po konkretnym kliencie; RBAC: aktor bez dostępu do klienta otrzyma 404. |
 | GET | `/v1/withdrawals/:withdrawalId` | Szczegóły wypłaty |
 | POST | `/v1/withdrawals/:withdrawalId/submit-signed` | Wyślij podpisaną transakcję (manual signing) |
@@ -973,6 +983,41 @@ Query params: `category`, `subcategory`, `entity_id`, `actor_login`, `from` (ms)
 |--------|------|------|
 | GET | `/admin/v1/ticklers` | Lista wszystkich ticklerów (globalne + wszystkie tenanty) |
 | GET | `/admin/v1/tenants/:tenantId/ticklers` | Lista ticklerów jednego tenanta |
+
+### 6.18 Customer Self-Service (`/v1/me/*`)
+
+Wszystkie endpointy wymagają `Authorization: Bearer <customer-jwt>` (token wystawiany przez `POST /v1/customers/:customerId/sessions`). Izolacja per-customer jest wymuszana przez `customerAuthMiddleware`.
+
+#### Profil i dane klienta
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/v1/me` | Dane klienta (id, status, reference) |
+| GET | `/v1/me/balances` | Saldo BTC (pending + settled) |
+| GET | `/v1/me/kyc-status` | Status KYC (kyc_status, cdd_level, daty ważności) |
+| GET | `/v1/me/profile` | Profil KYC (natural_person lub legal_entity) |
+| PUT | `/v1/me/profile` | Utwórz / zastąp profil KYC |
+| GET | `/v1/me/contact` | Dane kontaktowe (email, phone, adresy korespondencyjne) |
+| PUT | `/v1/me/contact` | Utwórz / zaktualizuj dane kontaktowe |
+| GET | `/v1/me/documents` | Lista referencji dokumentów KYC |
+| POST | `/v1/me/documents` | Prześlij referencję dokumentu (status zawsze `pending`) |
+
+#### Depozyty i adresy
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/v1/me/deposits` | Historia depozytów klienta (filtry: `status`, `txHash`, `address`, `assetId`) |
+| GET | `/v1/me/addresses` | Lista adresów depozytowych klienta |
+| POST | `/v1/me/deposit-address` | Wygeneruj nowy adres depozytowy BTC (BIP-32 derivation) |
+| GET | `/v1/me/addresses/resolve?address=<addr>` | Sprawdź czy adres jest adresem depozytowym innego klienta tego tenanta. Odpowiedź: `{ isInternal: bool, customerId: string\|null }` |
+
+#### Wypłaty
+
+| Method | Path | Opis |
+|--------|------|------|
+| POST | `/v1/me/withdrawals` | Utwórz żądanie wypłaty (body: `toAddress`, `amountSats`, `idempotencyKey?`, `forceExternal?`). Jeśli `toAddress` należy do innego klienta tego samego tenanta — natychmiastowy transfer wewnętrzny bez fee; `forceExternal: true` wymusza blockchain. |
+| GET | `/v1/me/withdrawals` | Lista wypłat klienta (filtry: `status`, `toAddress`) |
+| GET | `/v1/me/withdrawals/:withdrawalId` | Szczegóły wypłaty |
 
 ---
 

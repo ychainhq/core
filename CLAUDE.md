@@ -300,6 +300,7 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | GET | `/v1/me/balances` | ✅ | ⚠️ | ✅ `chainapi_me_get_balances` |
 | GET | `/v1/me/deposits` | ✅ | ⚠️ | ✅ `chainapi_me_list_deposits` |
 | GET | `/v1/me/addresses` | ✅ | ✅ | ✅ `chainapi_me_list_addresses` |
+| GET | `/v1/me/addresses/resolve` | ✅ | ✅ | ✅ `chainapi_me_resolve_address` |
 | POST | `/v1/me/deposit-address` | ✅ | ✅ | ✅ `chainapi_me_create_deposit_address` |
 | POST | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_create_withdrawal` |
 | GET | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_list_withdrawals` |
@@ -334,6 +335,7 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | POST | `/v1/chains/:chain/addresses/validate` | ✅ | ✅ | ✅ `chainapi_validate_address` |
+| GET | `/v1/addresses/resolve` | ✅ | ✅ | ✅ `chainapi_resolve_address` |
 | POST | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ✅ `chainapi_register_wallet_address` |
 | GET | `/v1/wallets/:walletId/addresses` | ✅ | ✅ | ✅ `chainapi_list_wallet_addresses` |
 | POST | `/v1/monitors/addresses` | ✅ | ✅ | ✅ `chainapi_create_monitor` |

@@ -147,4 +147,12 @@ export const addressesService = {
     const row = db.prepare('SELECT * FROM addresses WHERE chain_id = ? AND address = ?').get(chainId, address);
     return row ? mapAddress(row) : null;
   },
+
+  resolveCustomerDeposit(tenantId: string, address: string): { isInternal: boolean; customerId: string | null } {
+    const db = getDb();
+    const row = db
+      .prepare("SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1")
+      .get(address, tenantId) as { customer_id: string } | undefined;
+    return { isInternal: !!row, customerId: row?.customer_id ?? null };
+  },
 };
