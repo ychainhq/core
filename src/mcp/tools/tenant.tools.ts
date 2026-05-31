@@ -731,6 +731,12 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     annotations: destructive,
   }, async ({ sweepId, signedPsbt }: any) => safeTool(async () => ({ data: await sweepsService.submitSigned(tenantId, sweepId, signedPsbt) })));
 
+  server.registerTool('chainapi_get_sweeps_summary', {
+    description: 'Get current Bitcoin sweep state: collectible sats vs threshold, address/UTXO counts, pending sweep ID.',
+    inputSchema: {},
+    annotations: readOnly,
+  }, async () => safeTool(() => ({ data: sweepsService.getSummary(tenantId) })));
+
   server.registerTool('chainapi_bitcoin_coin_selection', {
     description: 'Preview BTC coin selection. Read-only.',
     inputSchema: {

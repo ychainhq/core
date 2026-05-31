@@ -411,6 +411,7 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | POST | `/v1/sweeps` | ✅ | ✅ | ❌ |
+| GET | `/v1/sweeps/summary` | ✅ | ✅ | ✅ `chainapi_get_sweeps_summary` |
 | GET | `/v1/sweeps` | ✅ | ⚠️ | ✅ `chainapi_list_sweeps` |
 | GET | `/v1/sweeps/:sweepId` | ✅ | ⚠️ | ✅ `chainapi_get_sweep` |
 | POST | `/v1/sweeps/:sweepId/submit-signed` | ✅ | ⚠️ | ✅ `chainapi_submit_signed_sweep` |

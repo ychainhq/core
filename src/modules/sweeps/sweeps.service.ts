@@ -33,6 +33,18 @@ function mapSweep(row: any): Sweep {
   };
 }
 
+export interface SweepSummary {
+  threshold_sats: string | null;
+  current_total_sats: string;
+  missing_sats: string | null;
+  progress_pct: number | null;
+  total_deposit_addresses: number;
+  addresses_with_balance: number;
+  total_utxos: number;
+  hot_wallet_address: string | null;
+  pending_sweep_id: string | null;
+}
+
 export const sweepsService = {
   create(tenantId: string, input: {
     chainId: string;
@@ -172,6 +184,71 @@ export const sweepsService = {
       .prepare("SELECT * FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature'")
       .all(tenantId) as any[];
     return rows.map(mapSweep);
+  },
+
+  getSummary(tenantId: string): SweepSummary {
+    const db = getDb();
+
+    const configRow = db.prepare(
+      'SELECT btc_sweep_threshold_sats FROM tenant_configs WHERE tenant_id = ?'
+    ).get(tenantId) as { btc_sweep_threshold_sats: string | null } | undefined;
+    const thresholdSats = configRow?.btc_sweep_threshold_sats ?? null;
+
+    const addrRow = db.prepare(`
+      SELECT COUNT(*) AS cnt
+      FROM addresses a
+      JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'customer_deposits'
+        AND a.chain_id = 'bitcoin' AND a.status = 'active'
+    `).get(tenantId) as { cnt: number };
+
+    const utxoRow = db.prepare(`
+      SELECT
+        COALESCE(SUM(CAST(amount_raw AS INTEGER)), 0) AS total_sats,
+        COUNT(DISTINCT address)                        AS addrs_with_bal,
+        COUNT(*)                                       AS utxo_count
+      FROM cached_utxos
+      WHERE tenant_id = ? AND wallet_role = 'customer_deposits'
+        AND is_spent = 0 AND is_locked = 0
+    `).get(tenantId) as { total_sats: number; addrs_with_bal: number; utxo_count: number };
+
+    const currentSats = BigInt(utxoRow.total_sats);
+    let missingSats: string | null = null;
+    let progressPct: number | null = null;
+
+    if (thresholdSats) {
+      const threshold = BigInt(thresholdSats);
+      const missing = threshold > currentSats ? threshold - currentSats : BigInt(0);
+      missingSats = missing.toString();
+      progressPct = threshold > BigInt(0)
+        ? Math.min(100, Number((currentSats * BigInt(100)) / threshold))
+        : 0;
+    }
+
+    const hotRow = db.prepare(`
+      SELECT a.address
+      FROM addresses a
+      JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
+        AND a.chain_id = 'bitcoin' AND a.status = 'active'
+      LIMIT 1
+    `).get(tenantId) as { address: string } | undefined;
+
+    const pendingRow = db.prepare(
+      "SELECT id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1"
+    ).get(tenantId) as { id: string } | undefined;
+
+    return {
+      threshold_sats: thresholdSats,
+      current_total_sats: currentSats.toString(),
+      missing_sats: missingSats,
+      progress_pct: progressPct,
+      total_deposit_addresses: addrRow.cnt,
+      addresses_with_balance: utxoRow.addrs_with_bal,
+      total_utxos: utxoRow.utxo_count,
+      hot_wallet_address: hotRow?.address ?? null,
+      pending_sweep_id: pendingRow?.id ?? null,
+    };
   },
 
   /**

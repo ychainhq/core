@@ -965,7 +965,19 @@ Protokół integracji z zewnętrznym signerem (OSS/Enterprise daemon). Signer po
 | GET | `/v1/tenant/withdrawal-batch-config` | Konfiguracja batchowania tenanta |
 | PATCH | `/v1/tenant/withdrawal-batch-config` | Aktualizuj konfigurację batchowania |
 
-### 6.17 Ticklers (audit log)
+### 6.17 Sweeps (konsolidacja UTXO — Bitcoin)
+
+Worker `SweepWorker` co minutę sprawdza skumulowane UTXO na adresach depozytowych. Gdy suma przekroczy próg, tworzy PSBT i czeka na podpis zewnętrznego sygnatariusza.
+
+| Method | Path | Opis |
+|--------|------|------|
+| POST | `/v1/sweeps` | Utwórz sweep ręcznie (rzadko używane — worker to robi automatycznie) |
+| GET | `/v1/sweeps/summary` | Podsumowanie stanu: przeliczone UTXO, postęp do progu, oczekujący sweep |
+| GET | `/v1/sweeps` | Lista sweepów tenanta (paginacja cursor-based, filtr `status`) |
+| GET | `/v1/sweeps/:sweepId` | Szczegóły sweepа |
+| POST | `/v1/sweeps/:sweepId/submit-signed` | Prześlij podpisany PSBT — silnik robi finalizePsbt + broadcast |
+
+### 6.18 Ticklers (audit log)
 
 Immutable audit log. Read-only via API — writes happen automatically on every mutation.
 

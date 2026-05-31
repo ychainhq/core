@@ -24,6 +24,16 @@ function tenantId(req: Request): string {
   return (req as any).tenantId as string;
 }
 
+// GET /v1/sweeps/summary
+sweepsRouter.get('/summary', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const summary = sweepsService.getSummary(tenantId(req));
+    res.json({ data: summary });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /v1/sweeps
 sweepsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
   try {
