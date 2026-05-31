@@ -1,5 +1,6 @@
 import { getDb } from '../db/sqlite';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
+import { enrichSweepPsbt } from '../chain-adapters/bitcoin/psbt-enricher';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { externalSignersService } from '../modules/external-signers/external-signers.service';
@@ -9,6 +10,7 @@ import { ticklerService } from '../shared/tickler/tickler.service';
 import { btcToSatoshi } from '../shared/money/index';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
+import * as bitcoin from 'bitcoinjs-lib';
 
 /**
  * SweepWorker
@@ -81,6 +83,14 @@ export class SweepWorker {
     }
   }
 
+  private getBtcNetwork(): bitcoin.networks.Network {
+    switch (config.BITCOIN_NETWORK) {
+      case 'testnet': return bitcoin.networks.testnet;
+      case 'regtest': return bitcoin.networks.regtest;
+      default:        return bitcoin.networks.bitcoin;
+    }
+  }
+
   private async processTenant(tenantId: string, sweepThresholdSats: string): Promise<void> {
     const db = getDb();
     const adapter = new BitcoinAdapter();
@@ -98,6 +108,19 @@ export class SweepWorker {
     if (!hotAddr) {
       return; // No hot wallet address — cannot sweep
     }
+
+    // Load tenant xpub — needed for PSBT enrichment (public-key derivation only)
+    const tenantCfg = db.prepare(
+      'SELECT btc_xpub FROM tenant_configs WHERE tenant_id = ?'
+    ).get(tenantId) as { btc_xpub: string | null } | undefined;
+
+    if (!tenantCfg?.btc_xpub) {
+      logger.warn('SweepWorker: tenant has no btc_xpub — cannot enrich PSBT', { tenantId });
+      return;
+    }
+
+    const accountXpub = tenantCfg.btc_xpub;
+    const btcNetwork = this.getBtcNetwork();
 
     // Find all deposit addresses for this tenant (from customer_deposits wallet)
     const depositAddresses = db.prepare(`
@@ -128,6 +151,28 @@ export class SweepWorker {
           sweepId: existingPending.id, tenantId,
         });
 
+        // Enrich orphaned PSBT with bip32Derivation if possible
+        // We need input addresses — look them up from the sweep's from_addresses field
+        let recoveryPsbt = existingPending.psbt;
+        try {
+          const sweepRow = db.prepare(
+            'SELECT from_addresses FROM sweeps WHERE id = ?'
+          ).get(existingPending.id) as { from_addresses: string } | undefined;
+          if (sweepRow?.from_addresses) {
+            const inputAddresses: string[] = JSON.parse(sweepRow.from_addresses);
+            recoveryPsbt = await enrichSweepPsbt(
+              existingPending.psbt, inputAddresses, tenantId, accountXpub, btcNetwork
+            );
+            logger.info('SweepWorker: orphaned PSBT enriched with bip32Derivation', {
+              sweepId: existingPending.id, inputs: inputAddresses.length,
+            });
+          }
+        } catch (enrichErr) {
+          logger.warn('SweepWorker: PSBT enrichment failed during recovery, using plain PSBT', {
+            sweepId: existingPending.id, error: String(enrichErr),
+          });
+        }
+
         const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
         const policyDecision = signerPolicyService.evaluateDecision(
           tenantId, selectedSigner?.id ?? null, 'bitcoin', 'bitcoin:BTC',
@@ -144,7 +189,7 @@ export class SweepWorker {
           amountRaw: existingPending.amount_raw,
           feeRaw: existingPending.fee_raw ?? undefined,
           payloadFormat: 'btc_psbt',
-          unsignedPayload: existingPending.psbt,
+          unsignedPayload: recoveryPsbt,
           decisionMode: policyDecision.mode,
           decisionReason: policyDecision.reason,
         });
@@ -221,6 +266,7 @@ export class SweepWorker {
     }
 
     let psbtBase64: string;
+    const inputAddresses = sweepableUtxos.map((u) => u.address);
     try {
       const inputs = sweepableUtxos.map((u) => ({ txid: u.txHash, vout: u.vout }));
       const outputBtc = parseFloat((Number(outputSats) / 1e8).toFixed(8));
@@ -228,6 +274,15 @@ export class SweepWorker {
     } catch (err) {
       logger.warn('SweepWorker: failed to create PSBT (non-fatal)', { tenantId, err: String(err) });
       return;
+    }
+
+    // Enrich PSBT with bip32Derivation per input — public-key only, no private key in engine
+    try {
+      psbtBase64 = await enrichSweepPsbt(psbtBase64, inputAddresses, tenantId, accountXpub, btcNetwork);
+    } catch (err) {
+      logger.warn('SweepWorker: PSBT enrichment failed (non-fatal, signer may reject)', {
+        tenantId, err: String(err),
+      });
     }
 
     // Create sweep record

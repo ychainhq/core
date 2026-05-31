@@ -998,10 +998,11 @@ Protokół integracji z zewnętrznym signerem (OSS/Enterprise daemon). Signer po
 
 Worker `SweepWorker` co minutę sprawdza skumulowane UTXO na adresach depozytowych. Gdy suma przekroczy próg:
 1. Buduje unsigned PSBT przez Bitcoin Core (`createpsbt` + `utxoupdatepsbt`).
-2. Tworzy rekord `sweeps` (status `pending_signature`).
-3. Tworzy `signing_task` (`request_type = 'btc_sweep'`) z linkiem `sweep_id` — signer daemon pobiera go przez polling.
-4. Linkiem wstecznym uzupełnia `sweeps.signing_task_id`.
-5. Po podpisaniu przez signera (`signing_task` → `signed`) silnik automatycznie wykonuje `finalizePsbt` + broadcast i ustawia status sweepа na `broadcast`.
+2. Enrichuje PSBT o `bip32_derivation` per input (`psbt-enricher.ts`) — dla każdego inputu pobiera `derivationIndex` z `addresses.metadata`, derywuje klucz publiczny z tenant xpub, dodaje hint do PSBT. **Tylko operacje na kluczach publicznych — engine nie dotyka kluczy prywatnych.**
+3. Tworzy rekord `sweeps` (status `pending_signature`).
+4. Tworzy `signing_task` (`request_type = 'btc_sweep'`) z linkiem `sweep_id` — signer daemon pobiera go przez polling.
+5. Linkiem wstecznym uzupełnia `sweeps.signing_task_id`.
+6. Po podpisaniu przez signera (`signing_task` → `signed`) silnik automatycznie wykonuje `finalizePsbt` + broadcast i ustawia status sweepа na `broadcast`.
 
 Webhook `sweep.ready_for_signing` jest wysyłany jako backward-compatibility dla tenantów bez polling signera.
 
