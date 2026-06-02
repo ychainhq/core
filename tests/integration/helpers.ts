@@ -6,6 +6,7 @@ import { createApp } from '../../src/app';
 import { runMigrations } from '../../src/db/migrate';
 import { runSeed } from '../../src/db/seed';
 import { closeDb } from '../../src/db/sqlite';
+import { resetDbClient } from '../../src/db/client';
 
 bitcoin.initEccLib(ecc);
 const bip32 = BIP32Factory(ecc);
@@ -52,9 +53,10 @@ export function uniqueAddr(): string {
  * handle the case where resetDbClient is required.
  */
 export function bootstrapApp(): express.Application {
-  closeDb();     // reset any prior singleton so each file gets a fresh :memory: DB
-  runMigrations();  // SQLite path is sync; returns resolved Promise
-  runSeed();        // SQLite path is sync; returns resolved Promise
+  closeDb();          // reset SQLite singleton → fresh :memory: DB
+  resetDbClient();    // reset async DbClient singleton → picks up new SQLite instance
+  runMigrations();    // SQLite path is sync; returns resolved Promise
+  runSeed();          // SQLite path is sync; returns resolved Promise
   return createApp();
 }
 
@@ -64,4 +66,5 @@ export function bootstrapApp(): express.Application {
  */
 export function teardownDb(): void {
   closeDb();
+  resetDbClient();
 }

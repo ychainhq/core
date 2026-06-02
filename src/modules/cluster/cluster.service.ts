@@ -14,6 +14,7 @@ import os from 'os';
 import { getDbClient } from '../../db/client';
 import { config } from '../../config/index';
 import { logger } from '../../shared/logging/index';
+import { toUnixTs } from '../../shared/time/index';
 
 export interface EngineInstance {
   id: string;
@@ -37,8 +38,8 @@ function toApi(row: EngineInstance) {
     id: row.id,
     engineUrl: row.engine_url,
     version: row.version,
-    startedAt: row.started_at,
-    lastSeenAt: row.last_seen_at,
+    startedAt:  row.started_at  ? toUnixTs(row.started_at)  : null,
+    lastSeenAt: row.last_seen_at ? toUnixTs(row.last_seen_at) : null,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
   };
 }

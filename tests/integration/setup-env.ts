@@ -2,7 +2,10 @@
 // Sets env vars BEFORE any module is imported, so config/index.ts picks them up.
 // dotenv.config() does NOT override already-set env vars.
 
+// Force SQLite in-memory for all tests — overrides DB_TYPE=postgres from .env
+process.env['DB_TYPE'] = 'sqlite';
 process.env['SQLITE_DB_PATH'] = ':memory:';
+delete process.env['DATABASE_URL'];
 process.env['BITCOIN_RPC_URL'] = 'http://127.0.0.1:18332'; // unreachable — adapter errors are expected
 process.env['BITCOIN_RPC_USER'] = 'test';
 process.env['BITCOIN_RPC_PASSWORD'] = 'test';

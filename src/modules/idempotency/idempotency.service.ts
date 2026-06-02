@@ -46,8 +46,12 @@ export class IdempotencyService {
     const expiresAt = new Date(now.getTime() + TTL_MS);
 
     await db.run(
-      `INSERT OR REPLACE INTO idempotency_keys (tenant_id, key, operation, result, status_code, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO idempotency_keys (tenant_id, key, operation, result, status_code, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (tenant_id, key, operation) DO UPDATE SET
+        result = excluded.result,
+        status_code = excluded.status_code,
+        expires_at = excluded.expires_at`,
       [
         tenantId,
         key,

@@ -1,5 +1,6 @@
 import { AccessFilter, SqlFragment } from './types';
-import { compileSqliteFilter } from './compiler';
+import { compileFilter } from './compiler';
+import { getDbClient } from '../../db/client';
 
 /**
  * Thin wrapper that enforces access filter presence in every data-source query.
@@ -19,7 +20,7 @@ export class SecuredQuery {
 
   private constructor(filter: AccessFilter, tableAlias: string) {
     this._isDenied = filter.type === 'deny';
-    this._fragment = compileSqliteFilter(filter, tableAlias);
+    this._fragment = compileFilter(filter, tableAlias, getDbClient().isPostgres);
   }
 
   static for(filter: AccessFilter, tableAlias: string): SecuredQuery {

@@ -1,42 +1,62 @@
-// Mock the db module before importing anything that uses it
-// Note: jest.mock paths use the TypeScript source path (no .js extension)
-jest.mock('../src/db/sqlite', () => {
-  const rows: Record<string, { tenant_id: string; key: string; operation: string; result: string; status_code: number; created_at: string; expires_at: string }> = {};
+// Mock the async DbClient used by idempotency.service
+// IdempotencyService now uses getDbClient() from db/client.ts (not getDb() from sqlite.ts)
 
-  const db = {
-    prepare: jest.fn((sql: string) => {
-      return {
-        get: jest.fn((...args: any[]) => {
-          const [tenantId, key, operation, expiresCheck] = args;
-          const rowKey = `${tenantId}:${key}:${operation}`;
-          const row = rows[rowKey];
-          if (!row) return undefined;
-          if (expiresCheck && row.expires_at <= expiresCheck) return undefined;
-          return row;
-        }),
-        run: jest.fn((...args: any[]) => {
-          if (sql.includes('INSERT OR REPLACE')) {
-            const [tenantId, key, operation, result, statusCode, createdAt, expiresAt] = args;
-            rows[`${tenantId}:${key}:${operation}`] = { tenant_id: tenantId, key, operation, result, status_code: statusCode, created_at: createdAt, expires_at: expiresAt };
-          } else if (sql.includes('DELETE')) {
-            const [expiresCutoff] = args;
-            for (const k of Object.keys(rows)) {
-              if (rows[k].expires_at <= expiresCutoff) {
-                delete rows[k];
-              }
-            }
-            return { changes: 0 };
-          }
-          return { changes: 0 };
-        }),
-        all: jest.fn(() => []),
+const rows: Record<string, {
+  tenant_id: string; key: string; operation: string;
+  result: string; status_code: number;
+  created_at: string; expires_at: string;
+}> = {};
+
+const mockDb = {
+  isPg: false,
+  async all(sql: string, params: unknown[] = []) {
+    if (sql.includes('SELECT') && sql.includes('idempotency_keys')) {
+      const [tenantId, key, operation, expiresCheck] = params as string[];
+      const rowKey = `${tenantId}:${key}:${operation}`;
+      const row = rows[rowKey];
+      if (!row) return [];
+      if (expiresCheck && row.expires_at <= expiresCheck) return [];
+      return [row];
+    }
+    return [];
+  },
+  async get(sql: string, params: unknown[] = []) {
+    if (sql.includes('idempotency_keys')) {
+      const [tenantId, key, operation, expiresCheck] = params as string[];
+      const rowKey = `${tenantId}:${key}:${operation}`;
+      const row = rows[rowKey];
+      if (!row) return undefined;
+      if (expiresCheck && row.expires_at <= expiresCheck) return undefined;
+      return row;
+    }
+    return undefined;
+  },
+  async run(sql: string, params: unknown[] = []) {
+    if (sql.includes('INSERT') && sql.includes('idempotency_keys')) {
+      // Handles both INSERT (first time) and ON CONFLICT DO UPDATE (upsert)
+      const [tenantId, key, operation, result, statusCode, createdAt, expiresAt] = params as any[];
+      rows[`${tenantId}:${key}:${operation}`] = {
+        tenant_id: tenantId, key, operation, result,
+        status_code: statusCode, created_at: createdAt, expires_at: expiresAt,
       };
-    }),
-  };
-  return { getDb: () => db };
-});
+    } else if (sql.includes('DELETE')) {
+      const [expiresCutoff] = params as string[];
+      for (const k of Object.keys(rows)) {
+        if (rows[k].expires_at <= expiresCutoff) delete rows[k];
+      }
+    }
+    return { changes: 1, lastInsertRowid: 0n };
+  },
+  async exec() {},
+  async close() {},
+  async transaction<T>(fn: (tx: any) => Promise<T>): Promise<T> { return fn(mockDb); },
+};
 
-// Also mock the setInterval for idempotency cleanup
+jest.mock('../src/db/client', () => ({
+  getDbClient: () => mockDb,
+  resetDbClient: jest.fn(),
+}));
+
 jest.useFakeTimers();
 
 import { IdempotencyService } from '../src/modules/idempotency/idempotency.service';
@@ -45,6 +65,8 @@ describe('IdempotencyService', () => {
   let service: IdempotencyService;
 
   beforeEach(() => {
+    // Clear rows between tests
+    for (const k of Object.keys(rows)) delete rows[k];
     service = new IdempotencyService();
   });
 
@@ -99,10 +121,10 @@ describe('IdempotencyService', () => {
     });
 
     it('overwrites existing key with same key+operation', async () => {
-      const first = { data: { attempt: 1 } };
+      const first  = { data: { attempt: 1 } };
       const second = { data: { attempt: 2 } };
 
-      await service.save(TENANT, 'overwrite-key', 'broadcast', first, 200);
+      await service.save(TENANT, 'overwrite-key', 'broadcast', first,  200);
       await service.save(TENANT, 'overwrite-key', 'broadcast', second, 200);
 
       const result = await service.get(TENANT, 'overwrite-key', 'broadcast');

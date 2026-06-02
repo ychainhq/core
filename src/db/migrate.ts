@@ -76,6 +76,45 @@ function runMigrationsSqlite(): void {
 }
 
 // ---------------------------------------------------------------------------
+// SQLite → PostgreSQL SQL translation
+// Migrations are written in SQLite dialect. This function translates the
+// SQLite-specific constructs that differ from PostgreSQL.
+// ---------------------------------------------------------------------------
+
+/**
+ * Translate SQLite-specific SQL constructs to PostgreSQL equivalents.
+ * Migrations are authored in SQLite dialect (used for dev/test).
+ * When running against PostgreSQL, these constructs must be translated.
+ *
+ * Conversions applied:
+ *   INSERT OR IGNORE INTO <t> ... ;  →  INSERT INTO <t> ... ON CONFLICT DO NOTHING;
+ *   datetime('now')                  →  NOW()
+ *   json_object(k,v,...)             →  json_build_object(k,v,...)
+ */
+function translateSqliteToPostgres(sql: string): string {
+  let result = sql;
+
+  // 1. datetime('now') → NOW()
+  result = result.replace(/datetime\('now'\)/gi, 'NOW()');
+
+  // 2. json_object(...) → json_build_object(...)
+  //    SQLite: json_object('k1', v1, 'k2', v2)
+  //    PostgreSQL: json_build_object('k1', v1, 'k2', v2)
+  //    Both functions accept alternating key/value pairs — only name differs.
+  result = result.replace(/\bjson_object\s*\(/gi, 'json_build_object(');
+
+  // 3. INSERT OR IGNORE INTO <table> ...;
+  //    Captures everything from INSERT OR IGNORE through the closing semicolon
+  //    and injects ON CONFLICT DO NOTHING before it.
+  result = result.replace(
+    /INSERT\s+OR\s+IGNORE\s+(INTO\s[\s\S]*?);/gi,
+    'INSERT $1\n  ON CONFLICT DO NOTHING;'
+  );
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // PostgreSQL migration runner (async)
 // ---------------------------------------------------------------------------
 
@@ -114,7 +153,9 @@ async function runMigrationsPostgres(): Promise<void> {
       }
 
       logger.info('Applying migration', { version });
-      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+      const rawSql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+      // Translate SQLite-specific syntax to PostgreSQL equivalents
+      const sql = translateSqliteToPostgres(rawSql);
 
       const client = await pool.connect();
       try {

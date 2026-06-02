@@ -139,9 +139,10 @@ export const depositAddressService = {
     const monitorId = `mon_${require('crypto').randomBytes(8).toString('hex')}`;
     try {
       await db.run(
-        `INSERT OR IGNORE INTO watched_addresses
+        `INSERT INTO watched_addresses
           (id, tenant_id, chain_id, address, wallet_id, customer_id, label, events, is_active, created_at, updated_at)
-        VALUES (?, ?, 'bitcoin', ?, ?, ?, ?, '["incoming"]', 1, ?, ?)`,
+        VALUES (?, ?, 'bitcoin', ?, ?, ?, ?, '["incoming"]', 1, ?, ?)
+        ON CONFLICT DO NOTHING`,
         [
           monitorId,
           tenantId,

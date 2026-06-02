@@ -56,8 +56,10 @@ export const depositsService = {
     const db = getDbClient();
     const now = new Date().toISOString();
 
+    // NULL-safe vout comparison: SQLite uses "IS ?", PostgreSQL uses "IS NOT DISTINCT FROM ?"
+    const voutEq = db.isPostgres ? 'vout IS NOT DISTINCT FROM ?' : 'vout IS ?';
     const existing = await db.get<Deposit>(
-      'SELECT * FROM deposits WHERE chain_id = ? AND tx_hash = ? AND vout IS ?',
+      `SELECT * FROM deposits WHERE chain_id = ? AND tx_hash = ? AND ${voutEq}`,
       [input.chainId, input.txHash, input.vout ?? null]
     );
 

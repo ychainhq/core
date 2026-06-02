@@ -136,9 +136,8 @@ export const ledgerService = {
 
   async getBalance(accountId: string): Promise<LedgerBalance> {
     const db = getDbClient();
-    // rowid is always insertion order in SQLite — use as tiebreaker when timestamps collide
     const latestEntry = await db.get<LedgerEntry>(
-      'SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY rowid DESC LIMIT 1',
+      'SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1',
       [accountId]
     );
 
@@ -166,7 +165,7 @@ export const ledgerService = {
       query += ' AND id < ?';
       params.push(opts.cursor);
     }
-    query += ' ORDER BY rowid DESC LIMIT ?';
+    query += ' ORDER BY created_at DESC, id DESC LIMIT ?';
     params.push(limit + 1);
 
     const rows = await db.all(query, params);

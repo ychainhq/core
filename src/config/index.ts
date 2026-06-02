@@ -48,6 +48,10 @@ const configSchema = z.object({
   MCP_ALLOWED_ORIGINS: z.string().default('http://127.0.0.1,http://localhost'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   NODE_HEALTH_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  // v3: set to "false" to disable the legacy FWallet-based DepositMonitorWorker.
+  // When using btc-indexer (DB_TYPE=postgres), deposits are detected via chain_events
+  // and DepositEventProcessorWorker handles them. The legacy worker is redundant.
+  LEGACY_DEPOSIT_MONITOR_ENABLED: z.string().transform(v => v !== 'false').default('true'),
   // Ethereum chain adapter (optional — enable when ETH node is available)
   ETH_NODE_URL: z.string().url().optional(),
   ETH_NODE_AUTH: z.string().optional(),  // 'user:password' for basic auth

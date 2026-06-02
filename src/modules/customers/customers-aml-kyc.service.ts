@@ -101,8 +101,9 @@ export const customersAmlKycService = {
     const db = getDbClient();
     const now = new Date().toISOString();
     await db.run(
-      `INSERT OR IGNORE INTO customer_aml_kyc (customer_id, tenant_id, updated_at)
-      VALUES (?, ?, ?)`,
+      `INSERT INTO customer_aml_kyc (customer_id, tenant_id, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT DO NOTHING`,
       [customerId, tenantId, now]
     );
   },

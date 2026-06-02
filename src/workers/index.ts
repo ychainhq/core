@@ -34,10 +34,15 @@ export function startWorkers(): void {
 
   logger.info('Starting background workers...');
 
-  // v3: DepositEventProcessor runs alongside legacy DepositMonitorWorker during transition.
-  // Once btc-indexer is fully deployed and chain_events are flowing, DepositMonitorWorker
-  // will be removed (FAZA 2: PostgreSQL migration).
-  depositMonitor.start();
+  // DepositMonitorWorker: legacy FWallet-based polling (SQLite/single-node mode).
+  // Disabled when LEGACY_DEPOSIT_MONITOR_ENABLED=false (v3 PostgreSQL mode)
+  // because btc-indexer writes to chain_events and DepositEventProcessor handles them.
+  if (config.LEGACY_DEPOSIT_MONITOR_ENABLED) {
+    depositMonitor.start();
+    logger.info('DepositMonitorWorker started (legacy FWallet mode)');
+  } else {
+    logger.info('DepositMonitorWorker skipped (v3 mode — using btc-indexer + DepositEventProcessor)');
+  }
   depositEventProcessor.start();
 
   txStatus.start();

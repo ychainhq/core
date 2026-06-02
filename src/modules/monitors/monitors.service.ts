@@ -155,9 +155,10 @@ export const monitorsService = {
     const id = `mon_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
     await db.run(`
-      INSERT OR IGNORE INTO watched_addresses
+      INSERT INTO watched_addresses
         (id, tenant_id, chain_id, address, wallet_id, label, events, is_active, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, '["incoming"]', 1, ?, ?)
+      ON CONFLICT DO NOTHING
     `, [id, tenantId, input.chainId, input.address, input.walletId ?? null, input.label ?? null, now, now]);
   },
 
