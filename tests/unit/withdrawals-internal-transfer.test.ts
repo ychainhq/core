@@ -10,7 +10,7 @@ const TENANT = 'tenant_default';
 
 beforeAll(async () => {
   closeDb();
-  runMigrations();
+  await runMigrations();
   await runSeed();
 });
 
@@ -22,14 +22,14 @@ afterAll(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeCustomer(ref: string) {
+async function makeCustomer(ref: string) {
   return customersService.create(TENANT, { reference: ref });
 }
 
-function credit(customerId: string, sats: string) {
-  const acc = ledgerService.findAccountByCustomerAndAsset(TENANT, customerId, 'bitcoin:BTC');
+async function credit(customerId: string, sats: string) {
+  const acc = await ledgerService.findAccountByCustomerAndAsset(TENANT, customerId, 'bitcoin:BTC');
   if (!acc) throw new Error(`No BTC account for ${customerId}`);
-  ledgerService.addEntry({
+  await ledgerService.addEntry({
     ledgerAccountId: acc.id,
     type: 'deposit_settled',
     amountRaw: sats,
@@ -38,20 +38,20 @@ function credit(customerId: string, sats: string) {
   return acc;
 }
 
-function settledBalance(customerId: string): bigint {
-  const acc = ledgerService.findAccountByCustomerAndAsset(TENANT, customerId, 'bitcoin:BTC');
+async function settledBalance(customerId: string): Promise<bigint> {
+  const acc = await ledgerService.findAccountByCustomerAndAsset(TENANT, customerId, 'bitcoin:BTC');
   if (!acc) return 0n;
-  return BigInt(ledgerService.getBalance(acc.id).settled);
+  return BigInt((await ledgerService.getBalance(acc.id)).settled);
 }
 
-function callTransfer(opts: {
+async function callTransfer(opts: {
   senderCustomerId: string;
   recipientCustomerId: string;
   senderAccountId: string;
   amountSats: bigint;
   toAddress?: string;
 }) {
-  return withdrawalsService._executeInternalTransfer(getDb(), {
+  return withdrawalsService._executeInternalTransfer({
     tenantId: TENANT,
     senderCustomerId: opts.senderCustomerId,
     recipientCustomerId: opts.recipientCustomerId,
@@ -66,18 +66,18 @@ function callTransfer(opts: {
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — guard: same customer', () => {
-  it('throws ValidationError when sender and recipient are the same customer', () => {
-    const c = makeCustomer('unit-int-self');
-    const acc = credit(c.id, '100000');
+  it('throws ValidationError when sender and recipient are the same customer', async () => {
+    const c = await makeCustomer('unit-int-self');
+    const acc = await credit(c.id, '100000');
 
-    expect(() =>
+    await expect(
       callTransfer({
         senderCustomerId: c.id,
         recipientCustomerId: c.id,
         senderAccountId: acc.id,
         amountSats: 50000n,
       })
-    ).toThrow(ValidationError);
+    ).rejects.toThrow(ValidationError);
   });
 });
 
@@ -86,18 +86,18 @@ describe('_executeInternalTransfer — guard: same customer', () => {
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — guard: recipient not found', () => {
-  it('throws UnprocessableEntityError when recipient customer does not exist', () => {
-    const sender = makeCustomer('unit-int-nosuch-sender');
-    const acc = credit(sender.id, '100000');
+  it('throws UnprocessableEntityError when recipient customer does not exist', async () => {
+    const sender = await makeCustomer('unit-int-nosuch-sender');
+    const acc = await credit(sender.id, '100000');
 
-    expect(() =>
+    await expect(
       callTransfer({
         senderCustomerId: sender.id,
         recipientCustomerId: 'cust_does_not_exist',
         senderAccountId: acc.id,
         amountSats: 50000n,
       })
-    ).toThrow(UnprocessableEntityError);
+    ).rejects.toThrow(UnprocessableEntityError);
   });
 });
 
@@ -106,21 +106,21 @@ describe('_executeInternalTransfer — guard: recipient not found', () => {
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — guard: recipient disabled', () => {
-  it('throws UnprocessableEntityError when recipient is not active', () => {
-    const sender = makeCustomer('unit-int-disabled-sender');
-    const recipient = makeCustomer('unit-int-disabled-recip');
-    const acc = credit(sender.id, '100000');
+  it('throws UnprocessableEntityError when recipient is not active', async () => {
+    const sender = await makeCustomer('unit-int-disabled-sender');
+    const recipient = await makeCustomer('unit-int-disabled-recip');
+    const acc = await credit(sender.id, '100000');
 
-    customersService.disable(TENANT, recipient.id);
+    await customersService.disable(TENANT, recipient.id);
 
-    expect(() =>
+    await expect(
       callTransfer({
         senderCustomerId: sender.id,
         recipientCustomerId: recipient.id,
         senderAccountId: acc.id,
         amountSats: 50000n,
       })
-    ).toThrow(UnprocessableEntityError);
+    ).rejects.toThrow(UnprocessableEntityError);
   });
 });
 
@@ -129,23 +129,23 @@ describe('_executeInternalTransfer — guard: recipient disabled', () => {
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — guard: recipient missing ledger account', () => {
-  it('throws UnprocessableEntityError when recipient has no bitcoin:BTC account', () => {
-    const sender = makeCustomer('unit-int-noacc-sender');
-    const recipient = makeCustomer('unit-int-noacc-recip');
-    const acc = credit(sender.id, '100000');
+  it('throws UnprocessableEntityError when recipient has no bitcoin:BTC account', async () => {
+    const sender = await makeCustomer('unit-int-noacc-sender');
+    const recipient = await makeCustomer('unit-int-noacc-recip');
+    const acc = await credit(sender.id, '100000');
 
     getDb()
       .prepare("DELETE FROM ledger_accounts WHERE customer_id = ? AND asset_id = 'bitcoin:BTC'")
       .run(recipient.id);
 
-    expect(() =>
+    await expect(
       callTransfer({
         senderCustomerId: sender.id,
         recipientCustomerId: recipient.id,
         senderAccountId: acc.id,
         amountSats: 50000n,
       })
-    ).toThrow(UnprocessableEntityError);
+    ).rejects.toThrow(UnprocessableEntityError);
   });
 });
 
@@ -154,12 +154,12 @@ describe('_executeInternalTransfer — guard: recipient missing ledger account',
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — creates withdrawal record', () => {
-  it('returns a withdrawal with type=internal, status=confirmed, correct amount and recipient', () => {
-    const sender = makeCustomer('unit-int-wd-sender');
-    const recipient = makeCustomer('unit-int-wd-recip');
-    const acc = credit(sender.id, '300000');
+  it('returns a withdrawal with type=internal, status=confirmed, correct amount and recipient', async () => {
+    const sender = await makeCustomer('unit-int-wd-sender');
+    const recipient = await makeCustomer('unit-int-wd-recip');
+    const acc = await credit(sender.id, '300000');
 
-    const wd = callTransfer({
+    const wd = await callTransfer({
       senderCustomerId: sender.id,
       recipientCustomerId: recipient.id,
       senderAccountId: acc.id,
@@ -184,23 +184,23 @@ describe('_executeInternalTransfer — creates withdrawal record', () => {
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — ledger atomicity', () => {
-  it('debits sender and credits recipient by the exact transfer amount', () => {
-    const sender = makeCustomer('unit-int-ledger-sender');
-    const recipient = makeCustomer('unit-int-ledger-recip');
-    const acc = credit(sender.id, '500000');
+  it('debits sender and credits recipient by the exact transfer amount', async () => {
+    const sender = await makeCustomer('unit-int-ledger-sender');
+    const recipient = await makeCustomer('unit-int-ledger-recip');
+    const acc = await credit(sender.id, '500000');
 
-    const senderBefore = settledBalance(sender.id);
-    const recipientBefore = settledBalance(recipient.id);
+    const senderBefore = await settledBalance(sender.id);
+    const recipientBefore = await settledBalance(recipient.id);
 
-    callTransfer({
+    await callTransfer({
       senderCustomerId: sender.id,
       recipientCustomerId: recipient.id,
       senderAccountId: acc.id,
       amountSats: 200000n,
     });
 
-    expect(settledBalance(sender.id)).toBe(senderBefore - 200000n);
-    expect(settledBalance(recipient.id)).toBe(recipientBefore + 200000n);
+    expect(await settledBalance(sender.id)).toBe(senderBefore - 200000n);
+    expect(await settledBalance(recipient.id)).toBe(recipientBefore + 200000n);
   });
 });
 
@@ -213,12 +213,12 @@ describe('_executeInternalTransfer — ledger atomicity', () => {
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — ticklers', () => {
-  it('records a withdrawal:internal_transfer tickler for the sender', () => {
-    const sender = makeCustomer('unit-int-tick-w-sender');
-    const recipient = makeCustomer('unit-int-tick-w-recip');
-    const acc = credit(sender.id, '300000');
+  it('records a withdrawal:internal_transfer tickler for the sender', async () => {
+    const sender = await makeCustomer('unit-int-tick-w-sender');
+    const recipient = await makeCustomer('unit-int-tick-w-recip');
+    const acc = await credit(sender.id, '300000');
 
-    const wd = callTransfer({
+    const wd = await callTransfer({
       senderCustomerId: sender.id,
       recipientCustomerId: recipient.id,
       senderAccountId: acc.id,
@@ -234,12 +234,12 @@ describe('_executeInternalTransfer — ticklers', () => {
     expect(row.field4).toBe(recipient.id);
   });
 
-  it('records a deposit:internal_transfer tickler for the recipient deposit', () => {
-    const sender = makeCustomer('unit-int-tick-d-sender');
-    const recipient = makeCustomer('unit-int-tick-d-recip');
-    const acc = credit(sender.id, '300000');
+  it('records a deposit:internal_transfer tickler for the recipient deposit', async () => {
+    const sender = await makeCustomer('unit-int-tick-d-sender');
+    const recipient = await makeCustomer('unit-int-tick-d-recip');
+    const acc = await credit(sender.id, '300000');
 
-    const wd = callTransfer({
+    const wd = await callTransfer({
       senderCustomerId: sender.id,
       recipientCustomerId: recipient.id,
       senderAccountId: acc.id,
@@ -247,7 +247,7 @@ describe('_executeInternalTransfer — ticklers', () => {
       toAddress: 'bc1qtickler-deposit-addr',
     });
 
-    const { data: deposits } = customersService.getDeposits(TENANT, recipient.id);
+    const { data: deposits } = await customersService.getDeposits(TENANT, recipient.id);
     const dep = deposits.find((d: any) => d.tx_hash === `internal:${wd.id}`);
     expect(dep).toBeDefined();
 
@@ -265,12 +265,12 @@ describe('_executeInternalTransfer — ticklers', () => {
 // ---------------------------------------------------------------------------
 
 describe('_executeInternalTransfer — deposit record for recipient', () => {
-  it('creates a confirmed deposit visible in the recipient deposit list', () => {
-    const sender = makeCustomer('unit-int-dep-sender');
-    const recipient = makeCustomer('unit-int-dep-recip');
-    const acc = credit(sender.id, '400000');
+  it('creates a confirmed deposit visible in the recipient deposit list', async () => {
+    const sender = await makeCustomer('unit-int-dep-sender');
+    const recipient = await makeCustomer('unit-int-dep-recip');
+    const acc = await credit(sender.id, '400000');
 
-    const wd = callTransfer({
+    const wd = await callTransfer({
       senderCustomerId: sender.id,
       recipientCustomerId: recipient.id,
       senderAccountId: acc.id,
@@ -278,7 +278,7 @@ describe('_executeInternalTransfer — deposit record for recipient', () => {
       toAddress: 'bc1qtest-deposit-addr',
     });
 
-    const { data: deposits } = customersService.getDeposits(TENANT, recipient.id);
+    const { data: deposits } = await customersService.getDeposits(TENANT, recipient.id);
     const dep = deposits.find((d: any) => d.tx_hash === `internal:${wd.id}`);
 
     expect(dep).toBeDefined();
@@ -290,19 +290,19 @@ describe('_executeInternalTransfer — deposit record for recipient', () => {
     expect(dep.metadata?.sender_customer_id).toBe(sender.id);
   });
 
-  it('deposit tx_hash is unique per transfer so repeated transfers do not collide', () => {
-    const sender = makeCustomer('unit-int-dep2-sender');
-    const recipient = makeCustomer('unit-int-dep2-recip');
-    credit(sender.id, '600000');
-    const acc = ledgerService.findAccountByCustomerAndAsset(TENANT, sender.id, 'bitcoin:BTC')!;
+  it('deposit tx_hash is unique per transfer so repeated transfers do not collide', async () => {
+    const sender = await makeCustomer('unit-int-dep2-sender');
+    const recipient = await makeCustomer('unit-int-dep2-recip');
+    await credit(sender.id, '600000');
+    const acc = (await ledgerService.findAccountByCustomerAndAsset(TENANT, sender.id, 'bitcoin:BTC'))!;
 
-    const wd1 = callTransfer({
+    const wd1 = await callTransfer({
       senderCustomerId: sender.id,
       recipientCustomerId: recipient.id,
       senderAccountId: acc.id,
       amountSats: 100000n,
     });
-    const wd2 = callTransfer({
+    const wd2 = await callTransfer({
       senderCustomerId: sender.id,
       recipientCustomerId: recipient.id,
       senderAccountId: acc.id,
@@ -311,7 +311,7 @@ describe('_executeInternalTransfer — deposit record for recipient', () => {
 
     expect(wd1.id).not.toBe(wd2.id);
 
-    const { data: deposits } = customersService.getDeposits(TENANT, recipient.id);
+    const { data: deposits } = await customersService.getDeposits(TENANT, recipient.id);
     const hashes = deposits.map((d: any) => d.tx_hash);
     expect(hashes).toContain(`internal:${wd1.id}`);
     expect(hashes).toContain(`internal:${wd2.id}`);

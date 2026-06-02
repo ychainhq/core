@@ -1,4 +1,4 @@
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 
 export interface AssetSpecs {
@@ -29,8 +29,8 @@ function mapAsset(row: any): Asset {
 }
 
 export const assetsService = {
-  list(filters: { chain?: string; type?: string } = {}): Asset[] {
-    const db = getDb();
+  async list(filters: { chain?: string; type?: string } = {}): Promise<Asset[]> {
+    const db = getDbClient();
     let query = 'SELECT * FROM assets WHERE 1=1';
     const params: unknown[] = [];
 
@@ -44,27 +44,28 @@ export const assetsService = {
     }
     query += ' ORDER BY id';
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     return rows.map(mapAsset);
   },
 
-  getByChainAndSymbol(chainId: string, symbol: string): Asset {
-    const db = getDb();
+  async getByChainAndSymbol(chainId: string, symbol: string): Promise<Asset> {
+    const db = getDbClient();
     // Try by ID first (e.g. 'bitcoin:BTC')
     const assetId = `${chainId}:${symbol}`;
-    let row = db.prepare('SELECT * FROM assets WHERE id = ?').get(assetId);
+    let row = await db.get('SELECT * FROM assets WHERE id = ?', [assetId]);
     if (!row) {
-      row = db
-        .prepare('SELECT * FROM assets WHERE chain_id = ? AND symbol = ?')
-        .get(chainId, symbol);
+      row = await db.get(
+        'SELECT * FROM assets WHERE chain_id = ? AND symbol = ?',
+        [chainId, symbol]
+      );
     }
     if (!row) throw new NotFoundError('Asset', `${chainId}/${symbol}`);
     return mapAsset(row);
   },
 
-  getById(id: string): Asset {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM assets WHERE id = ?').get(id);
+  async getById(id: string): Promise<Asset> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM assets WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Asset', id);
     return mapAsset(row);
   },

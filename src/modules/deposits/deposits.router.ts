@@ -15,11 +15,11 @@ const listQuerySchema = z.object({
 });
 
 // GET /v1/deposits
-depositsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+depositsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const query = listQuerySchema.parse(req.query);
-    const result = depositsService.list(tenantId, query);
+    const result = await depositsService.list(tenantId, query);
     res.json({
       data: result.data,
       pagination: {
@@ -34,10 +34,10 @@ depositsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/deposits/:depositId
-depositsRouter.get('/:depositId', (req: Request, res: Response, next: NextFunction) => {
+depositsRouter.get('/:depositId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const deposit = depositsService.getById(tenantId, req.params['depositId']!);
+    const deposit = await depositsService.getById(tenantId, req.params['depositId']!);
     res.json({ data: deposit });
   } catch (err) {
     next(err);
@@ -45,12 +45,12 @@ depositsRouter.get('/:depositId', (req: Request, res: Response, next: NextFuncti
 });
 
 // GET /v1/chains/:chain/addresses/:address/deposits
-addressDepositsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+addressDepositsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const { chain, address } = req.params as { chain: string; address: string };
     const query = listQuerySchema.parse(req.query);
-    const result = depositsService.list(tenantId, { ...query, chain, address });
+    const result = await depositsService.list(tenantId, { ...query, chain, address });
     res.json({
       data: result.data,
       pagination: {

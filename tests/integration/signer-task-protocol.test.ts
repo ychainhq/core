@@ -65,7 +65,7 @@ describe('Signer task protocol — GET /tasks field mapping', () => {
     signerId = enrollRes.body.data.id;
     await activateSigner(signerId);
 
-    const task = signingTasksService.create({
+    const task = await signingTasksService.create({
       tenantId: TEST_TENANT_ID,
       signerId,
       requestType: 'btc_withdrawal_batch',
@@ -163,7 +163,7 @@ describe('Signer task protocol — POST /claim field mapping', () => {
     signerId = enrollRes.body.data.id;
     await activateSigner(signerId);
 
-    const task = signingTasksService.create({
+    const task = await signingTasksService.create({
       tenantId: TEST_TENANT_ID,
       signerId,
       requestType: 'btc_withdrawal_batch',

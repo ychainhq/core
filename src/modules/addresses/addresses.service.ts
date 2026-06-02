@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ValidationError, ConflictError } from '../../shared/errors/index';
 import { adapterRegistry } from '../../chain-adapters/registry';
 import { detectAddressType } from '../../shared/validation/bitcoin';
@@ -37,7 +37,7 @@ function generateAddressId(): string {
 }
 
 export const addressesService = {
-  addToWallet(tenantId: string, walletId: string, input: {
+  async addToWallet(tenantId: string, walletId: string, input: {
     chain: string;
     address: string;
     label?: string;
@@ -45,15 +45,15 @@ export const addressesService = {
     addressRole?: string;
     customerId?: string;
     metadata?: Record<string, unknown>;
-  }): Address {
-    const db = getDb();
+  }): Promise<Address> {
+    const db = getDbClient();
 
     // Validate wallet exists and belongs to tenant
-    const wallet = db.prepare('SELECT id FROM wallets WHERE id = ? AND tenant_id = ?').get(walletId, tenantId);
+    const wallet = await db.get('SELECT id FROM wallets WHERE id = ? AND tenant_id = ?', [walletId, tenantId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
     // Validate chain exists
-    const chain = db.prepare('SELECT id FROM chains WHERE id = ?').get(input.chain);
+    const chain = await db.get('SELECT id FROM chains WHERE id = ?', [input.chain]);
     if (!chain) throw new NotFoundError('Chain', input.chain);
 
     // Validate address
@@ -70,22 +70,23 @@ export const addressesService = {
     const id = generateAddressId();
 
     try {
-      db.prepare(`
-        INSERT INTO addresses (id, tenant_id, wallet_id, chain_id, address, label, address_type, address_role, customer_id, status, metadata, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-      `).run(
-        id,
-        tenantId,
-        walletId,
-        input.chain,
-        input.address,
-        input.label ?? null,
-        detectedType ?? null,
-        input.addressRole ?? 'customer_deposit',
-        input.customerId ?? null,
-        input.metadata ? JSON.stringify(input.metadata) : null,
-        now,
-        now
+      await db.run(
+        `INSERT INTO addresses (id, tenant_id, wallet_id, chain_id, address, label, address_type, address_role, customer_id, status, metadata, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+        [
+          id,
+          tenantId,
+          walletId,
+          input.chain,
+          input.address,
+          input.label ?? null,
+          detectedType ?? null,
+          input.addressRole ?? 'customer_deposit',
+          input.customerId ?? null,
+          input.metadata ? JSON.stringify(input.metadata) : null,
+          now,
+          now,
+        ]
       );
     } catch (err: any) {
       if (err?.message?.includes('UNIQUE constraint')) {
@@ -109,11 +110,11 @@ export const addressesService = {
     return addressesService.getById(tenantId, id);
   },
 
-  listByWallet(tenantId: string, walletId: string, opts: { limit?: number; cursor?: string } = {}): {
+  async listByWallet(tenantId: string, walletId: string, opts: { limit?: number; cursor?: string } = {}): Promise<{
     data: Address[];
     nextCursor: string | null;
-  } {
-    const db = getDb();
+  }> {
+    const db = getDbClient();
     const limit = Math.min(opts.limit ?? 20, 100);
     let query = 'SELECT * FROM addresses WHERE tenant_id = ? AND wallet_id = ?';
     const params: unknown[] = [tenantId, walletId];
@@ -125,7 +126,7 @@ export const addressesService = {
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -135,24 +136,25 @@ export const addressesService = {
     };
   },
 
-  getById(tenantId: string, id: string): Address {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM addresses WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getById(tenantId: string, id: string): Promise<Address> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM addresses WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Address', id);
     return mapAddress(row);
   },
 
-  getByAddress(chainId: string, address: string): Address | null {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM addresses WHERE chain_id = ? AND address = ?').get(chainId, address);
+  async getByAddress(chainId: string, address: string): Promise<Address | null> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM addresses WHERE chain_id = ? AND address = ?', [chainId, address]);
     return row ? mapAddress(row) : null;
   },
 
-  resolveCustomerDeposit(tenantId: string, address: string): { isInternal: boolean; customerId: string | null } {
-    const db = getDb();
-    const row = db
-      .prepare("SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1")
-      .get(address, tenantId) as { customer_id: string } | undefined;
+  async resolveCustomerDeposit(tenantId: string, address: string): Promise<{ isInternal: boolean; customerId: string | null }> {
+    const db = getDbClient();
+    const row = await db.get<{ customer_id: string }>(
+      "SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1",
+      [address, tenantId]
+    );
     return { isInternal: !!row, customerId: row?.customer_id ?? null };
   },
 };

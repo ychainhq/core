@@ -1,7 +1,8 @@
 import { IChainAdapter } from './types';
 import { BitcoinAdapter } from './bitcoin/adapter';
-import { EthereumPlaceholderAdapter } from './ethereum-placeholder/adapter';
+import { EthereumAdapter } from './ethereum/adapter';
 import { ApiError } from '../shared/errors/index';
+import { config } from '../config/index';
 
 class AdapterRegistry {
   private adapters = new Map<string, IChainAdapter>();
@@ -29,6 +30,12 @@ class AdapterRegistry {
 
 export const adapterRegistry = new AdapterRegistry();
 
-// Register adapters
+// BTC adapter — always registered
 adapterRegistry.register(new BitcoinAdapter());
-adapterRegistry.register(new EthereumPlaceholderAdapter());
+
+// ETH adapter — registered when ETH_NODE_URL is configured
+// Ethereum support is disabled by default (chain.is_enabled = 0 in DB).
+// Enable via: PATCH /admin/v1/chains/ethereum { isEnabled: true } + set ETH_NODE_URL
+if (config.ETH_NODE_URL) {
+  adapterRegistry.register(new EthereumAdapter(config.ETH_NODE_URL, config.ETH_NODE_AUTH));
+}

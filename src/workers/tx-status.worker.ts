@@ -43,7 +43,7 @@ export class TxStatusWorker {
   async run(): Promise<void> {
     const chainId = 'bitcoin';
     const adapter = adapterRegistry.get(chainId);
-    const pendingTxs = transactionsService.getPendingBroadcasted(chainId);
+    const pendingTxs = await transactionsService.getPendingBroadcasted(chainId);
 
     if (pendingTxs.length === 0) return;
 
@@ -64,7 +64,7 @@ export class TxStatusWorker {
         }
 
         if (newStatus !== oldStatus || status.confirmations !== tx.confirmations) {
-          transactionsService.updateStatus(tx.id, newStatus, {
+          await transactionsService.updateStatus(tx.id, newStatus, {
             block_height: status.blockHeight ?? undefined,
             block_hash: status.blockHash ?? undefined,
             confirmations: status.confirmations,
@@ -88,7 +88,7 @@ export class TxStatusWorker {
               blockHeight: status.blockHeight,
             }, chainId, undefined, tx.tenant_id ?? undefined);
 
-            ticklerService.record({
+            await ticklerService.record({
               tenantId: tx.tenant_id ?? null,
               category: 'transaction',
               subcategory: 'status_changed',
@@ -106,7 +106,7 @@ export class TxStatusWorker {
 
         // If transaction is not found in mempool or blockchain, mark as dropped
         if ((err as any)?.code === 'TX_NOT_FOUND') {
-          transactionsService.updateStatus(tx.id, 'dropped');
+          await transactionsService.updateStatus(tx.id, 'dropped');
           webhooksService.queueEvent('transaction.dropped', {
             txId: tx.id,
             txHash: tx.tx_hash,

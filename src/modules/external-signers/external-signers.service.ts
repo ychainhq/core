@@ -6,7 +6,7 @@
  */
 
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ValidationError, ConflictError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
 
@@ -50,13 +50,14 @@ export interface EnrollSignerInput {
 }
 
 export const externalSignersService = {
-  enroll(tenantId: string, input: EnrollSignerInput): ExternalSigner {
-    const db = getDb();
+  async enroll(tenantId: string, input: EnrollSignerInput): Promise<ExternalSigner> {
+    const db = getDbClient();
 
     // Check for duplicate fingerprint within tenant
-    const existing = db
-      .prepare('SELECT * FROM external_signers WHERE tenant_id = ? AND signer_fingerprint = ?')
-      .get(tenantId, input.signerFingerprint) as ExternalSigner | undefined;
+    const existing = await db.get<ExternalSigner>(
+      'SELECT * FROM external_signers WHERE tenant_id = ? AND signer_fingerprint = ?',
+      [tenantId, input.signerFingerprint]
+    );
 
     if (existing) {
       // Idempotent — return existing signer
@@ -66,7 +67,7 @@ export const externalSignersService = {
     const id = `sgn_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO external_signers (
         id, tenant_id, name, edition, status, is_enabled,
         connectivity_mode, security_level, key_provider,
@@ -74,7 +75,7 @@ export const externalSignersService = {
         capabilities, round_robin_weight, round_robin_cursor,
         created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)
-    `).run(
+    `, [
       id, tenantId, input.name,
       input.edition ?? 'community',
       input.connectivityMode ?? 'polling',
@@ -83,15 +84,15 @@ export const externalSignersService = {
       input.publicKey,
       input.signerFingerprint,
       JSON.stringify(input.capabilities),
-      now, now
-    );
+      now, now,
+    ]);
 
     logger.info('External signer enrolled', { id, tenantId, name: input.name });
     return externalSignersService.getByIdInternal(id);
   },
 
-  list(tenantId: string, filters: { status?: string; enabled?: boolean } = {}): ExternalSigner[] {
-    const db = getDb();
+  async list(tenantId: string, filters: { status?: string; enabled?: boolean } = {}): Promise<ExternalSigner[]> {
+    const db = getDbClient();
     let query = 'SELECT * FROM external_signers WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
 
@@ -105,35 +106,36 @@ export const externalSignersService = {
     }
 
     query += ' ORDER BY created_at DESC';
-    return db.prepare(query).all(...params) as ExternalSigner[];
+    return db.all<ExternalSigner>(query, params);
   },
 
-  getById(tenantId: string, signerId: string): ExternalSigner {
-    const db = getDb();
-    const row = db.prepare(
-      'SELECT * FROM external_signers WHERE id = ? AND tenant_id = ?'
-    ).get(signerId, tenantId) as ExternalSigner | undefined;
+  async getById(tenantId: string, signerId: string): Promise<ExternalSigner> {
+    const db = getDbClient();
+    const row = await db.get<ExternalSigner>(
+      'SELECT * FROM external_signers WHERE id = ? AND tenant_id = ?',
+      [signerId, tenantId]
+    );
 
     if (!row) throw new NotFoundError('ExternalSigner', signerId);
     return row;
   },
 
-  getByIdInternal(signerId: string): ExternalSigner {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM external_signers WHERE id = ?').get(signerId) as ExternalSigner | undefined;
+  async getByIdInternal(signerId: string): Promise<ExternalSigner> {
+    const db = getDbClient();
+    const row = await db.get<ExternalSigner>('SELECT * FROM external_signers WHERE id = ?', [signerId]);
     if (!row) throw new NotFoundError('ExternalSigner', signerId);
     return row;
   },
 
-  update(tenantId: string, signerId: string, input: {
+  async update(tenantId: string, signerId: string, input: {
     name?: string;
     is_enabled?: boolean;
     metadata?: Record<string, unknown>;
-  }): ExternalSigner {
+  }): Promise<ExternalSigner> {
     // Verify exists
-    externalSignersService.getById(tenantId, signerId);
+    await externalSignersService.getById(tenantId, signerId);
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
     const sets: string[] = ['updated_at = ?'];
     const params: unknown[] = [now];
@@ -143,34 +145,34 @@ export const externalSignersService = {
     if (input.metadata !== undefined) { sets.push('metadata = ?'); params.push(JSON.stringify(input.metadata)); }
 
     params.push(signerId);
-    db.prepare(`UPDATE external_signers SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    await db.run(`UPDATE external_signers SET ${sets.join(', ')} WHERE id = ?`, params);
 
     return externalSignersService.getByIdInternal(signerId);
   },
 
-  enable(tenantId: string, signerId: string): ExternalSigner {
-    externalSignersService.getById(tenantId, signerId);
-    const db = getDb();
+  async enable(tenantId: string, signerId: string): Promise<ExternalSigner> {
+    await externalSignersService.getById(tenantId, signerId);
+    const db = getDbClient();
     const now = new Date().toISOString();
-    db.prepare('UPDATE external_signers SET is_enabled = 1, status = \'active\', updated_at = ? WHERE id = ?').run(now, signerId);
+    await db.run("UPDATE external_signers SET is_enabled = 1, status = 'active', updated_at = ? WHERE id = ?", [now, signerId]);
     logger.info('External signer enabled', { signerId, tenantId });
     return externalSignersService.getByIdInternal(signerId);
   },
 
-  disable(tenantId: string, signerId: string): ExternalSigner {
-    externalSignersService.getById(tenantId, signerId);
-    const db = getDb();
+  async disable(tenantId: string, signerId: string): Promise<ExternalSigner> {
+    await externalSignersService.getById(tenantId, signerId);
+    const db = getDbClient();
     const now = new Date().toISOString();
-    db.prepare('UPDATE external_signers SET is_enabled = 0, status = \'disabled\', updated_at = ? WHERE id = ?').run(now, signerId);
+    await db.run("UPDATE external_signers SET is_enabled = 0, status = 'disabled', updated_at = ? WHERE id = ?", [now, signerId]);
     logger.info('External signer disabled', { signerId, tenantId });
     return externalSignersService.getByIdInternal(signerId);
   },
 
-  delete(tenantId: string, signerId: string): void {
-    externalSignersService.getById(tenantId, signerId);
-    const db = getDb();
-    db.prepare('UPDATE external_signers SET status = \'revoked\', is_enabled = 0, updated_at = ? WHERE id = ?')
-      .run(new Date().toISOString(), signerId);
+  async delete(tenantId: string, signerId: string): Promise<void> {
+    await externalSignersService.getById(tenantId, signerId);
+    const db = getDbClient();
+    await db.run("UPDATE external_signers SET status = 'revoked', is_enabled = 0, updated_at = ? WHERE id = ?",
+      [new Date().toISOString(), signerId]);
     logger.info('External signer revoked', { signerId, tenantId });
   },
 
@@ -178,29 +180,29 @@ export const externalSignersService = {
    * Process a heartbeat from a signer daemon.
    * Updates last_seen_at, health status, and promotes pending→active.
    */
-  heartbeat(tenantId: string, signerId: string, input: {
+  async heartbeat(tenantId: string, signerId: string, input: {
     status: string;
     version?: string;
     capabilities?: unknown;
     keyFingerprints?: string[];
     time?: string;
-  }): ExternalSigner {
-    const signer = externalSignersService.getById(tenantId, signerId);
+  }): Promise<ExternalSigner> {
+    const signer = await externalSignersService.getById(tenantId, signerId);
 
     if (signer.status === 'revoked' || signer.status === 'suspended') {
       throw new ValidationError(`Signer is ${signer.status} and cannot send heartbeats`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
     const newStatus = signer.status === 'pending' ? 'active' : signer.status;
 
-    db.prepare(`
+    await db.run(`
       UPDATE external_signers
       SET last_seen_at = ?, last_health_status = ?, status = ?,
           last_error = NULL, updated_at = ?
       WHERE id = ?
-    `).run(now, input.status, newStatus, now, signerId);
+    `, [now, input.status, newStatus, now, signerId]);
 
     return externalSignersService.getByIdInternal(signerId);
   },
@@ -209,12 +211,12 @@ export const externalSignersService = {
    * Select the best eligible signer for a given chain/asset/format
    * using health-aware round-robin.
    */
-  selectSigner(tenantId: string, chainId: string, assetId: string, payloadFormat: string): ExternalSigner | null {
-    const db = getDb();
+  async selectSigner(tenantId: string, chainId: string, assetId: string, payloadFormat: string): Promise<ExternalSigner | null> {
+    const db = getDbClient();
     const staleThresholdMs = 120_000; // 2 minutes
     const staleThreshold = new Date(Date.now() - staleThresholdMs).toISOString();
 
-    const signers = db.prepare(`
+    const signers = await db.all<ExternalSigner>(`
       SELECT * FROM external_signers
       WHERE tenant_id = ?
         AND is_enabled = 1
@@ -222,7 +224,7 @@ export const externalSignersService = {
         AND last_health_status = 'healthy'
         AND last_seen_at > ?
       ORDER BY round_robin_cursor ASC, created_at ASC
-    `).all(tenantId, staleThreshold) as ExternalSigner[];
+    `, [tenantId, staleThreshold]);
 
     // Filter by capabilities
     const eligible = signers.filter(s => {
@@ -243,8 +245,8 @@ export const externalSignersService = {
     const selected = eligible[0]!;
 
     // Update cursor for next round-robin
-    db.prepare('UPDATE external_signers SET round_robin_cursor = round_robin_cursor + 1, updated_at = ? WHERE id = ?')
-      .run(new Date().toISOString(), selected.id);
+    await db.run('UPDATE external_signers SET round_robin_cursor = round_robin_cursor + 1, updated_at = ? WHERE id = ?',
+      [new Date().toISOString(), selected.id]);
 
     return selected;
   },

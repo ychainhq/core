@@ -1469,3 +1469,232 @@ Nie wymaga przepisywania:
 - Auth, idempotency, multi-tenant middleware.
 - Routing `/v1/chains/:chain/...`.
 - Customer API.
+
+---
+
+## 13. Multi-Node Architecture (v3)
+
+> Implementacja: migracje `021_chain_nodes.sql`, `022_chain_events.sql`, `packages/btc-indexer/`, `src/modules/chain-nodes/`, `src/workers/node-health-checker.worker.ts`.
+
+### 13.1 Uzasadnienie
+
+Poprzedni model: jeden globalny `BITCOIN_RPC_URL` → jeden Bitcoin Core node → SPOF, brak izolacji tenantów.
+
+v3 wprowadza:
+- Rejestr node'ów (`chain_nodes`) z rolami i priorytetami
+- Per-tenant binding (`tenant_chain_bindings`)
+- Block indexer jako osobny proces eliminujący FWallet polling
+- `NodeHealthCheckerWorker` monitorujący dostępność node'ów
+
+### 13.2 Role node'ów
+
+| Rola | Opis | Używany do |
+|------|------|------------|
+| `full` | Pełny node z UTXO indexem | PSBT ops, fee estimation, tx lookup, broadcast |
+| `broadcast_only` | Pruned node lub relay | Tylko `sendrawtransaction` |
+
+**Kluczowa zmiana v3:** Bitcoin Core nodes są stateless z perspektywy engine — brak FWallet management (`importaddress`, `listunspent`, `createwallet`). Wszystkie operacje są bezstanowe.
+
+### 13.3 Selekcja node'a
+
+```
+resolveNode(tenantId, purpose):
+  1. Sprawdź tenant_chain_bindings WHERE tenant_id = ? AND chain_id = ?
+  2. Jeśli binding istnieje → użyj preferred_node_id (jeśli status=healthy)
+  3. Jeśli brak bindingu → użyj platform node (tenant_id IS NULL, MIN(priority), status=healthy)
+  4. Jeśli żaden dostępny → 503 NODE_UNAVAILABLE
+```
+
+### 13.4 Model danych
+
+```sql
+-- Rejestr node'ów (patrz migration 021)
+chain_nodes (id, chain_id, tenant_id, label, rpc_url, rpc_user, rpc_password_ref,
+             network, role, priority, status, block_height, ...)
+
+-- Per-tenant binding (opcjonalny)
+tenant_chain_bindings (tenant_id, chain_id, preferred_node_id, fallback_node_id)
+```
+
+`rpc_password_ref` nigdy nie przechowuje plaintext. Format: `'env:VAR_NAME'` dla platform nodes.
+
+### 13.5 NodeHealthCheckerWorker
+
+Co 30 sekund (konfigurowalne: `NODE_HEALTH_CHECK_INTERVAL_MS`):
+- Dla każdego `is_enabled=1` node: `getblockchaininfo` z timeoutem 8s
+- `healthy` → zdrowy i nie w IBD
+- `degraded` → odpowiada ale `initialblockdownload=true`
+- `unreachable` → timeout lub błąd połączenia
+- UPDATE `chain_nodes.status`, `block_height`, `last_checked_at`
+
+### 13.6 Admin API chain_nodes
+
+| Method | Path | Opis |
+|--------|------|------|
+| POST | `/admin/v1/chain-nodes` | Dodaj node |
+| GET | `/admin/v1/chain-nodes` | Lista node'ów (filtr: chainId, isEnabled) |
+| GET | `/admin/v1/chain-nodes/:nodeId` | Szczegóły |
+| PATCH | `/admin/v1/chain-nodes/:nodeId` | Aktualizuj (role, priority, isEnabled) |
+| POST | `/admin/v1/chain-nodes/:nodeId/test-connection` | Testuj RPC connectivity |
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/v1/chain-nodes` | Tenant: lista platform nodes + własnych |
+
+---
+
+## 14. Block Indexer Architecture (v3)
+
+> Implementacja: `packages/btc-indexer/`, tabela `chain_events`, `src/workers/deposit-event-processor.worker.ts`.
+
+### 14.1 Problem z FWallet polling
+
+`DepositMonitorWorker` (v2) odpytuje `listunspent` na FWallecie per tenant:
+- O(aktywne UTXO) per tenant per cykl
+- Wymaga FWallet management (create, import, sync między node'ami)
+- Nie skaluje przy wielu tenantach na jednym node'zie
+
+### 14.2 Rozwiązanie: btc-indexer
+
+Osobny lekki proces (`packages/btc-indexer`, ~500 linii TypeScript):
+
+```
+Bitcoin Core node
+       │ getblock(height, verbosity=2)
+       ▼
+BtcIndexer (pętla co 5s)
+  ├── BlockScanner    — dla każdego bloku: match tx.vout.address IN addresses
+  ├── MempoolScanner  — dla nowych txów w mempoolu: to samo matching
+  └── AddressRegistry — in-memory Set adresów z SQLite, reload co 60s
+       │ INSERT chain_events ON CONFLICT DO NOTHING
+       ▼
+chain_events tabela (SQLite/PostgreSQL)
+       │ SELECT WHERE processed=0
+       ▼
+DepositEventProcessorWorker (engine)
+  — ta sama logika biznesowa co DepositMonitorWorker
+  — deposits, cached_utxos, ledger, webhooks, ticklers
+```
+
+### 14.3 Złożoność algorytmu
+
+- v2 (FWallet): O(UTXOs per tenant) × N tenantów per cykl
+- v3 (indexer): O(transakcji w bloku) — stały koszt, niezależny od liczby adresów/tenantów
+
+Blok Bitcoin: ~2500 tx / 10 min → indexer przetwarza go w sekundy na dowolnym sprzęcie.
+
+### 14.4 Wielokrotne node'y, jeden stream zdarzeń
+
+```
+INDEXER-1 (BTC-NODE-1) ─┐
+INDEXER-2 (BTC-NODE-2) ─┼──► chain_events (ON CONFLICT DO NOTHING)
+INDEXER-3 (BTC-NODE-3) ─┘
+
+Deduplication: UNIQUE(chain_id, tx_hash, vout_index, event_type, ...)
+Engine: przetwarza każde zdarzenie dokładnie raz
+Failover: jeśli jeden indexer pada, pozostałe nadal wykrywają depozyty
+```
+
+### 14.5 Tabela `chain_events`
+
+```sql
+chain_events (
+  id, chain_id, node_id, event_type,   -- 'utxo_created' | 'utxo_spent'
+  tx_hash, vout_index,                  -- dla utxo_created
+  spent_tx_hash, spent_vout,            -- dla utxo_spent
+  address, amount_raw,
+  contract_address, log_index,          -- dla ETH/TRON (NULL dla BTC)
+  block_height, block_hash, confirmations,
+  processed, processed_at, created_at
+)
+```
+
+### 14.6 Transition period (FAZA 1)
+
+`DepositMonitorWorker` (v2) i `DepositEventProcessorWorker` (v3) działają równolegle.
+`deposits.upsert()` jest idempotent (`UNIQUE(chain_id, tx_hash, vout)`), więc brak duplikatów.
+Po wdrożeniu btc-indexer i weryfikacji → `DepositMonitorWorker` usunięty (FAZA 2).
+
+### 14.7 Rozszerzenie na ETH/TRON
+
+Nowy chain = nowy indexer binary. Różnice:
+- `eth-indexer`: `eth_getBlockByNumber` + `eth_getLogs` (ERC-20 Transfer events)
+- `tron-indexer`: TronGrid API lub własny full node
+
+Tabela `chain_events` obsługuje wszystkie chainy przez `chain_id` + `contract_address`.
+
+---
+
+## Appendix C: Granice adapterów dla przyszłych chainów
+
+### C.1 Interfejsy do implementacji per chain
+
+```typescript
+interface ChainNodeClient      // niskopoziomowy klient RPC/HTTP
+interface ChainIndexer         // monitorowanie adresów — implementacja zależy od chain
+interface TxBuilder            // budowanie unsigned tx (BTC: PSBT, ETH: raw, TRON: trigger)
+interface Broadcaster          // sendrawtransaction / eth_sendRawTransaction
+interface FeeEstimator         // sat/vbyte | gas+EIP1559 | energy+bandwidth
+interface StateLocker          // UTXO lock (BTC) | nonce reservation (ETH/TRON)
+```
+
+### C.2 Porównanie chainów
+
+| Aspekt | BTC | ETH/USDC | TRON/USDT |
+|--------|-----|----------|-----------|
+| Model konta | UTXO | Account + nonce | Account + energy |
+| Monitorowanie | btc-indexer (bloki) | eth-indexer (getLogs) | tron-indexer (TronGrid) |
+| TX format | PSBT → raw hex | EIP-1559 type 2 | TRC-20 trigger |
+| Coin selection | UTXO (cached_utxos) | Brak (account balance) | Brak (account balance) |
+| Node state | Stateless (v3) | Stateless z natury | Stateless z natury |
+| FWallet | Usunięty (v3) | Nigdy nie było | Nigdy nie było |
+
+### C.3 Co NIE wymaga zmian przy dodaniu ETH
+
+- `payment_requests`, `deposits`, `ledger_*` — chain-agnostic
+- Webhook delivery system
+- Auth, idempotency, multi-tenant middleware
+- Customer API, RBAC
+- `chain_nodes`, `chain_events` — już chain-agnostic (chain_id column)
+
+---
+
+## 15. Ścieżka migracji do PostgreSQL (FAZA 2)
+
+### 15.1 Motywacja
+
+SQLite ceiling dla enterprise:
+- Plik > 100GB → rosnąca latencja
+- Sustained writes > 5K/sec → WAL lock contention
+- Active-active engine → brak (SQLite = single writer)
+
+PostgreSQL odblokowuje:
+- Active-active engine (concurrent workers przez `SELECT FOR UPDATE SKIP LOCKED`)
+- Horizontal scaling API layer
+- Read replicas dla reporting
+- Connection pooling (PgBouncer)
+
+### 15.2 Co wymaga zmiany
+
+| Komponent | Zmiana |
+|-----------|--------|
+| `src/db/sqlite.ts` | → `src/db/postgres.ts` (postgres.js) |
+| Wszystkie serwisy | sync API → async (await query()) |
+| Worker coordination | `worker_leases` → `SELECT FOR UPDATE SKIP LOCKED` |
+| `WalCheckpointWorker` | Usunięty (PostgreSQL zarządza WAL) |
+| Testy | `:memory:` SQLite → PostgreSQL test container |
+| `better-sqlite3` dep | → `postgres` package |
+
+### 15.3 Co NIE wymaga zmiany
+
+- Schemat tabel (SQL jest kompatybilny, drobne różnice składni)
+- Logika biznesowa wszystkich serwisów
+- REST API, MCP, webhooks
+- btc-indexer (ma własne połączenie DB)
+
+### 15.4 RPO/RTO przy SQLite (do migracji)
+
+- **RPO:** ~5 minut (WAL backup co 5 min przez `backup.sh`)
+- **RTO:** ~2-5 minut (kopia pliku + restart procesu, manual failover)
+- Nie ma automatic failover — wymaga operatora
+- Dobra odpowiedź dla beta / wczesne enterprise; niewystarczające dla krytycznej infrastruktury

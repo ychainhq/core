@@ -1,18 +1,20 @@
 import { runMigrations } from '../../src/db/migrate';
 import { runSeed } from '../../src/db/seed';
 import { closeDb, getDb } from '../../src/db/sqlite';
+import { resetDbClient } from '../../src/db/client';
 import { ticklerService } from '../../src/shared/tickler/tickler.service';
 
-beforeEach(() => {
+beforeEach(async () => {
   closeDb();
-  runMigrations();
-  runSeed();
+  resetDbClient();
+  await runMigrations();
+  await runSeed();
 });
 
 afterAll(() => closeDb());
 
 describe('ticklerService.record()', () => {
-  it('inserts a tickler and returns nothing', () => {
+  it('inserts a tickler and returns nothing', async () => {
     expect(() =>
       ticklerService.record({
         tenantId: 'tenant_default',
@@ -92,46 +94,46 @@ describe('ticklerService.list()', () => {
     ticklerService.record({ tenantId: null, category: 'platform', subcategory: 'tenant.created', entityId: 'e3' });
   });
 
-  it('returns tenant-scoped ticklers only', () => {
-    const { data } = ticklerService.list({ tenantId: 'tenant_default', includeGlobal: false });
+  it('returns tenant-scoped ticklers only', async () => {
+    const { data } = await ticklerService.list({ tenantId: 'tenant_default', includeGlobal: false });
     expect(data.every(t => t.tenant_id === 'tenant_default')).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('includes global ticklers when includeGlobal=true', () => {
-    const { data } = ticklerService.list({ tenantId: 'tenant_default', includeGlobal: true });
+  it('includes global ticklers when includeGlobal=true', async () => {
+    const { data } = await ticklerService.list({ tenantId: 'tenant_default', includeGlobal: true });
     const global = data.filter(t => t.tenant_id === null);
     expect(global.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('filters by category', () => {
-    const { data } = ticklerService.list({ tenantId: 'tenant_default', category: 'wallet' });
+  it('filters by category', async () => {
+    const { data } = await ticklerService.list({ tenantId: 'tenant_default', category: 'wallet' });
     expect(data.every(t => t.category === 'wallet')).toBe(true);
   });
 
-  it('filters by subcategory', () => {
-    const { data } = ticklerService.list({ tenantId: 'tenant_default', subcategory: 'created' });
+  it('filters by subcategory', async () => {
+    const { data } = await ticklerService.list({ tenantId: 'tenant_default', subcategory: 'created' });
     expect(data.every(t => t.subcategory === 'created')).toBe(true);
   });
 
-  it('filters by entity_id', () => {
-    const { data } = ticklerService.list({ tenantId: 'tenant_default', entityId: 'e1' });
+  it('filters by entity_id', async () => {
+    const { data } = await ticklerService.list({ tenantId: 'tenant_default', entityId: 'e1' });
     expect(data).toHaveLength(1);
     expect(data[0].entity_id).toBe('e1');
   });
 
-  it('paginates with limit and returns nextCursor', () => {
+  it('paginates with limit and returns nextCursor', async () => {
     // seed additional ticklers so we have enough for pagination
     for (let i = 0; i < 5; i++) {
       ticklerService.record({ tenantId: 'tenant_default', category: 'wallet', subcategory: 'created', entityId: `extra_${i}` });
     }
-    const { data, nextCursor } = ticklerService.list({ tenantId: 'tenant_default', limit: 2 });
+    const { data, nextCursor } = await ticklerService.list({ tenantId: 'tenant_default', limit: 2 });
     expect(data).toHaveLength(2);
     expect(nextCursor).toBeTruthy();
   });
 
-  it('returns null nextCursor on last page', () => {
-    const { nextCursor } = ticklerService.list({ tenantId: 'tenant_default', limit: 100 });
+  it('returns null nextCursor on last page', async () => {
+    const { nextCursor } = await ticklerService.list({ tenantId: 'tenant_default', limit: 100 });
     expect(nextCursor).toBeNull();
   });
 });

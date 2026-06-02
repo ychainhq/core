@@ -4,8 +4,10 @@
 
 - **Runtime:** Node.js 20+, TypeScript
 - **Framework:** Express 4
-- **Baza danych:** SQLite (better-sqlite3, WAL mode, foreign keys ON) — jeden plik `data/crypto-api.sqlite`
-- **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — brak kluczy prywatnych w silniku
+- **Baza danych (dev):** SQLite (better-sqlite3, WAL mode, foreign keys ON) — `data/crypto-api.sqlite`
+- **Baza danych (enterprise):** PostgreSQL 16+ — ścieżka migracji w `docs/v3-architecture-plan.md`
+- **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — **stateless** (bez FWallet), brak kluczy prywatnych
+- **Block indexer:** `packages/btc-indexer` — osobny proces skanujący bloki; engine konsumuje zdarzenia z tabeli `chain_events`
 - **MCP:** `@modelcontextprotocol/sdk` — silnik wystawia narzędzia MCP na `/mcp/tenant`, `/mcp/customer`, `/mcp/admin`
 - **Walidacja:** `zod` (body + query params)
 - **Testy:** Jest + ts-jest + supertest; wszystkie testy w `tests/`
@@ -13,11 +15,19 @@
 
 ## Kluczowe koncepty
 
-- **FWallet** (`btc_{tenantId}`) — portfel watch-only w Bitcoin Core; jeden na tenanta; nie jest widoczny przez API.
+- **FWallet** — USUNIĘTY w v3. Bitcoin Core jest teraz stateless dla engine; nie tworzymy, nie importujemy, nie odpytujemy FWalletów.
 - **LWallet** — rekord portfela w bazie chain-api; role: `customer_deposits`, `tenant_hot`, `tenant_cold`, `watch_only`.
 - **Tenant** — klient biznesowy platformy; izolacja przez `WHERE tenant_id = ?` we wszystkich zapytaniach SQL.
-- **Customer** — końcowy użytkownik tenanta; konstrukt ledgerowy, nie ma własnego FWallet.
+- **Customer** — końcowy użytkownik tenanta; konstrukt ledgerowy.
 - **Ledger** — jedyne źródło prawdy o saldach; Bitcoin Core to infrastruktura chainowa.
+- **chain_events** — tabela zdarzeń on-chain wypełniana przez indexery (btc/eth/tron). Engine NIE odpytuje chain nodes o depozyty — tylko przetwarza `chain_events`.
+- **btc-indexer** — `packages/btc-indexer`. Skanuje bloki Bitcoin, pisze do `chain_events`. Zero wiedzy o tenantach.
+- **eth-indexer** — `packages/eth-indexer`. Skanuje bloki EVM + logi ERC-20 Transfer.
+- **tron-indexer** — `packages/tron-indexer`. Skanuje TRON przez TronGrid REST API.
+- **chain_nodes** — rejestr Bitcoin Core i innych node'ów. Stateless (brak FWallet). Role: `full` / `broadcast_only`.
+- **engine_instances** — rejestr instancji engine'u w klastrze. Leader election via DB lease (FAZA 4).
+- **ClusterService** — zarządza rejestracją i leader election. `CLUSTER_ENABLED=true` + `ENGINE_URL` + `CLUSTER_PEER_URLS` aktywuje klaster.
+- **EthereumAdapter** — `chain-adapters/ethereum/adapter.ts`. Implementuje `IChainAdapter` dla Ethereum. Aktywowany gdy `ETH_NODE_URL` ustawiony.
 - `tenant_id` w tabeli `cached_utxos` + `is_locked` to krytyczna granica bezpieczeństwa — coin selection nigdy nie może przekroczyć granicy tenanta.
 
 ## X-Actor-Token — RBAC dla użytkowników tenanta
@@ -490,6 +500,31 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | GET | `/admin/v1/ticklers` | ✅ | ✅ | ✅ `chainapi_admin_list_ticklers` |
 | GET | `/admin/v1/tenants/:tenantId/ticklers` | ✅ | ✅ | ✅ `chainapi_admin_list_tenant_ticklers` |
 
+### Chain Nodes (v3 — multi-node infrastructure)
+
+| Method | Path | MVP | Testy | MCP |
+|--------|------|-----|-------|-----|
+| POST | `/admin/v1/chain-nodes` | ✅ | ✅ | ❌ |
+| GET | `/admin/v1/chain-nodes` | ✅ | ✅ | ❌ |
+| GET | `/admin/v1/chain-nodes/:nodeId` | ✅ | ✅ | ❌ |
+| PATCH | `/admin/v1/chain-nodes/:nodeId` | ✅ | ✅ | ❌ |
+| POST | `/admin/v1/chain-nodes/:nodeId/test-connection` | ✅ | ❌ | ❌ |
+| POST | `/v1/chain-nodes` | ✅ | ❌ | ❌ |
+| GET | `/v1/chain-nodes` | ✅ | ✅ | ❌ |
+| GET | `/v1/chain-nodes/:nodeId` | ✅ | ❌ | ❌ |
+| PATCH | `/v1/chain-nodes/:nodeId` | ✅ | ❌ | ❌ |
+| DELETE | `/v1/chain-nodes/:nodeId` | ✅ | ❌ | ❌ |
+| POST | `/v1/chain-nodes/:nodeId/set-primary` | ✅ | ❌ | ❌ |
+| POST | `/v1/chain-nodes/:nodeId/test-connection` | ✅ | ❌ | ❌ |
+
+### Engine Cluster HA (FAZA 4)
+
+| Method | Path | MVP | Testy | MCP |
+|--------|------|-----|-------|-----|
+| GET | `/admin/v1/cluster/status` | ✅ | ❌ | ❌ |
+| POST | `/internal/cluster/heartbeat` | ✅ | ❌ | ❌ |
+| POST | `/internal/cluster/claim-leadership` | ✅ | ❌ | ❌ |
+
 ## Zasady utrzymania dokumentacji
 
 1. **Tabela endpointów powyżej** — aktualizuj przy każdej zmianie API (add/modify/remove endpoint).
@@ -510,6 +545,15 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 - Tabela `ticklers` jest write-once: nigdy nie modyfikuj ani nie usuwaj wierszy. Tylko INSERT.
 - Workers używają `actorLogin: 'system:{worker-name}'`; router-level endpointy używają `resolveActorLogin(req)`.
 - Tickler call ZAWSZE po udanej mutacji (nie przed), aby entity_id był znany.
+
+### Zasady v3 — chain_events i btc-indexer
+
+- **Engine NIE wywołuje `listunspent`, `importaddress`, `importdescriptors`, `createwallet`, `loadwallet`** w kontekście detekcji depozytów. Te operacje są domeną `btc-indexer`.
+- **`DepositEventProcessor`** przetwarza zdarzenia z `chain_events` (INSERT ON CONFLICT DO NOTHING przez indexer). Logika biznesowa (deposits, ledger, webhooks) pozostaje w engine.
+- **`DepositMonitorWorker`** jest przestarzały (deprecated). Działa obok `DepositEventProcessor` w fazie przejściowej; zostanie usunięty po zakończeniu FAZY 2 (PostgreSQL).
+- **chain_node credentials**: `rpc_password_ref` w formacie `'env:VAR_NAME'` → engine czyta z `process.env` przy connect. Nigdy nie loguj ani nie zwracaj w API.
+- **`pg_notify`** po rejestracji nowego adresu: `SELECT pg_notify('btc_address_registered', address)` — powiadamia btc-indexer o nowych adresach w czasie rzeczywistym (SQLite: brak tej funkcji, indexer robi pełny reload co 60s).
+- `chain_events.processed = FALSE` + `INSERT ON CONFLICT DO NOTHING` gwarantuje exactly-once processing nawet gdy wiele indexerów raportuje ten sam tx.
 
 ### Enkapsulacja SQL — właścicielstwo tabel
 
@@ -535,6 +579,9 @@ Każdy serwis jest **jedynym właścicielem** swoich tabel. SQL (INSERT/UPDATE/D
 | `tenants.service` | `tenants`, `tenant_configs` |
 | `tickler.service` | `ticklers` |
 | `idempotency.service` | `idempotency_keys` |
+| `chain-nodes.service` (v3) | `chain_nodes`, `tenant_chain_bindings` |
+| `chain-events.service` (v3) | `chain_events` — tylko UPDATE processed=TRUE; INSERT należy do indexerów |
+| `cluster.service` (FAZA 4) | `engine_instances` |
 
 **Reguły:**
 - Jeśli serwis A potrzebuje zmutować dane należące do serwisu B → wywołaj metodę serwisu B, nie pisz SQL bezpośrednio.

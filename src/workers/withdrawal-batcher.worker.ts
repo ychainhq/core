@@ -7,7 +7,7 @@
  * - oldest withdrawal age >= btc_max_batch_age_seconds
  */
 
-import { getDb } from '../db/sqlite';
+import { getDbClient } from '../db/client';
 import { withdrawalBatcherService } from '../modules/withdrawal-batches/withdrawal-batcher.service';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
@@ -52,12 +52,12 @@ export class WithdrawalBatcherWorker {
 
   async run(): Promise<void> {
     // Find tenants with queued BTC withdrawals
-    const db = getDb();
-    const tenantsWithQueued = db.prepare(`
+    const db = getDbClient();
+    const tenantsWithQueued = await db.all<{ tenant_id: string }>(`
       SELECT DISTINCT tenant_id
       FROM customer_withdrawals
       WHERE status = 'queued' AND chain_id = 'bitcoin'
-    `).all() as Array<{ tenant_id: string }>;
+    `);
 
     if (tenantsWithQueued.length === 0) return;
 

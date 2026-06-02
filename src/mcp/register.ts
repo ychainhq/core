@@ -25,7 +25,7 @@ function mcpHandler(kind: McpServerKind) {
     let transport;
     try {
       assertAllowedOrigin(req);
-      const ctx = resolveMcpContext(req, kind);
+      const ctx = await resolveMcpContext(req, kind);
       server = createMcpServer(ctx);
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,

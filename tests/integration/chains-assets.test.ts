@@ -100,7 +100,7 @@ describe('GET /v1/chains/:chain/assets/:asset', () => {
   });
 
   it('returns 404 for unknown chain', async () => {
-    const res = await request(app).get('/v1/chains/ethereum/assets/ETH').set(AUTH);
+    const res = await request(app).get('/v1/chains/solana/assets/SOL').set(AUTH);
     expect(res.status).toBe(404);
   });
 });

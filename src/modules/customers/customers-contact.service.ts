@@ -1,4 +1,4 @@
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { CustomerContact, PostalAddress } from './customers.types';
 
@@ -16,11 +16,12 @@ function mapContact(row: any): CustomerContact {
   };
 }
 
-function guardCustomer(tenantId: string, customerId: string): void {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT id FROM customers WHERE id = ? AND tenant_id = ?')
-    .get(customerId, tenantId);
+async function guardCustomer(tenantId: string, customerId: string): Promise<void> {
+  const db = getDbClient();
+  const row = await db.get(
+    'SELECT id FROM customers WHERE id = ? AND tenant_id = ?',
+    [customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('Customer', customerId);
 }
 
@@ -34,33 +35,35 @@ export interface UpsertContactInput {
 }
 
 export const customersContactService = {
-  upsert(tenantId: string, customerId: string, input: UpsertContactInput): CustomerContact {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
+  async upsert(tenantId: string, customerId: string, input: UpsertContactInput): Promise<CustomerContact> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
 
-    const existing = db
-      .prepare('SELECT 1 FROM customer_contact WHERE customer_id = ?')
-      .get(customerId);
+    const existing = await db.get(
+      'SELECT 1 FROM customer_contact WHERE customer_id = ?',
+      [customerId]
+    );
     const now = new Date().toISOString();
 
     if (!existing) {
-      db.prepare(`
-        INSERT INTO customer_contact (
+      await db.run(
+        `INSERT INTO customer_contact (
           customer_id, tenant_id, email, email_verified, phone, phone_verified,
           preferred_language, addresses, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        customerId, tenantId,
-        input.email ?? null,
-        input.email_verified ? 1 : 0,
-        input.phone ?? null,
-        input.phone_verified ? 1 : 0,
-        input.preferred_language ?? null,
-        input.addresses ? JSON.stringify(input.addresses) : null,
-        now
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          customerId, tenantId,
+          input.email ?? null,
+          input.email_verified ? 1 : 0,
+          input.phone ?? null,
+          input.phone_verified ? 1 : 0,
+          input.preferred_language ?? null,
+          input.addresses ? JSON.stringify(input.addresses) : null,
+          now,
+        ]
       );
       return mapContact(
-        db.prepare('SELECT * FROM customer_contact WHERE customer_id = ?').get(customerId)
+        await db.get<any>('SELECT * FROM customer_contact WHERE customer_id = ?', [customerId])
       );
     }
 
@@ -80,22 +83,24 @@ export const customersContactService = {
     if (sets.length > 0) {
       sets.push('updated_at = ?');
       params.push(now, customerId);
-      db.prepare(
-        `UPDATE customer_contact SET ${sets.join(', ')} WHERE customer_id = ?`
-      ).run(...params);
+      await db.run(
+        `UPDATE customer_contact SET ${sets.join(', ')} WHERE customer_id = ?`,
+        params
+      );
     }
 
     return mapContact(
-      db.prepare('SELECT * FROM customer_contact WHERE customer_id = ?').get(customerId)
+      await db.get<any>('SELECT * FROM customer_contact WHERE customer_id = ?', [customerId])
     );
   },
 
-  get(tenantId: string, customerId: string): CustomerContact | null {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
-    const row = db
-      .prepare('SELECT * FROM customer_contact WHERE customer_id = ? AND tenant_id = ?')
-      .get(customerId, tenantId) as any;
+  async get(tenantId: string, customerId: string): Promise<CustomerContact | null> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
+    const row = await db.get<any>(
+      'SELECT * FROM customer_contact WHERE customer_id = ? AND tenant_id = ?',
+      [customerId, tenantId]
+    );
     if (!row) return null;
     return mapContact(row);
   },

@@ -58,7 +58,7 @@ const apiKeySchema = z.object({
 tenantsAdminRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = createSchema.parse(req.body);
-    const tenant = tenantsService.create(body);
+    const tenant = await tenantsService.create(body);
     await tenantsService.provision(tenant.id, body.assets);
     ticklerService.record({
       tenantId: null,
@@ -76,10 +76,10 @@ tenantsAdminRouter.post('/', async (req: Request, res: Response, next: NextFunct
 });
 
 // GET /admin/v1/tenants
-tenantsAdminRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+tenantsAdminRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = listQuerySchema.parse(req.query);
-    const result = tenantsService.list(query);
+    const result = await tenantsService.list(query);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -90,9 +90,9 @@ tenantsAdminRouter.get('/', (req: Request, res: Response, next: NextFunction) =>
 });
 
 // GET /admin/v1/tenants/:tenantId
-tenantsAdminRouter.get('/:tenantId', (req: Request, res: Response, next: NextFunction) => {
+tenantsAdminRouter.get('/:tenantId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = tenantsService.getById(req.params['tenantId']!);
+    const tenant = await tenantsService.getById(req.params['tenantId']!);
     res.json({ data: tenant });
   } catch (err) {
     next(err);
@@ -100,11 +100,11 @@ tenantsAdminRouter.get('/:tenantId', (req: Request, res: Response, next: NextFun
 });
 
 // PATCH /admin/v1/tenants/:tenantId
-tenantsAdminRouter.patch('/:tenantId', (req: Request, res: Response, next: NextFunction) => {
+tenantsAdminRouter.patch('/:tenantId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = updateSchema.parse(req.body);
-    const prev = tenantsService.getById(req.params['tenantId']!);
-    const tenant = tenantsService.update(req.params['tenantId']!, body);
+    const prev = await tenantsService.getById(req.params['tenantId']!);
+    const tenant = await tenantsService.update(req.params['tenantId']!, body);
     ticklerService.record({
       tenantId: null,
       category: 'platform',
@@ -121,9 +121,9 @@ tenantsAdminRouter.patch('/:tenantId', (req: Request, res: Response, next: NextF
 });
 
 // GET /admin/v1/tenants/:tenantId/config
-tenantsAdminRouter.get('/:tenantId/config', (req: Request, res: Response, next: NextFunction) => {
+tenantsAdminRouter.get('/:tenantId/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = tenantsService.getById(req.params['tenantId']!);
+    const tenant = await tenantsService.getById(req.params['tenantId']!);
     res.json({ data: tenant.config });
   } catch (err) {
     next(err);
@@ -134,7 +134,7 @@ tenantsAdminRouter.get('/:tenantId/config', (req: Request, res: Response, next: 
 tenantsAdminRouter.patch('/:tenantId/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = configSchema.parse(req.body);
-    const prev = tenantsService.getById(req.params['tenantId']!);
+    const prev = await tenantsService.getById(req.params['tenantId']!);
     const tenantConfig = await tenantsService.updateConfig(req.params['tenantId']!, body);
     ticklerService.record({
       tenantId: null,
@@ -152,10 +152,10 @@ tenantsAdminRouter.patch('/:tenantId/config', async (req: Request, res: Response
 });
 
 // POST /admin/v1/tenants/:tenantId/api-keys
-tenantsAdminRouter.post('/:tenantId/api-keys', (req: Request, res: Response, next: NextFunction) => {
+tenantsAdminRouter.post('/:tenantId/api-keys', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = apiKeySchema.parse(req.body);
-    const result = tenantsService.generateApiKey(req.params['tenantId']!, body.name);
+    const result = await tenantsService.generateApiKey(req.params['tenantId']!, body.name);
     ticklerService.record({
       tenantId: null,
       category: 'platform',

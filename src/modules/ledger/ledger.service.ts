@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { addSatoshi } from '../../shared/money/index';
 import { toUnixTs } from '../../shared/time/index';
@@ -56,7 +56,7 @@ function mapEntry(row: any): LedgerEntry {
 }
 
 export const ledgerService = {
-  createAccount(tenantId: string, input: {
+  async createAccount(tenantId: string, input: {
     walletId?: string;
     customerId?: string;
     chainId: string;
@@ -64,38 +64,39 @@ export const ledgerService = {
     accountType?: string;
     name: string;
     metadata?: Record<string, unknown>;
-  }): LedgerAccount {
-    const db = getDb();
+  }): Promise<LedgerAccount> {
+    const db = getDbClient();
     const id = `lacc_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO ledger_accounts (id, tenant_id, wallet_id, customer_id, chain_id, asset_id, account_type, name, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      tenantId,
-      input.walletId ?? null,
-      input.customerId ?? null,
-      input.chainId,
-      input.assetId,
-      input.accountType ?? 'customer_available',
-      input.name,
-      input.metadata ? JSON.stringify(input.metadata) : null,
-      now,
-      now
+    await db.run(
+      `INSERT INTO ledger_accounts (id, tenant_id, wallet_id, customer_id, chain_id, asset_id, account_type, name, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        tenantId,
+        input.walletId ?? null,
+        input.customerId ?? null,
+        input.chainId,
+        input.assetId,
+        input.accountType ?? 'customer_available',
+        input.name,
+        input.metadata ? JSON.stringify(input.metadata) : null,
+        now,
+        now,
+      ]
     );
 
     return ledgerService.getAccountById(tenantId, id);
   },
 
-  listAccounts(tenantId: string, filters: {
+  async listAccounts(tenantId: string, filters: {
     walletId?: string;
     customerId?: string;
     limit?: number;
     cursor?: string;
-  } = {}): { data: LedgerAccount[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: LedgerAccount[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM ledger_accounts WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -107,7 +108,7 @@ export const ledgerService = {
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -118,27 +119,28 @@ export const ledgerService = {
   },
 
   // Tenant-scoped lookup for API handlers
-  getAccountById(tenantId: string, id: string): LedgerAccount {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM ledger_accounts WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getAccountById(tenantId: string, id: string): Promise<LedgerAccount> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM ledger_accounts WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('LedgerAccount', id);
     return mapAccount(row);
   },
 
   // Internal lookup without tenant filter (used by workers and transfers)
-  getAccountByIdInternal(id: string): LedgerAccount {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM ledger_accounts WHERE id = ?').get(id);
+  async getAccountByIdInternal(id: string): Promise<LedgerAccount> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM ledger_accounts WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('LedgerAccount', id);
     return mapAccount(row);
   },
 
-  getBalance(accountId: string): LedgerBalance {
-    const db = getDb();
+  async getBalance(accountId: string): Promise<LedgerBalance> {
+    const db = getDbClient();
     // rowid is always insertion order in SQLite — use as tiebreaker when timestamps collide
-    const latestEntry = db
-      .prepare('SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY rowid DESC LIMIT 1')
-      .get(accountId) as LedgerEntry | undefined;
+    const latestEntry = await db.get<LedgerEntry>(
+      'SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY rowid DESC LIMIT 1',
+      [accountId]
+    );
 
     if (!latestEntry) {
       return { pending: '0', settled: '0', total: '0' };
@@ -151,11 +153,11 @@ export const ledgerService = {
     return { pending, settled, total };
   },
 
-  listEntries(accountId: string, opts: {
+  async listEntries(accountId: string, opts: {
     limit?: number;
     cursor?: string;
-  } = {}): { data: LedgerEntry[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: LedgerEntry[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(opts.limit ?? 20, 100);
     let query = 'SELECT * FROM ledger_entries WHERE ledger_account_id = ?';
     const params: unknown[] = [accountId];
@@ -167,7 +169,7 @@ export const ledgerService = {
     query += ' ORDER BY rowid DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -180,7 +182,7 @@ export const ledgerService = {
   /**
    * Create a ledger entry. Returns updated balance.
    */
-  addEntry(input: {
+  async addEntry(input: {
     ledgerAccountId: string;
     type: string;
     amountRaw: string;    // positive = credit, negative = debit
@@ -188,11 +190,11 @@ export const ledgerService = {
     referenceId?: string;
     isPending?: boolean;  // true = affects pending balance, false = affects settled balance
     metadata?: Record<string, unknown>;
-  }): { entry: LedgerEntry; balance: LedgerBalance } {
-    const db = getDb();
+  }): Promise<{ entry: LedgerEntry; balance: LedgerBalance }> {
+    const db = getDbClient();
 
     // Get current balance
-    const currentBalance = ledgerService.getBalance(input.ledgerAccountId);
+    const currentBalance = await ledgerService.getBalance(input.ledgerAccountId);
     const amount = BigInt(input.amountRaw);
 
     let newPending = BigInt(currentBalance.pending);
@@ -218,26 +220,30 @@ export const ledgerService = {
     const id = `lent_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO ledger_entries
+    await db.run(
+      `INSERT INTO ledger_entries
         (id, ledger_account_id, type, amount_raw, reference_type, reference_id,
          balance_pending_raw, balance_settled_raw, metadata, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      input.ledgerAccountId,
-      input.type,
-      input.amountRaw,
-      input.referenceType ?? null,
-      input.referenceId ?? null,
-      newPending.toString(),
-      newSettled.toString(),
-      input.metadata ? JSON.stringify(input.metadata) : null,
-      now
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.ledgerAccountId,
+        input.type,
+        input.amountRaw,
+        input.referenceType ?? null,
+        input.referenceId ?? null,
+        newPending.toString(),
+        newSettled.toString(),
+        input.metadata ? JSON.stringify(input.metadata) : null,
+        now,
+      ]
     );
 
-    const entry = mapEntry(db.prepare('SELECT * FROM ledger_entries WHERE id = ?').get(id));
-    const account = db.prepare('SELECT tenant_id FROM ledger_accounts WHERE id = ?').get(input.ledgerAccountId) as { tenant_id: string | null } | undefined;
+    const entry = mapEntry(await db.get('SELECT * FROM ledger_entries WHERE id = ?', [id]));
+    const account = await db.get<{ tenant_id: string | null }>(
+      'SELECT tenant_id FROM ledger_accounts WHERE id = ?',
+      [input.ledgerAccountId]
+    );
     ticklerService.record({
       tenantId: account?.tenant_id ?? null,
       category: 'ledger',
@@ -258,19 +264,19 @@ export const ledgerService = {
   /**
    * Atomic transfer between two ledger accounts.
    */
-  transfer(input: {
+  async transfer(input: {
     fromLedgerAccountId: string;
     toLedgerAccountId: string;
     assetId: string;
     amountRaw: string;
     reference?: string;
     isPending?: boolean;
-  }): { debit: LedgerEntry; credit: LedgerEntry } {
-    const db = getDb();
+  }): Promise<{ debit: LedgerEntry; credit: LedgerEntry }> {
+    const db = getDbClient();
 
     // Validate both accounts exist and are for the same asset
-    const fromAccount = ledgerService.getAccountByIdInternal(input.fromLedgerAccountId);
-    const toAccount = ledgerService.getAccountByIdInternal(input.toLedgerAccountId);
+    const fromAccount = await ledgerService.getAccountByIdInternal(input.fromLedgerAccountId);
+    const toAccount = await ledgerService.getAccountByIdInternal(input.toLedgerAccountId);
 
     if (fromAccount.asset_id !== input.assetId || toAccount.asset_id !== input.assetId) {
       throw new Error('Asset mismatch in ledger transfer');
@@ -278,9 +284,9 @@ export const ledgerService = {
 
     const transferId = `transfer_${crypto.randomBytes(8).toString('hex')}`;
 
-    // Execute in a SQLite transaction for atomicity
-    const doTransfer = db.transaction(() => {
-      const debitResult = ledgerService.addEntry({
+    // Execute in a transaction for atomicity
+    return await db.transaction(async (tx) => {
+      const debitResult = await ledgerService.addEntry({
         ledgerAccountId: input.fromLedgerAccountId,
         type: 'transfer_out',
         amountRaw: (-BigInt(input.amountRaw)).toString(),
@@ -290,7 +296,7 @@ export const ledgerService = {
         metadata: input.reference ? { reference: input.reference } : undefined,
       });
 
-      const creditResult = ledgerService.addEntry({
+      const creditResult = await ledgerService.addEntry({
         ledgerAccountId: input.toLedgerAccountId,
         type: 'transfer_in',
         amountRaw: input.amountRaw,
@@ -302,44 +308,41 @@ export const ledgerService = {
 
       return { debit: debitResult.entry, credit: creditResult.entry };
     });
-
-    return doTransfer();
   },
 
   /**
    * Find ledger account for a wallet and asset.
    */
-  findAccountByWalletAndAsset(walletId: string, assetId: string): LedgerAccount | null {
-    const db = getDb();
-    const row = db
-      .prepare('SELECT * FROM ledger_accounts WHERE wallet_id = ? AND asset_id = ? LIMIT 1')
-      .get(walletId, assetId);
+  async findAccountByWalletAndAsset(walletId: string, assetId: string): Promise<LedgerAccount | null> {
+    const db = getDbClient();
+    const row = await db.get(
+      'SELECT * FROM ledger_accounts WHERE wallet_id = ? AND asset_id = ? LIMIT 1',
+      [walletId, assetId]
+    );
     return row ? mapAccount(row) : null;
   },
 
   /**
    * Find ledger account for a customer and asset (account_type = customer_available).
    */
-  findAccountByCustomerAndAsset(tenantId: string, customerId: string, assetId: string): LedgerAccount | null {
-    const db = getDb();
-    const row = db
-      .prepare(
-        "SELECT * FROM ledger_accounts WHERE tenant_id = ? AND customer_id = ? AND asset_id = ? AND account_type = 'customer_available' LIMIT 1"
-      )
-      .get(tenantId, customerId, assetId);
+  async findAccountByCustomerAndAsset(tenantId: string, customerId: string, assetId: string): Promise<LedgerAccount | null> {
+    const db = getDbClient();
+    const row = await db.get(
+      "SELECT * FROM ledger_accounts WHERE tenant_id = ? AND customer_id = ? AND asset_id = ? AND account_type = 'customer_available' LIMIT 1",
+      [tenantId, customerId, assetId]
+    );
     return row ? mapAccount(row) : null;
   },
 
   /**
    * Find a tenant-level ledger account by account_type (e.g. sweep_in_transit, tenant_hot_control).
    */
-  findAccountByTenantAndType(tenantId: string, accountType: string, chainId = 'bitcoin'): LedgerAccount | null {
-    const db = getDb();
-    const row = db
-      .prepare(
-        'SELECT * FROM ledger_accounts WHERE tenant_id = ? AND account_type = ? AND chain_id = ? LIMIT 1'
-      )
-      .get(tenantId, accountType, chainId);
+  async findAccountByTenantAndType(tenantId: string, accountType: string, chainId = 'bitcoin'): Promise<LedgerAccount | null> {
+    const db = getDbClient();
+    const row = await db.get(
+      'SELECT * FROM ledger_accounts WHERE tenant_id = ? AND account_type = ? AND chain_id = ? LIMIT 1',
+      [tenantId, accountType, chainId]
+    );
     return row ? mapAccount(row) : null;
   },
 };

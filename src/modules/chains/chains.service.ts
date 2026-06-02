@@ -1,4 +1,4 @@
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 
 export interface ChainSpecs {
@@ -28,8 +28,8 @@ function mapChain(row: any): Chain {
 }
 
 export const chainsService = {
-  list(filters: { enabled?: boolean; type?: string } = {}): Chain[] {
-    const db = getDb();
+  async list(filters: { enabled?: boolean; type?: string } = {}): Promise<Chain[]> {
+    const db = getDbClient();
     let query = 'SELECT * FROM chains WHERE 1=1';
     const params: unknown[] = [];
 
@@ -43,13 +43,13 @@ export const chainsService = {
     }
     query += ' ORDER BY id';
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     return rows.map(mapChain);
   },
 
-  getById(id: string): Chain {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM chains WHERE id = ?').get(id);
+  async getById(id: string): Promise<Chain> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM chains WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Chain', id);
     return mapChain(row);
   },

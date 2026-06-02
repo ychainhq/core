@@ -62,10 +62,10 @@ async function issueSession(auth: Record<string, string>, customerId: string) {
 }
 
 /** Credit a customer's ledger account with settled sats (test setup only). */
-function creditCustomer(tenantId: string, customerId: string, sats: string) {
-  const account = ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, 'bitcoin:BTC');
+async function creditCustomer(tenantId: string, customerId: string, sats: string) {
+  const account = await ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, 'bitcoin:BTC');
   if (!account) throw new Error(`No BTC account for ${customerId}`);
-  ledgerService.addEntry({
+  await ledgerService.addEntry({
     ledgerAccountId: account.id,
     type: 'test_credit',
     amountRaw: sats,
@@ -85,10 +85,10 @@ async function registerDepositAddress(auth: Record<string, string>, customerId: 
   return res.body.data.address as string;
 }
 
-function getSettledBalance(tenantId: string, customerId: string): bigint {
-  const account = ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, 'bitcoin:BTC');
+async function getSettledBalance(tenantId: string, customerId: string): Promise<bigint> {
+  const account = await ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, 'bitcoin:BTC');
   if (!account) return 0n;
-  return BigInt(ledgerService.getBalance(account.id).settled);
+  return BigInt((await ledgerService.getBalance(account.id)).settled);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ describe('POST /v1/me/withdrawals — internal transfer (on-platform address)', 
     const sender = await createCustomer(auth);
     const recipient = await createCustomer(auth);
 
-    creditCustomer(tenantId, sender.id, '500000');
+    await creditCustomer(tenantId, sender.id, '500000');
     const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
 
     const token = await issueSession(auth, sender.id);
@@ -123,8 +123,8 @@ describe('POST /v1/me/withdrawals — internal transfer (on-platform address)', 
     const sender = await createCustomer(auth);
     const recipient = await createCustomer(auth);
 
-    creditCustomer(tenantId, sender.id, '300000');
-    const initialRecipientBalance = getSettledBalance(tenantId, recipient.id);
+    await creditCustomer(tenantId, sender.id, '300000');
+    const initialRecipientBalance = await getSettledBalance(tenantId, recipient.id);
     const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
 
     const token = await issueSession(auth, sender.id);
@@ -133,8 +133,8 @@ describe('POST /v1/me/withdrawals — internal transfer (on-platform address)', 
       .set({ Authorization: `Bearer ${token}` })
       .send({ toAddress: recipientDepositAddr, amountSats: '150000' });
 
-    expect(getSettledBalance(tenantId, sender.id)).toBe(150000n);
-    expect(getSettledBalance(tenantId, recipient.id)).toBe(initialRecipientBalance + 150000n);
+    expect(await getSettledBalance(tenantId, sender.id)).toBe(150000n);
+    expect(await getSettledBalance(tenantId, recipient.id)).toBe(initialRecipientBalance + 150000n);
   });
 
   it('appears in GET /v1/me/withdrawals with withdrawal_type=internal', async () => {
@@ -142,7 +142,7 @@ describe('POST /v1/me/withdrawals — internal transfer (on-platform address)', 
     const sender = await createCustomer(auth);
     const recipient = await createCustomer(auth);
 
-    creditCustomer(tenantId, sender.id, '200000');
+    await creditCustomer(tenantId, sender.id, '200000');
     const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
 
     const token = await issueSession(auth, sender.id);
@@ -167,7 +167,7 @@ describe('POST /v1/me/withdrawals — internal transfer (on-platform address)', 
     const sender = await createCustomer(auth);
     const recipient = await createCustomer(auth);
 
-    creditCustomer(tenantId, sender.id, '200000');
+    await creditCustomer(tenantId, sender.id, '200000');
     const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
 
     const token = await issueSession(auth, sender.id);
@@ -200,7 +200,7 @@ describe('POST /v1/me/withdrawals — idempotency for internal transfer', () => 
     const sender = await createCustomer(auth);
     const recipient = await createCustomer(auth);
 
-    creditCustomer(tenantId, sender.id, '400000');
+    await creditCustomer(tenantId, sender.id, '400000');
     const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
 
     const token = await issueSession(auth, sender.id);
@@ -220,7 +220,7 @@ describe('POST /v1/me/withdrawals — idempotency for internal transfer', () => 
     expect(r2.status).toBe(201);
     expect(r1.body.data.id).toBe(r2.body.data.id);
     // Only one transfer should have occurred
-    expect(getSettledBalance(tenantId, sender.id)).toBe(300000n);
+    expect(await getSettledBalance(tenantId, sender.id)).toBe(300000n);
   });
 });
 
@@ -232,7 +232,7 @@ describe('POST /v1/me/withdrawals — external address not affected', () => {
     const { tenantId, auth } = await createTenantWithKey();
     const customer = await createCustomer(auth);
 
-    creditCustomer(tenantId, customer.id, '200000');
+    await creditCustomer(tenantId, customer.id, '200000');
 
     const token = await issueSession(auth, customer.id);
     const externalAddr = uniqueAddr();
@@ -257,7 +257,7 @@ describe('POST /v1/me/withdrawals — cannot transfer to own deposit address', (
     const { tenantId, auth } = await createTenantWithKey();
     const customer = await createCustomer(auth);
 
-    creditCustomer(tenantId, customer.id, '200000');
+    await creditCustomer(tenantId, customer.id, '200000');
     const ownDepositAddr = await registerDepositAddress(auth, customer.id);
 
     const token = await issueSession(auth, customer.id);
@@ -280,7 +280,7 @@ describe('POST /v1/me/withdrawals — recipient not active', () => {
     const sender = await createCustomer(auth);
     const recipient = await createCustomer(auth);
 
-    creditCustomer(tenantId, sender.id, '200000');
+    await creditCustomer(tenantId, sender.id, '200000');
     const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
 
     // Disable recipient
@@ -336,11 +336,11 @@ describe('POST /v1/me/withdrawals — tenant isolation', () => {
       return { tenantId: row.tenant_id as string };
     })();
 
-    creditCustomer(tenantA, senderA.id, '200000');
+    await creditCustomer(tenantA, senderA.id, '200000');
 
     // Register a deposit address for a customer on tenant B
     const recipientB = await createCustomer(authB);
-    creditCustomer(tenantB, recipientB.id, '0'); // ensure account exists
+    await creditCustomer(tenantB, recipientB.id, '0'); // ensure account exists
     const addrOnTenantB = await registerDepositAddress(authB, recipientB.id);
 
     const token = await issueSession(authA, senderA.id);
@@ -476,7 +476,7 @@ describe('POST /v1/me/withdrawals — forceExternal bypasses internal routing', 
     const sender = await createCustomer(auth);
     const recipient = await createCustomer(auth);
 
-    creditCustomer(tenantId, sender.id, '300000');
+    await creditCustomer(tenantId, sender.id, '300000');
     const recipientDepositAddr = await registerDepositAddress(auth, recipient.id);
 
     const token = await issueSession(auth, sender.id);
@@ -489,8 +489,8 @@ describe('POST /v1/me/withdrawals — forceExternal bypasses internal routing', 
     expect(res.body.data.status).toBe('queued');
     expect(res.body.data.withdrawal_type).toBe('external');
     // Ledger reservation reduced settled balance (external path books withdrawal_reserve immediately)
-    expect(getSettledBalance(tenantId, sender.id)).toBe(200000n);
+    expect(await getSettledBalance(tenantId, sender.id)).toBe(200000n);
     // Recipient balance untouched — no internal transfer occurred
-    expect(getSettledBalance(tenantId, recipient.id)).toBe(0n);
+    expect(await getSettledBalance(tenantId, recipient.id)).toBe(0n);
   });
 });

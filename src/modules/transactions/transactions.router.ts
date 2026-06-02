@@ -17,7 +17,7 @@ transactionsRouter.get('/:txHash', async (req: Request, res: Response, next: Nex
 
     const [rawTx, localTx] = await Promise.all([
       adapter.getRawTransaction(txHash, true),
-      Promise.resolve(transactionsService.getByTxHash(chain, txHash)),
+      transactionsService.getByTxHash(chain, txHash),
     ]);
 
     res.json({
@@ -38,7 +38,7 @@ transactionsRouter.get('/:txHash/status', async (req: Request, res: Response, ne
     const adapter = adapterRegistry.get(chain);
     const status = await adapter.getTransactionStatus(txHash);
 
-    const localTx = transactionsService.getByTxHash(chain, txHash);
+    const localTx = await transactionsService.getByTxHash(chain, txHash);
 
     res.json({
       data: {
@@ -61,7 +61,7 @@ transactionsRouter.post('/broadcast', async (req: Request, res: Response, next: 
 
     // Check idempotency
     if (idempotencyKey) {
-      const existing = idempotencyService.get(tenantId, idempotencyKey, 'broadcast');
+      const existing = await idempotencyService.get(tenantId, idempotencyKey, 'broadcast');
       if (existing) {
         res.status(existing.statusCode).json(existing.result);
         return;
@@ -95,7 +95,7 @@ transactionsRouter.post('/broadcast', async (req: Request, res: Response, next: 
     const txHash = await adapter.sendRawTransaction(body.rawTransaction);
 
     // Save transaction record
-    const tx = transactionsService.upsertByHash(chain, txHash, {
+    const tx = await transactionsService.upsertByHash(chain, txHash, {
       raw_tx: body.rawTransaction,
       status: 'broadcasted',
       broadcast_at: new Date().toISOString(),

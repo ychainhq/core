@@ -51,68 +51,68 @@ describe('IdempotencyService', () => {
   const TENANT = 'tenant_test';
 
   describe('get', () => {
-    it('returns null for non-existent key', () => {
-      const result = service.get(TENANT, 'nonexistent-key', 'payment_request');
+    it('returns null for non-existent key', async () => {
+      const result = await service.get(TENANT, 'nonexistent-key', 'payment_request');
       expect(result).toBeNull();
     });
 
-    it('returns stored result for existing key', () => {
+    it('returns stored result for existing key', async () => {
       const testResult = { data: { id: 'payreq_123', status: 'pending' } };
-      service.save(TENANT, 'key-1', 'payment_request', testResult, 201);
+      await service.save(TENANT, 'key-1', 'payment_request', testResult, 201);
 
-      const result = service.get(TENANT, 'key-1', 'payment_request');
+      const result = await service.get(TENANT, 'key-1', 'payment_request');
       expect(result).not.toBeNull();
       expect(result!.statusCode).toBe(201);
       expect(result!.result).toEqual(testResult);
     });
 
-    it('returns null for different operation', () => {
-      service.save(TENANT, 'key-1', 'payment_request', { data: {} }, 201);
-      const result = service.get(TENANT, 'key-1', 'broadcast');
+    it('returns null for different operation', async () => {
+      await service.save(TENANT, 'key-1', 'payment_request', { data: {} }, 201);
+      const result = await service.get(TENANT, 'key-1', 'broadcast');
       expect(result).toBeNull();
     });
   });
 
   describe('save', () => {
-    it('saves and retrieves idempotency result', () => {
+    it('saves and retrieves idempotency result', async () => {
       const payload = { data: { txHash: 'abc123', status: 'broadcasted' } };
-      service.save(TENANT, 'tx-key-1', 'broadcast', payload, 200);
+      await service.save(TENANT, 'tx-key-1', 'broadcast', payload, 200);
 
-      const result = service.get(TENANT, 'tx-key-1', 'broadcast');
+      const result = await service.get(TENANT, 'tx-key-1', 'broadcast');
       expect(result).not.toBeNull();
       expect(result!.result).toEqual(payload);
       expect(result!.statusCode).toBe(200);
     });
 
-    it('stores different operations under different keys', () => {
+    it('stores different operations under different keys', async () => {
       const payreqResult = { data: { id: 'payreq_1' } };
       const broadcastResult = { data: { txHash: 'hash1' } };
 
-      service.save(TENANT, 'shared-key', 'payment_request', payreqResult, 201);
-      service.save(TENANT, 'shared-key', 'broadcast', broadcastResult, 200);
+      await service.save(TENANT, 'shared-key', 'payment_request', payreqResult, 201);
+      await service.save(TENANT, 'shared-key', 'broadcast', broadcastResult, 200);
 
-      const pr = service.get(TENANT, 'shared-key', 'payment_request');
-      const bc = service.get(TENANT, 'shared-key', 'broadcast');
+      const pr = await service.get(TENANT, 'shared-key', 'payment_request');
+      const bc = await service.get(TENANT, 'shared-key', 'broadcast');
 
       expect(pr!.result).toEqual(payreqResult);
       expect(bc!.result).toEqual(broadcastResult);
     });
 
-    it('overwrites existing key with same key+operation', () => {
+    it('overwrites existing key with same key+operation', async () => {
       const first = { data: { attempt: 1 } };
       const second = { data: { attempt: 2 } };
 
-      service.save(TENANT, 'overwrite-key', 'broadcast', first, 200);
-      service.save(TENANT, 'overwrite-key', 'broadcast', second, 200);
+      await service.save(TENANT, 'overwrite-key', 'broadcast', first, 200);
+      await service.save(TENANT, 'overwrite-key', 'broadcast', second, 200);
 
-      const result = service.get(TENANT, 'overwrite-key', 'broadcast');
+      const result = await service.get(TENANT, 'overwrite-key', 'broadcast');
       expect(result!.result).toEqual(second);
     });
   });
 
   describe('cleanup', () => {
-    it('can be called without errors', () => {
-      expect(() => service.cleanup()).not.toThrow();
+    it('can be called without errors', async () => {
+      await expect(service.cleanup()).resolves.not.toThrow();
     });
   });
 });

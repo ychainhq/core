@@ -33,7 +33,7 @@ function checkActorAccess(req: Request, entity: string, action: 'read' | 'write'
 }
 
 // GET /v1/signing-tasks
-signingTasksRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+signingTasksRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     checkActorAccess(req, 'signing-task', 'read');
     const limit = parseInt((req.query['limit'] as string) || '20', 10);
@@ -42,7 +42,7 @@ signingTasksRouter.get('/', (req: Request, res: Response, next: NextFunction) =>
     const chainId = req.query['chainId'] as string | undefined;
     const requestType = req.query['requestType'] as string | undefined;
 
-    const result = signingTasksService.list(tenantId(req), { status, chainId, requestType, limit, cursor });
+    const result = await signingTasksService.list(tenantId(req), { status, chainId, requestType, limit, cursor });
     res.json({
       data: result.data,
       pagination: { limit, cursor: cursor ?? null, nextCursor: result.nextCursor },
@@ -51,9 +51,9 @@ signingTasksRouter.get('/', (req: Request, res: Response, next: NextFunction) =>
 });
 
 // GET /v1/signing-tasks/:taskId
-signingTasksRouter.get('/:taskId', (req: Request, res: Response, next: NextFunction) => {
+signingTasksRouter.get('/:taskId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const task = signingTasksService.getById(tenantId(req), req.params['taskId']!);
+    const task = await signingTasksService.getById(tenantId(req), req.params['taskId']!);
     res.json({ data: task });
   } catch (err) { next(err); }
 });
@@ -63,11 +63,11 @@ const approveSchema = z.object({
   approvedBy: z.string().min(1).optional(),
 });
 
-signingTasksRouter.post('/:taskId/approve', (req: Request, res: Response, next: NextFunction) => {
+signingTasksRouter.post('/:taskId/approve', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = approveSchema.parse(req.body);
     const approvedBy = body.approvedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
-    const task = signingTasksService.approveTask(tenantId(req), req.params['taskId']!, approvedBy);
+    const task = await signingTasksService.approveTask(tenantId(req), req.params['taskId']!, approvedBy);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'signing_task',
@@ -88,11 +88,11 @@ const rejectSchema = z.object({
   rejectedBy: z.string().min(1).optional(),
 });
 
-signingTasksRouter.post('/:taskId/reject', (req: Request, res: Response, next: NextFunction) => {
+signingTasksRouter.post('/:taskId/reject', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = rejectSchema.parse(req.body);
     const rejectedBy = body.rejectedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
-    const task = signingTasksService.manualRejectTask(tenantId(req), req.params['taskId']!, rejectedBy, body.reason);
+    const task = await signingTasksService.manualRejectTask(tenantId(req), req.params['taskId']!, rejectedBy, body.reason);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'signing_task',

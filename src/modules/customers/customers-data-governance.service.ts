@@ -1,4 +1,4 @@
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import {
   CustomerDataGovernance,
@@ -37,11 +37,12 @@ function mapDataGovernance(row: any): CustomerDataGovernance {
   };
 }
 
-function guardCustomer(tenantId: string, customerId: string): void {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT id FROM customers WHERE id = ? AND tenant_id = ?')
-    .get(customerId, tenantId);
+async function guardCustomer(tenantId: string, customerId: string): Promise<void> {
+  const db = getDbClient();
+  const row = await db.get(
+    'SELECT id FROM customers WHERE id = ? AND tenant_id = ?',
+    [customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('Customer', customerId);
 }
 
@@ -72,32 +73,35 @@ export interface UpsertDataGovernanceInput {
 
 export const customersDataGovernanceService = {
   // Called internally on customer creation to provision defaults.
-  provision(tenantId: string, customerId: string): void {
-    const db = getDb();
+  async provision(tenantId: string, customerId: string): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
-    db.prepare(`
-      INSERT OR IGNORE INTO customer_data_governance (customer_id, tenant_id, updated_at)
-      VALUES (?, ?, ?)
-    `).run(customerId, tenantId, now);
+    await db.run(
+      `INSERT OR IGNORE INTO customer_data_governance (customer_id, tenant_id, updated_at)
+      VALUES (?, ?, ?)`,
+      [customerId, tenantId, now]
+    );
   },
 
-  upsert(
+  async upsert(
     tenantId: string,
     customerId: string,
     input: UpsertDataGovernanceInput
-  ): CustomerDataGovernance {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
+  ): Promise<CustomerDataGovernance> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
 
-    const existing = db
-      .prepare('SELECT version FROM customer_data_governance WHERE customer_id = ?')
-      .get(customerId) as { version: number } | undefined;
+    const existing = await db.get<{ version: number }>(
+      'SELECT version FROM customer_data_governance WHERE customer_id = ?',
+      [customerId]
+    );
     const now = new Date().toISOString();
 
     if (!existing) {
-      db.prepare(
-        'INSERT INTO customer_data_governance (customer_id, tenant_id, updated_at) VALUES (?, ?, ?)'
-      ).run(customerId, tenantId, now);
+      await db.run(
+        'INSERT INTO customer_data_governance (customer_id, tenant_id, updated_at) VALUES (?, ?, ?)',
+        [customerId, tenantId, now]
+      );
     }
 
     const sets: string[] = [];
@@ -137,21 +141,23 @@ export const customersDataGovernanceService = {
     sets.push('version = ?', 'updated_at = ?');
     params.push(newVersion, now, customerId);
 
-    db.prepare(
-      `UPDATE customer_data_governance SET ${sets.join(', ')} WHERE customer_id = ?`
-    ).run(...params);
+    await db.run(
+      `UPDATE customer_data_governance SET ${sets.join(', ')} WHERE customer_id = ?`,
+      params
+    );
 
     return mapDataGovernance(
-      db.prepare('SELECT * FROM customer_data_governance WHERE customer_id = ?').get(customerId)
+      await db.get<any>('SELECT * FROM customer_data_governance WHERE customer_id = ?', [customerId])
     );
   },
 
-  get(tenantId: string, customerId: string): CustomerDataGovernance | null {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
-    const row = db
-      .prepare('SELECT * FROM customer_data_governance WHERE customer_id = ? AND tenant_id = ?')
-      .get(customerId, tenantId) as any;
+  async get(tenantId: string, customerId: string): Promise<CustomerDataGovernance | null> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
+    const row = await db.get<any>(
+      'SELECT * FROM customer_data_governance WHERE customer_id = ? AND tenant_id = ?',
+      [customerId, tenantId]
+    );
     if (!row) return null;
     return mapDataGovernance(row);
   },

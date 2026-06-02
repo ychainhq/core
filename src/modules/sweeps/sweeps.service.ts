@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ValidationError } from '../../shared/errors/index';
 import { toUnixTs } from '../../shared/time/index';
 import { adapterRegistry } from '../../chain-adapters/registry';
@@ -57,7 +57,7 @@ export interface SweepSummary {
 }
 
 export const sweepsService = {
-  create(tenantId: string, input: {
+  async create(tenantId: string, input: {
     chainId: string;
     assetId: string;
     fromAddresses: string[];
@@ -65,16 +65,16 @@ export const sweepsService = {
     amountRaw: string;
     feeRaw?: string;
     psbt?: string;
-  }): Sweep {
-    const db = getDb();
+  }): Promise<Sweep> {
+    const db = getDbClient();
     const id = `sweep_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO sweeps
         (id, tenant_id, chain_id, asset_id, from_addresses, to_address, amount_raw, fee_raw, psbt, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_signature', ?, ?)
-    `).run(
+    `, [
       id,
       tenantId,
       input.chainId,
@@ -85,18 +85,18 @@ export const sweepsService = {
       input.feeRaw ?? null,
       input.psbt ?? null,
       now,
-      now
-    );
+      now,
+    ]);
 
     return sweepsService.getByIdInternal(id);
   },
 
-  list(tenantId: string, filters: {
+  async list(tenantId: string, filters: {
     status?: string;
     limit?: number;
     cursor?: string;
-  } = {}): { data: Sweep[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: Sweep[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM sweeps WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -106,36 +106,36 @@ export const sweepsService = {
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
     return {
       data: items.map(mapSweep),
-      nextCursor: hasMore ? items[items.length - 1].id : null,
+      nextCursor: hasMore ? (items[items.length - 1] as any).id : null,
     };
   },
 
-  getById(tenantId: string, id: string): Sweep {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM sweeps WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getById(tenantId: string, id: string): Promise<Sweep> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM sweeps WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Sweep', id);
     return mapSweep(row);
   },
 
-  getByIdInternal(id: string): Sweep {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM sweeps WHERE id = ?').get(id);
+  async getByIdInternal(id: string): Promise<Sweep> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM sweeps WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Sweep', id);
     return mapSweep(row);
   },
 
-  updateStatus(id: string, status: string, extra: {
+  async updateStatus(id: string, status: string, extra: {
     signedPsbt?: string;
     txHash?: string;
     error?: string;
-  } = {}): Sweep {
-    const db = getDb();
+  } = {}): Promise<Sweep> {
+    const db = getDbClient();
     const now = new Date().toISOString();
     const sets: string[] = ['status = ?', 'updated_at = ?'];
     const params: unknown[] = [status, now];
@@ -145,15 +145,14 @@ export const sweepsService = {
     if (extra.error !== undefined) { sets.push('error = ?'); params.push(extra.error); }
 
     params.push(id);
-    db.prepare(`UPDATE sweeps SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    await db.run(`UPDATE sweeps SET ${sets.join(', ')} WHERE id = ?`, params);
     return sweepsService.getByIdInternal(id);
   },
 
-  linkSigningTask(sweepId: string, taskId: string): void {
-    const db = getDb();
+  async linkSigningTask(sweepId: string, taskId: string): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
-    db.prepare('UPDATE sweeps SET signing_task_id = ?, updated_at = ? WHERE id = ?')
-      .run(taskId, now, sweepId);
+    await db.run('UPDATE sweeps SET signing_task_id = ?, updated_at = ? WHERE id = ?', [taskId, now, sweepId]);
   },
 
   async finalizeSweepFromSigningTask(
@@ -161,7 +160,7 @@ export const sweepsService = {
     sweepId: string,
     signedPsbt: string
   ): Promise<Sweep> {
-    const sweep = sweepsService.getById(tenantId, sweepId);
+    const sweep = await sweepsService.getById(tenantId, sweepId);
 
     if (sweep.status !== 'pending_signature') {
       throw new ValidationError(
@@ -178,13 +177,13 @@ export const sweepsService = {
       }
       txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
-      sweepsService.updateStatus(sweepId, 'failed', { error: String(err) });
+      await sweepsService.updateStatus(sweepId, 'failed', { error: String(err) });
       throw err;
     }
 
-    const updated = sweepsService.updateStatus(sweepId, 'broadcast', { signedPsbt, txHash });
+    const updated = await sweepsService.updateStatus(sweepId, 'broadcast', { signedPsbt, txHash });
 
-    const sitAccount = ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
+    const sitAccount = await ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
     if (sitAccount) {
       ledgerService.addEntry({
         ledgerAccountId: sitAccount.id,
@@ -213,7 +212,7 @@ export const sweepsService = {
   },
 
   async submitSigned(tenantId: string, sweepId: string, signedPsbt: string): Promise<Sweep> {
-    const sweep = sweepsService.getById(tenantId, sweepId);
+    const sweep = await sweepsService.getById(tenantId, sweepId);
 
     if (sweep.status !== 'pending_signature') {
       throw new ValidationError(`Sweep is in status '${sweep.status}', expected 'pending_signature'`);
@@ -228,13 +227,13 @@ export const sweepsService = {
       }
       txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
-      sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
+      await sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
       throw new ValidationError(`Failed to broadcast sweep: ${err.message ?? err}`);
     }
 
-    const updated = sweepsService.updateStatus(sweep.id, 'broadcast', { signedPsbt, txHash });
+    const updated = await sweepsService.updateStatus(sweep.id, 'broadcast', { signedPsbt, txHash });
 
-    const sitAccount = ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
+    const sitAccount = await ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
     if (sitAccount) {
       ledgerService.addEntry({
         ledgerAccountId: sitAccount.id,
@@ -252,31 +251,33 @@ export const sweepsService = {
   /**
    * Find pending sweeps for a tenant (pending_signature = waiting for tenant to sign).
    */
-  getPendingForTenant(tenantId: string): Sweep[] {
-    const db = getDb();
-    const rows = db
-      .prepare("SELECT * FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature'")
-      .all(tenantId) as any[];
+  async getPendingForTenant(tenantId: string): Promise<Sweep[]> {
+    const db = getDbClient();
+    const rows = await db.all(
+      "SELECT * FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature'",
+      [tenantId]
+    );
     return rows.map(mapSweep);
   },
 
-  getSummary(tenantId: string): SweepSummary {
-    const db = getDb();
+  async getSummary(tenantId: string): Promise<SweepSummary> {
+    const db = getDbClient();
 
-    const configRow = db.prepare(
-      'SELECT btc_sweep_threshold_sats FROM tenant_configs WHERE tenant_id = ?'
-    ).get(tenantId) as { btc_sweep_threshold_sats: string | null } | undefined;
+    const configRow = await db.get<{ btc_sweep_threshold_sats: string | null }>(
+      'SELECT btc_sweep_threshold_sats FROM tenant_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
     const thresholdSats = configRow?.btc_sweep_threshold_sats ?? null;
 
-    const addrRow = db.prepare(`
+    const addrRow = await db.get<{ cnt: number }>(`
       SELECT COUNT(*) AS cnt
       FROM addresses a
       JOIN wallets w ON w.id = a.wallet_id
       WHERE w.tenant_id = ? AND w.wallet_role = 'customer_deposits'
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
-    `).get(tenantId) as { cnt: number };
+    `, [tenantId]);
 
-    const utxoRow = db.prepare(`
+    const utxoRow = await db.get<{ total_sats: number; addrs_with_bal: number; utxo_count: number }>(`
       SELECT
         COALESCE(SUM(CAST(amount_raw AS INTEGER)), 0) AS total_sats,
         COUNT(DISTINCT address)                        AS addrs_with_bal,
@@ -284,9 +285,9 @@ export const sweepsService = {
       FROM cached_utxos
       WHERE tenant_id = ? AND wallet_role = 'customer_deposits'
         AND is_spent = 0 AND is_locked = 0
-    `).get(tenantId) as { total_sats: number; addrs_with_bal: number; utxo_count: number };
+    `, [tenantId]);
 
-    const currentSats = BigInt(utxoRow.total_sats);
+    const currentSats = BigInt(utxoRow!.total_sats);
     let missingSats: string | null = null;
     let progressPct: number | null = null;
 
@@ -299,27 +300,28 @@ export const sweepsService = {
         : 0;
     }
 
-    const hotRow = db.prepare(`
+    const hotRow = await db.get<{ address: string }>(`
       SELECT a.address
       FROM addresses a
       JOIN wallets w ON w.id = a.wallet_id
       WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
       LIMIT 1
-    `).get(tenantId) as { address: string } | undefined;
+    `, [tenantId]);
 
-    const pendingRow = db.prepare(
-      "SELECT id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1"
-    ).get(tenantId) as { id: string } | undefined;
+    const pendingRow = await db.get<{ id: string }>(
+      "SELECT id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1",
+      [tenantId]
+    );
 
     return {
       threshold_sats: thresholdSats,
       current_total_sats: currentSats.toString(),
       missing_sats: missingSats,
       progress_pct: progressPct,
-      total_deposit_addresses: addrRow.cnt,
-      addresses_with_balance: utxoRow.addrs_with_bal,
-      total_utxos: utxoRow.utxo_count,
+      total_deposit_addresses: addrRow!.cnt,
+      addresses_with_balance: utxoRow!.addrs_with_bal,
+      total_utxos: utxoRow!.utxo_count,
       hot_wallet_address: hotRow?.address ?? null,
       pending_sweep_id: pendingRow?.id ?? null,
     };
@@ -329,11 +331,11 @@ export const sweepsService = {
    * Return all broadcast sweeps that have a tx_hash (across all tenants).
    * Used by SweepConfirmationWorker to poll for on-chain confirmation.
    */
-  getBroadcastWithTxHash(): Sweep[] {
-    const db = getDb();
-    const rows = db
-      .prepare("SELECT * FROM sweeps WHERE status = 'broadcast' AND tx_hash IS NOT NULL")
-      .all() as any[];
+  async getBroadcastWithTxHash(): Promise<Sweep[]> {
+    const db = getDbClient();
+    const rows = await db.all(
+      "SELECT * FROM sweeps WHERE status = 'broadcast' AND tx_hash IS NOT NULL"
+    );
     return rows.map(mapSweep);
   },
 };

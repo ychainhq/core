@@ -45,11 +45,16 @@ export function uniqueAddr(): string {
 /**
  * Bootstrap an Express app backed by a fresh in-memory SQLite database.
  * Call once per test file (Jest isolates module registries between files).
+ *
+ * Note: runMigrations() and runSeed() are async but for SQLite they execute
+ * synchronously under the hood. The Promise resolves immediately, so calling
+ * without await is safe for the SQLite test path. However, we still need to
+ * handle the case where resetDbClient is required.
  */
 export function bootstrapApp(): express.Application {
   closeDb();     // reset any prior singleton so each file gets a fresh :memory: DB
-  runMigrations();
-  runSeed();
+  runMigrations();  // SQLite path is sync; returns resolved Promise
+  runSeed();        // SQLite path is sync; returns resolved Promise
   return createApp();
 }
 

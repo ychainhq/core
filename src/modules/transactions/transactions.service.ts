@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 
 export interface Transaction {
@@ -30,11 +30,12 @@ function mapTx(row: any): Transaction {
 }
 
 export const transactionsService = {
-  upsertByHash(chainId: string, txHash: string, data: Partial<Transaction>): Transaction {
-    const db = getDb();
-    const existing = db
-      .prepare('SELECT * FROM transactions WHERE chain_id = ? AND tx_hash = ?')
-      .get(chainId, txHash) as Transaction | undefined;
+  async upsertByHash(chainId: string, txHash: string, data: Partial<Transaction>): Promise<Transaction> {
+    const db = getDbClient();
+    const existing = await db.get<Transaction>(
+      'SELECT * FROM transactions WHERE chain_id = ? AND tx_hash = ?',
+      [chainId, txHash]
+    );
 
     const now = new Date().toISOString();
 
@@ -53,17 +54,17 @@ export const transactionsService = {
       params.push(existing.id);
 
       if (updates.length > 1) {
-        db.prepare(`UPDATE transactions SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+        await db.run(`UPDATE transactions SET ${updates.join(', ')} WHERE id = ?`, params);
       }
 
       return transactionsService.getById(existing.id);
     } else {
       const id = `tx_${crypto.randomBytes(8).toString('hex')}`;
-      db.prepare(`
+      await db.run(`
         INSERT INTO transactions (id, chain_id, tx_hash, raw_tx, psbt, status, block_height, block_hash,
           confirmations, fee_raw, fee_rate, wallet_id, broadcast_at, metadata, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      `, [
         id, chainId, txHash,
         data.raw_tx ?? null, data.psbt ?? null,
         data.status ?? 'broadcasted',
@@ -72,35 +73,36 @@ export const transactionsService = {
         data.fee_raw ?? null, data.fee_rate ?? null,
         data.wallet_id ?? null, data.broadcast_at ?? null,
         data.metadata ? JSON.stringify(data.metadata) : null,
-        now, now
-      );
+        now, now,
+      ]);
       return transactionsService.getById(id);
     }
   },
 
-  getById(id: string): Transaction {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
+  async getById(id: string): Promise<Transaction> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM transactions WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Transaction', id);
     return mapTx(row);
   },
 
-  getByTxHash(chainId: string, txHash: string): Transaction | null {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM transactions WHERE chain_id = ? AND tx_hash = ?').get(chainId, txHash);
+  async getByTxHash(chainId: string, txHash: string): Promise<Transaction | null> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM transactions WHERE chain_id = ? AND tx_hash = ?', [chainId, txHash]);
     return row ? mapTx(row) : null;
   },
 
-  getPendingBroadcasted(chainId: string): Transaction[] {
-    const db = getDb();
-    const rows = db
-      .prepare("SELECT * FROM transactions WHERE chain_id = ? AND status IN ('broadcasted', 'seen_in_mempool')")
-      .all(chainId);
+  async getPendingBroadcasted(chainId: string): Promise<Transaction[]> {
+    const db = getDbClient();
+    const rows = await db.all(
+      "SELECT * FROM transactions WHERE chain_id = ? AND status IN ('broadcasted', 'seen_in_mempool')",
+      [chainId]
+    );
     return rows.map(mapTx);
   },
 
-  updateStatus(id: string, status: string, extra: Partial<Transaction> = {}): void {
-    const db = getDb();
+  async updateStatus(id: string, status: string, extra: Partial<Transaction> = {}): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
     const fields: string[] = ['status = ?', 'updated_at = ?'];
     const params: unknown[] = [status, now];
@@ -110,6 +112,6 @@ export const transactionsService = {
     if (extra.confirmations !== undefined) { fields.push('confirmations = ?'); params.push(extra.confirmations); }
 
     params.push(id);
-    db.prepare(`UPDATE transactions SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+    await db.run(`UPDATE transactions SET ${fields.join(', ')} WHERE id = ?`, params);
   },
 };

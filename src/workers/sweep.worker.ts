@@ -1,4 +1,4 @@
-import { getDb } from '../db/sqlite';
+import { getDbClient } from '../db/client';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
 import { enrichSweepPsbt } from '../chain-adapters/bitcoin/psbt-enricher';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
@@ -63,16 +63,16 @@ export class SweepWorker {
   }
 
   async run(): Promise<void> {
-    const db = getDb();
+    const db = getDbClient();
 
     // Find tenants with an active hot wallet address (sweep destination)
-    const tenantRows = db.prepare(`
+    const tenantRows = await db.all<{ tenant_id: string; btc_sweep_threshold_sats: string }>(`
       SELECT DISTINCT t.id as tenant_id, tc.btc_sweep_threshold_sats
       FROM tenants t
       JOIN tenant_configs tc ON tc.tenant_id = t.id
       WHERE t.status = 'active'
         AND tc.btc_sweep_threshold_sats IS NOT NULL
-    `).all() as { tenant_id: string; btc_sweep_threshold_sats: string }[];
+    `);
 
     for (const row of tenantRows) {
       try {
@@ -92,27 +92,27 @@ export class SweepWorker {
   }
 
   private async processTenant(tenantId: string, sweepThresholdSats: string): Promise<void> {
-    const db = getDb();
+    const db = getDbClient();
     const adapter = new BitcoinAdapter();
 
     // Find tenant_hot wallet address (sweep destination)
-    const hotAddr = db.prepare(`
+    const hotAddr = await db.get<{ address: string }>(`
       SELECT a.address
       FROM addresses a
       JOIN wallets w ON w.id = a.wallet_id
       WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
       LIMIT 1
-    `).get(tenantId) as { address: string } | undefined;
+    `, [tenantId]);
 
     if (!hotAddr) {
       return; // No hot wallet address — cannot sweep
     }
 
     // Load tenant xpub — needed for PSBT enrichment (public-key derivation only)
-    const tenantCfg = db.prepare(
-      'SELECT btc_xpub FROM tenant_configs WHERE tenant_id = ?'
-    ).get(tenantId) as { btc_xpub: string | null } | undefined;
+    const tenantCfg = await db.get<{ btc_xpub: string | null }>(
+      'SELECT btc_xpub FROM tenant_configs WHERE tenant_id = ?', [tenantId]
+    );
 
     if (!tenantCfg?.btc_xpub) {
       logger.warn('SweepWorker: tenant has no btc_xpub — cannot enrich PSBT', { tenantId });
@@ -123,22 +123,23 @@ export class SweepWorker {
     const btcNetwork = this.getBtcNetwork();
 
     // Find all deposit addresses for this tenant (from customer_deposits wallet)
-    const depositAddresses = db.prepare(`
+    const depositAddresses = await db.all<{ address: string }>(`
       SELECT DISTINCT a.address
       FROM addresses a
       JOIN wallets w ON w.id = a.wallet_id
       WHERE w.tenant_id = ? AND w.wallet_role = 'customer_deposits'
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
-    `).all(tenantId) as { address: string }[];
+    `, [tenantId]);
 
     if (depositAddresses.length === 0) return;
 
     // If there's already a pending sweep that has a signing_task, nothing to do.
     // If the pending sweep has no signing_task_id (created before migration 020 or before this fix),
     // we must create a signing task for it so the signer daemon can pick it up.
-    const existingPending = db
-      .prepare("SELECT id, psbt, amount_raw, fee_raw, signing_task_id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1")
-      .get(tenantId) as { id: string; psbt: string | null; amount_raw: string; fee_raw: string | null; signing_task_id: string | null } | undefined;
+    const existingPending = await db.get<{ id: string; psbt: string | null; amount_raw: string; fee_raw: string | null; signing_task_id: string | null }>(
+      "SELECT id, psbt, amount_raw, fee_raw, signing_task_id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1",
+      [tenantId]
+    );
 
     if (existingPending) {
       if (existingPending.signing_task_id) {
@@ -155,9 +156,9 @@ export class SweepWorker {
         // We need input addresses — look them up from the sweep's from_addresses field
         let recoveryPsbt = existingPending.psbt;
         try {
-          const sweepRow = db.prepare(
-            'SELECT from_addresses FROM sweeps WHERE id = ?'
-          ).get(existingPending.id) as { from_addresses: string } | undefined;
+          const sweepRow = await db.get<{ from_addresses: string }>(
+            'SELECT from_addresses FROM sweeps WHERE id = ?', [existingPending.id]
+          );
           if (sweepRow?.from_addresses) {
             const inputAddresses: string[] = JSON.parse(sweepRow.from_addresses);
             recoveryPsbt = await enrichSweepPsbt(
@@ -173,13 +174,13 @@ export class SweepWorker {
           });
         }
 
-        const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
-        const policyDecision = signerPolicyService.evaluateDecision(
+        const selectedSigner = await externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
+        const policyDecision = await signerPolicyService.evaluateDecision(
           tenantId, selectedSigner?.id ?? null, 'bitcoin', 'bitcoin:BTC',
           existingPending.amount_raw, 5, 1
         );
 
-        const signingTask = signingTasksService.create({
+        const signingTask = await signingTasksService.create({
           tenantId,
           signerId: selectedSigner?.id ?? null,
           requestType: 'btc_sweep',
@@ -194,9 +195,9 @@ export class SweepWorker {
           decisionReason: policyDecision.reason,
         });
 
-        sweepsService.linkSigningTask(existingPending.id, signingTask.id);
+        await sweepsService.linkSigningTask(existingPending.id, signingTask.id);
 
-        ticklerService.record({
+        await ticklerService.record({
           tenantId,
           category: 'sweep',
           subcategory: 'signing_task_recovered',
@@ -286,7 +287,7 @@ export class SweepWorker {
     }
 
     // Create sweep record
-    const sweep = sweepsService.create(tenantId, {
+    const sweep = await sweepsService.create(tenantId, {
       chainId: 'bitcoin',
       assetId: 'bitcoin:BTC',
       fromAddresses: sweepableUtxos.map((u) => u.address),
@@ -297,11 +298,11 @@ export class SweepWorker {
     });
 
     // Select signer and evaluate policy — same pattern as withdrawal-batcher
-    const selectedSigner = externalSignersService.selectSigner(
+    const selectedSigner = await externalSignersService.selectSigner(
       tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt'
     );
 
-    const policyDecision = signerPolicyService.evaluateDecision(
+    const policyDecision = await signerPolicyService.evaluateDecision(
       tenantId,
       selectedSigner?.id ?? null,
       'bitcoin',
@@ -312,7 +313,7 @@ export class SweepWorker {
     );
 
     // Create signing task so the signer daemon can poll and claim it
-    const signingTask = signingTasksService.create({
+    const signingTask = await signingTasksService.create({
       tenantId,
       signerId: selectedSigner?.id ?? null,
       requestType: 'btc_sweep',
@@ -329,10 +330,10 @@ export class SweepWorker {
     });
 
     // Backlink via service — enkapsulacja SQL (worker nie pisze bezpośrednio do sweeps)
-    sweepsService.linkSigningTask(sweep.id, signingTask.id);
+    await sweepsService.linkSigningTask(sweep.id, signingTask.id);
 
     // Tickler — każda mutacja musi być zalogowana
-    ticklerService.record({
+    await ticklerService.record({
       tenantId,
       category: 'sweep',
       subcategory: 'created',

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { CustomerDocument, DocumentType, DocumentVerificationStatus } from './customers.types';
 
@@ -28,21 +28,21 @@ function mapDocument(row: any): CustomerDocument {
   };
 }
 
-function guardCustomer(tenantId: string, customerId: string): void {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT id FROM customers WHERE id = ? AND tenant_id = ?')
-    .get(customerId, tenantId);
+async function guardCustomer(tenantId: string, customerId: string): Promise<void> {
+  const db = getDbClient();
+  const row = await db.get(
+    'SELECT id FROM customers WHERE id = ? AND tenant_id = ?',
+    [customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('Customer', customerId);
 }
 
-function guardDocument(tenantId: string, customerId: string, documentId: string): any {
-  const db = getDb();
-  const row = db
-    .prepare(
-      'SELECT * FROM customer_documents WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-    )
-    .get(documentId, customerId, tenantId) as any;
+async function guardDocument(tenantId: string, customerId: string, documentId: string): Promise<any> {
+  const db = getDbClient();
+  const row = await db.get<any>(
+    'SELECT * FROM customer_documents WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+    [documentId, customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('CustomerDocument', documentId);
   return row;
 }
@@ -83,78 +83,76 @@ export interface UpdateDocumentInput {
 }
 
 export const customersDocumentsService = {
-  create(
+  async create(
     tenantId: string,
     customerId: string,
     input: CreateDocumentInput
-  ): CustomerDocument {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
+  ): Promise<CustomerDocument> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
 
     if (input.linked_identifier_id) {
-      const ident = db
-        .prepare(
-          'SELECT id FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-        )
-        .get(input.linked_identifier_id, customerId, tenantId);
+      const ident = await db.get(
+        'SELECT id FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+        [input.linked_identifier_id, customerId, tenantId]
+      );
       if (!ident) throw new NotFoundError('CustomerIdentifier', input.linked_identifier_id);
     }
 
     const id = `doc_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO customer_documents (
+    await db.run(
+      `INSERT INTO customer_documents (
         id, customer_id, tenant_id, document_type, document_subtype,
         storage_ref, storage_system, issuing_country, issuing_authority,
         issued_date, expiry_date, document_number, linked_identifier_id,
         verification_status, verified_at, verified_by, file_hash,
         uploaded_at, uploaded_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, customerId, tenantId,
-      input.document_type, input.document_subtype ?? null,
-      input.storage_ref, input.storage_system,
-      input.issuing_country ?? null, input.issuing_authority ?? null,
-      input.issued_date ?? null, input.expiry_date ?? null,
-      input.document_number ?? null, input.linked_identifier_id ?? null,
-      input.verification_status ?? 'pending',
-      input.verified_at ?? null, input.verified_by ?? null,
-      input.file_hash ?? null, now,
-      input.uploaded_by ?? null
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, customerId, tenantId,
+        input.document_type, input.document_subtype ?? null,
+        input.storage_ref, input.storage_system,
+        input.issuing_country ?? null, input.issuing_authority ?? null,
+        input.issued_date ?? null, input.expiry_date ?? null,
+        input.document_number ?? null, input.linked_identifier_id ?? null,
+        input.verification_status ?? 'pending',
+        input.verified_at ?? null, input.verified_by ?? null,
+        input.file_hash ?? null, now,
+        input.uploaded_by ?? null,
+      ]
     );
 
     return mapDocument(
-      db.prepare('SELECT * FROM customer_documents WHERE id = ?').get(id)
+      await db.get<any>('SELECT * FROM customer_documents WHERE id = ?', [id])
     );
   },
 
-  list(tenantId: string, customerId: string): CustomerDocument[] {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
-    const rows = db
-      .prepare(
-        'SELECT * FROM customer_documents WHERE customer_id = ? AND tenant_id = ? ORDER BY uploaded_at DESC'
-      )
-      .all(customerId, tenantId) as any[];
+  async list(tenantId: string, customerId: string): Promise<CustomerDocument[]> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
+    const rows = await db.all<any>(
+      'SELECT * FROM customer_documents WHERE customer_id = ? AND tenant_id = ? ORDER BY uploaded_at DESC',
+      [customerId, tenantId]
+    );
     return rows.map(mapDocument);
   },
 
-  update(
+  async update(
     tenantId: string,
     customerId: string,
     documentId: string,
     input: UpdateDocumentInput
-  ): CustomerDocument {
-    const db = getDb();
-    guardDocument(tenantId, customerId, documentId);
+  ): Promise<CustomerDocument> {
+    const db = getDbClient();
+    await guardDocument(tenantId, customerId, documentId);
 
     if (input.linked_identifier_id !== undefined && input.linked_identifier_id !== null) {
-      const ident = db
-        .prepare(
-          'SELECT id FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-        )
-        .get(input.linked_identifier_id, customerId, tenantId);
+      const ident = await db.get(
+        'SELECT id FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+        [input.linked_identifier_id, customerId, tenantId]
+      );
       if (!ident) throw new NotFoundError('CustomerIdentifier', input.linked_identifier_id);
     }
 
@@ -177,28 +175,30 @@ export const customersDocumentsService = {
     if (input.file_hash !== undefined)             { sets.push('file_hash = ?');             params.push(input.file_hash); }
 
     if (sets.length === 0) {
-      return mapDocument(guardDocument(tenantId, customerId, documentId));
+      return mapDocument(await guardDocument(tenantId, customerId, documentId));
     }
 
     params.push(documentId, customerId, tenantId);
-    db.prepare(
-      `UPDATE customer_documents SET ${sets.join(', ')} WHERE id = ? AND customer_id = ? AND tenant_id = ?`
-    ).run(...params);
+    await db.run(
+      `UPDATE customer_documents SET ${sets.join(', ')} WHERE id = ? AND customer_id = ? AND tenant_id = ?`,
+      params
+    );
 
     return mapDocument(
-      db.prepare('SELECT * FROM customer_documents WHERE id = ?').get(documentId)
+      await db.get<any>('SELECT * FROM customer_documents WHERE id = ?', [documentId])
     );
   },
 
-  getById(tenantId: string, customerId: string, documentId: string): CustomerDocument {
-    return mapDocument(guardDocument(tenantId, customerId, documentId));
+  async getById(tenantId: string, customerId: string, documentId: string): Promise<CustomerDocument> {
+    return mapDocument(await guardDocument(tenantId, customerId, documentId));
   },
 
-  delete(tenantId: string, customerId: string, documentId: string): void {
-    const db = getDb();
-    guardDocument(tenantId, customerId, documentId);
-    db.prepare(
-      'DELETE FROM customer_documents WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-    ).run(documentId, customerId, tenantId);
+  async delete(tenantId: string, customerId: string, documentId: string): Promise<void> {
+    const db = getDbClient();
+    await guardDocument(tenantId, customerId, documentId);
+    await db.run(
+      'DELETE FROM customer_documents WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+      [documentId, customerId, tenantId]
+    );
   },
 };

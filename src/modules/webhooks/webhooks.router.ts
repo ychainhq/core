@@ -38,11 +38,11 @@ const deliveriesQuerySchema = z.object({
 });
 
 // POST /v1/webhooks
-webhooksRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
+webhooksRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const body = createSchema.parse(req.body);
-    const { webhook, secret } = webhooksService.create(tenantId, body);
+    const { webhook, secret } = await webhooksService.create(tenantId, body);
     ticklerService.record({
       tenantId,
       category: 'webhook',
@@ -65,11 +65,11 @@ webhooksRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/webhooks
-webhooksRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+webhooksRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const query = listQuerySchema.parse(req.query);
-    const result = webhooksService.list(tenantId, query);
+    const result = await webhooksService.list(tenantId, query);
     res.json({
       data: result.data,
       pagination: {
@@ -84,10 +84,10 @@ webhooksRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/webhooks/:webhookId
-webhooksRouter.get('/:webhookId', (req: Request, res: Response, next: NextFunction) => {
+webhooksRouter.get('/:webhookId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const webhook = webhooksService.getById(tenantId, req.params['webhookId']!);
+    const webhook = await webhooksService.getById(tenantId, req.params['webhookId']!);
     res.json({ data: webhook });
   } catch (err) {
     next(err);
@@ -95,12 +95,12 @@ webhooksRouter.get('/:webhookId', (req: Request, res: Response, next: NextFuncti
 });
 
 // PATCH /v1/webhooks/:webhookId
-webhooksRouter.patch('/:webhookId', (req: Request, res: Response, next: NextFunction) => {
+webhooksRouter.patch('/:webhookId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const body = updateSchema.parse(req.body);
-    const prev = webhooksService.getById(tenantId, req.params['webhookId']!);
-    const webhook = webhooksService.update(tenantId, req.params['webhookId']!, body);
+    const prev = await webhooksService.getById(tenantId, req.params['webhookId']!);
+    const webhook = await webhooksService.update(tenantId, req.params['webhookId']!, body);
     ticklerService.record({
       tenantId,
       category: 'webhook',
@@ -117,11 +117,11 @@ webhooksRouter.patch('/:webhookId', (req: Request, res: Response, next: NextFunc
 });
 
 // DELETE /v1/webhooks/:webhookId
-webhooksRouter.delete('/:webhookId', (req: Request, res: Response, next: NextFunction) => {
+webhooksRouter.delete('/:webhookId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const prev = webhooksService.getById(tenantId, req.params['webhookId']!);
-    const webhook = webhooksService.deactivate(tenantId, req.params['webhookId']!);
+    const prev = await webhooksService.getById(tenantId, req.params['webhookId']!);
+    const webhook = await webhooksService.deactivate(tenantId, req.params['webhookId']!);
     ticklerService.record({
       tenantId,
       category: 'webhook',
@@ -142,8 +142,8 @@ webhooksRouter.post('/:webhookId/test', async (req: Request, res: Response, next
   try {
     const tenantId = (req as any).tenantId as string;
     const webhookId = req.params['webhookId']!;
-    const webhook = webhooksService.getById(tenantId, webhookId);
-    const secret = webhooksService.getSecret(tenantId, webhookId);
+    const webhook = await webhooksService.getById(tenantId, webhookId);
+    const secret = await webhooksService.getSecret(tenantId, webhookId);
 
     const timestamp = Date.now();
     const payload = {
@@ -192,11 +192,11 @@ webhooksRouter.post('/:webhookId/test', async (req: Request, res: Response, next
 });
 
 // GET /v1/webhook-deliveries
-webhookDeliveriesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+webhookDeliveriesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const query = deliveriesQuerySchema.parse(req.query);
-    const result = webhooksService.listDeliveries(tenantId, query);
+    const result = await webhooksService.listDeliveries(tenantId, query);
     res.json({
       data: result.data,
       pagination: {
@@ -211,10 +211,10 @@ webhookDeliveriesRouter.get('/', (req: Request, res: Response, next: NextFunctio
 });
 
 // POST /v1/webhook-deliveries/:deliveryId/retry
-webhookDeliveriesRouter.post('/:deliveryId/retry', (req: Request, res: Response, next: NextFunction) => {
+webhookDeliveriesRouter.post('/:deliveryId/retry', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const delivery = webhooksService.retryDelivery(tenantId, req.params['deliveryId']!);
+    const delivery = await webhooksService.retryDelivery(tenantId, req.params['deliveryId']!);
     res.json({ data: delivery });
   } catch (err) {
     next(err);

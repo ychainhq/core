@@ -9,10 +9,10 @@ const listQuerySchema = z.object({
   type: z.string().optional(),
 });
 
-assetsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+assetsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = listQuerySchema.parse(req.query);
-    const assets = assetsService.list({ chain: query.chain, type: query.type });
+    const assets = await assetsService.list({ chain: query.chain, type: query.type });
     res.json({ data: assets });
   } catch (err) {
     next(err);

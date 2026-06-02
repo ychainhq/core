@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import {
   CustomerRelationship,
@@ -32,21 +32,21 @@ function mapRelationship(row: any): CustomerRelationship {
   };
 }
 
-function guardCustomer(tenantId: string, customerId: string): void {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT id FROM customers WHERE id = ? AND tenant_id = ?')
-    .get(customerId, tenantId);
+async function guardCustomer(tenantId: string, customerId: string): Promise<void> {
+  const db = getDbClient();
+  const row = await db.get(
+    'SELECT id FROM customers WHERE id = ? AND tenant_id = ?',
+    [customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('Customer', customerId);
 }
 
-function guardRelationship(tenantId: string, customerId: string, relationshipId: string): any {
-  const db = getDb();
-  const row = db
-    .prepare(
-      'SELECT * FROM customer_relationships WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-    )
-    .get(relationshipId, customerId, tenantId) as any;
+async function guardRelationship(tenantId: string, customerId: string, relationshipId: string): Promise<any> {
+  const db = getDbClient();
+  const row = await db.get<any>(
+    'SELECT * FROM customer_relationships WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+    [relationshipId, customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('CustomerRelationship', relationshipId);
   return row;
 }
@@ -82,13 +82,13 @@ export interface UpdateRelationshipInput {
 }
 
 export const customersRelationshipsService = {
-  create(
+  async create(
     tenantId: string,
     customerId: string,
     input: CreateRelationshipInput
-  ): CustomerRelationship {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
+  ): Promise<CustomerRelationship> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
 
     if (!input.related_customer_id && !input.external_party) {
       throw new Error(
@@ -97,66 +97,67 @@ export const customersRelationshipsService = {
     }
 
     if (input.related_customer_id) {
-      const related = db
-        .prepare('SELECT id FROM customers WHERE id = ? AND tenant_id = ?')
-        .get(input.related_customer_id, tenantId);
+      const related = await db.get(
+        'SELECT id FROM customers WHERE id = ? AND tenant_id = ?',
+        [input.related_customer_id, tenantId]
+      );
       if (!related) throw new NotFoundError('Customer', input.related_customer_id);
     }
 
     const id = `rel_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO customer_relationships (
+    await db.run(
+      `INSERT INTO customer_relationships (
         id, customer_id, tenant_id, related_customer_id, external_party,
         relationship_type, role_title, ownership_percentage, voting_rights_percentage,
         is_direct_ownership, valid_from, valid_until,
         verified, verified_at, verification_method, notes,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, customerId, tenantId,
-      input.related_customer_id ?? null,
-      input.external_party ? JSON.stringify(input.external_party) : null,
-      input.relationship_type,
-      input.role_title ?? null,
-      input.ownership_percentage ?? null,
-      input.voting_rights_percentage ?? null,
-      input.is_direct_ownership !== undefined && input.is_direct_ownership !== null
-        ? (input.is_direct_ownership ? 1 : 0) : null,
-      input.valid_from ?? null,
-      input.valid_until ?? null,
-      input.verified ? 1 : 0,
-      input.verified_at ?? null,
-      input.verification_method ?? null,
-      input.notes ?? null,
-      now, now
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, customerId, tenantId,
+        input.related_customer_id ?? null,
+        input.external_party ? JSON.stringify(input.external_party) : null,
+        input.relationship_type,
+        input.role_title ?? null,
+        input.ownership_percentage ?? null,
+        input.voting_rights_percentage ?? null,
+        input.is_direct_ownership !== undefined && input.is_direct_ownership !== null
+          ? (input.is_direct_ownership ? 1 : 0) : null,
+        input.valid_from ?? null,
+        input.valid_until ?? null,
+        input.verified ? 1 : 0,
+        input.verified_at ?? null,
+        input.verification_method ?? null,
+        input.notes ?? null,
+        now, now,
+      ]
     );
 
     return mapRelationship(
-      db.prepare('SELECT * FROM customer_relationships WHERE id = ?').get(id)
+      await db.get<any>('SELECT * FROM customer_relationships WHERE id = ?', [id])
     );
   },
 
-  list(tenantId: string, customerId: string): CustomerRelationship[] {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
-    const rows = db
-      .prepare(
-        'SELECT * FROM customer_relationships WHERE customer_id = ? AND tenant_id = ? ORDER BY created_at'
-      )
-      .all(customerId, tenantId) as any[];
+  async list(tenantId: string, customerId: string): Promise<CustomerRelationship[]> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
+    const rows = await db.all<any>(
+      'SELECT * FROM customer_relationships WHERE customer_id = ? AND tenant_id = ? ORDER BY created_at',
+      [customerId, tenantId]
+    );
     return rows.map(mapRelationship);
   },
 
-  update(
+  async update(
     tenantId: string,
     customerId: string,
     relationshipId: string,
     input: UpdateRelationshipInput
-  ): CustomerRelationship {
-    const db = getDb();
-    guardRelationship(tenantId, customerId, relationshipId);
+  ): Promise<CustomerRelationship> {
+    const db = getDbClient();
+    await guardRelationship(tenantId, customerId, relationshipId);
 
     const now = new Date().toISOString();
     const sets: string[] = [];
@@ -181,29 +182,31 @@ export const customersRelationshipsService = {
     if (input.notes !== undefined)              { sets.push('notes = ?');              params.push(input.notes); }
 
     if (sets.length === 0) {
-      return mapRelationship(guardRelationship(tenantId, customerId, relationshipId));
+      return mapRelationship(await guardRelationship(tenantId, customerId, relationshipId));
     }
 
     sets.push('updated_at = ?');
     params.push(now, relationshipId, customerId, tenantId);
-    db.prepare(
-      `UPDATE customer_relationships SET ${sets.join(', ')} WHERE id = ? AND customer_id = ? AND tenant_id = ?`
-    ).run(...params);
+    await db.run(
+      `UPDATE customer_relationships SET ${sets.join(', ')} WHERE id = ? AND customer_id = ? AND tenant_id = ?`,
+      params
+    );
 
     return mapRelationship(
-      db.prepare('SELECT * FROM customer_relationships WHERE id = ?').get(relationshipId)
+      await db.get<any>('SELECT * FROM customer_relationships WHERE id = ?', [relationshipId])
     );
   },
 
-  getById(tenantId: string, customerId: string, relationshipId: string): CustomerRelationship {
-    return mapRelationship(guardRelationship(tenantId, customerId, relationshipId));
+  async getById(tenantId: string, customerId: string, relationshipId: string): Promise<CustomerRelationship> {
+    return mapRelationship(await guardRelationship(tenantId, customerId, relationshipId));
   },
 
-  delete(tenantId: string, customerId: string, relationshipId: string): void {
-    const db = getDb();
-    guardRelationship(tenantId, customerId, relationshipId);
-    db.prepare(
-      'DELETE FROM customer_relationships WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-    ).run(relationshipId, customerId, tenantId);
+  async delete(tenantId: string, customerId: string, relationshipId: string): Promise<void> {
+    const db = getDbClient();
+    await guardRelationship(tenantId, customerId, relationshipId);
+    await db.run(
+      'DELETE FROM customer_relationships WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+      [relationshipId, customerId, tenantId]
+    );
   },
 };

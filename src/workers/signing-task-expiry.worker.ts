@@ -47,10 +47,10 @@ export class SigningTaskExpiryWorker {
 
   async run(): Promise<void> {
     // Expire overdue signing tasks (releases UTXO locks internally)
-    const expiredCount = signingTasksService.expireAllOverdue();
+    const expiredCount = await signingTasksService.expireAllOverdue();
     if (expiredCount > 0) {
       logger.info('SigningTaskExpiryWorker: expired tasks', { count: expiredCount });
-      ticklerService.record({
+      await ticklerService.record({
         tenantId: null,
         category: 'signing_task',
         subcategory: 'bulk_expired',
@@ -60,7 +60,7 @@ export class SigningTaskExpiryWorker {
     }
 
     // Cleanup any lingering expired UTXO locks (safety net)
-    const cleanedLocks = utxoLockService.cleanupExpiredLocks();
+    const cleanedLocks = await utxoLockService.cleanupExpiredLocks();
     if (cleanedLocks > 0) {
       logger.info('SigningTaskExpiryWorker: cleaned expired UTXO locks', { count: cleanedLocks });
     }

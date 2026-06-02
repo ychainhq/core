@@ -25,9 +25,9 @@ function tenantId(req: Request): string {
 }
 
 // GET /v1/sweeps/summary
-sweepsRouter.get('/summary', (req: Request, res: Response, next: NextFunction) => {
+sweepsRouter.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const summary = sweepsService.getSummary(tenantId(req));
+    const summary = await sweepsService.getSummary(tenantId(req));
     res.json({ data: summary });
   } catch (err) {
     next(err);
@@ -35,10 +35,10 @@ sweepsRouter.get('/summary', (req: Request, res: Response, next: NextFunction) =
 });
 
 // GET /v1/sweeps
-sweepsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+sweepsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = listQuerySchema.parse(req.query);
-    const result = sweepsService.list(tenantId(req), query);
+    const result = await sweepsService.list(tenantId(req), query);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -49,9 +49,9 @@ sweepsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/sweeps/:sweepId
-sweepsRouter.get('/:sweepId', (req: Request, res: Response, next: NextFunction) => {
+sweepsRouter.get('/:sweepId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const sweep = sweepsService.getById(tenantId(req), req.params['sweepId']!);
+    const sweep = await sweepsService.getById(tenantId(req), req.params['sweepId']!);
     res.json({ data: sweep });
   } catch (err) {
     next(err);
@@ -64,7 +64,7 @@ sweepsRouter.get('/:sweepId', (req: Request, res: Response, next: NextFunction) 
 sweepsRouter.post('/:sweepId/submit-signed', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = submitSignedSchema.parse(req.body);
-    const sweep = sweepsService.getById(tenantId(req), req.params['sweepId']!);
+    const sweep = await sweepsService.getById(tenantId(req), req.params['sweepId']!);
 
     if (sweep.status !== 'pending_signature') {
       throw new ValidationError(`Sweep is in status '${sweep.status}', expected 'pending_signature'`);
@@ -81,19 +81,19 @@ sweepsRouter.post('/:sweepId/submit-signed', async (req: Request, res: Response,
       }
       txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
-      sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
+      await sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
       throw new ValidationError(`Failed to broadcast sweep: ${err.message ?? err}`);
     }
 
-    const updated = sweepsService.updateStatus(sweep.id, 'broadcast', {
+    const updated = await sweepsService.updateStatus(sweep.id, 'broadcast', {
       signedPsbt: body.signedPsbt,
       txHash,
     });
 
     // Credit sweep_in_transit — funds are in flight from deposit addresses to hot wallet
-    const sitAccount = ledgerService.findAccountByTenantAndType(tenantId(req), 'sweep_in_transit');
+    const sitAccount = await ledgerService.findAccountByTenantAndType(tenantId(req), 'sweep_in_transit');
     if (sitAccount) {
-      ledgerService.addEntry({
+      await ledgerService.addEntry({
         ledgerAccountId: sitAccount.id,
         type: 'sweep_broadcast',
         amountRaw: sweep.amount_raw,

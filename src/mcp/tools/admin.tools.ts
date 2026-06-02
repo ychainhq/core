@@ -38,22 +38,22 @@ export function registerAdminTools(server: McpServer, ctx: McpAuthContext): void
     },
     annotations: write,
   }, async ({ assets, ...input }: any) => safeTool(async () => {
-    const tenant = tenantsService.create(input);
+    const tenant = await tenantsService.create(input);
     await tenantsService.provision(tenant.id, assets);
-    return { data: tenantsService.getById(tenant.id) };
+    return { data: await tenantsService.getById(tenant.id) };
   }));
 
   server.registerTool('chainapi_admin_list_tenants', {
     description: 'List tenants.',
     inputSchema: { ...paging, status: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(tenantsService.list(input), input)));
+  }, async (input: any) => safeTool(async () => page(await tenantsService.list(input), input)));
 
   server.registerTool('chainapi_admin_get_tenant', {
     description: 'Get tenant details.',
     inputSchema: { tenantId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ tenantId }: any) => safeTool(() => ({ data: tenantsService.getById(tenantId) })));
+  }, async ({ tenantId }: any) => safeTool(async () => ({ data: await tenantsService.getById(tenantId) })));
 
   server.registerTool('chainapi_admin_update_tenant', {
     description: 'Update tenant profile/status.',
@@ -64,13 +64,13 @@ export function registerAdminTools(server: McpServer, ctx: McpAuthContext): void
       metadata,
     },
     annotations: write,
-  }, async ({ tenantId, ...input }: any) => safeTool(() => ({ data: tenantsService.update(tenantId, input) })));
+  }, async ({ tenantId, ...input }: any) => safeTool(async () => ({ data: await tenantsService.update(tenantId, input) })));
 
   server.registerTool('chainapi_admin_get_tenant_config', {
     description: 'Get tenant configuration.',
     inputSchema: { tenantId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ tenantId }: any) => safeTool(() => ({ data: tenantsService.getById(tenantId).config })));
+  }, async ({ tenantId }: any) => safeTool(async () => ({ data: (await tenantsService.getById(tenantId)).config })));
 
   server.registerTool('chainapi_admin_update_tenant_config', {
     description: 'Update tenant configuration, including admin-only custody fields.',
@@ -95,8 +95,8 @@ export function registerAdminTools(server: McpServer, ctx: McpAuthContext): void
     description: 'Create a tenant API key. The raw apiKey is returned once and must be treated as a secret.',
     inputSchema: { tenantId: z.string().min(1), name: z.string().min(1).max(200) },
     annotations: write,
-  }, async ({ tenantId, name }: any) => safeTool(() => {
-    const result = tenantsService.generateApiKey(tenantId, name);
+  }, async ({ tenantId, name }: any) => safeTool(async () => {
+    const result = await tenantsService.generateApiKey(tenantId, name);
     return {
       data: {
         keyId: result.keyId,
@@ -122,8 +122,8 @@ export function registerAdminTools(server: McpServer, ctx: McpAuthContext): void
       ...paging,
     },
     annotations: readOnly,
-  }, async ({ tenantId: tId, ...input }: any) => safeTool(() => {
-    const result = ticklerService.list({ tenantId: tId ?? undefined, includeGlobal: true, ...input });
+  }, async ({ tenantId: tId, ...input }: any) => safeTool(async () => {
+    const result = await ticklerService.list({ tenantId: tId ?? undefined, includeGlobal: true, ...input });
     return page(result, input);
   }));
 
@@ -141,8 +141,8 @@ export function registerAdminTools(server: McpServer, ctx: McpAuthContext): void
       ...paging,
     },
     annotations: readOnly,
-  }, async ({ tenantId: tId, includeGlobal, ...input }: any) => safeTool(() => {
-    const result = ticklerService.list({ tenantId: tId, includeGlobal: includeGlobal ?? false, ...input });
+  }, async ({ tenantId: tId, includeGlobal, ...input }: any) => safeTool(async () => {
+    const result = await ticklerService.list({ tenantId: tId, includeGlobal: includeGlobal ?? false, ...input });
     return page(result, input);
   }));
 }

@@ -34,7 +34,7 @@ monitorsRouter.post('/addresses', async (req: Request, res: Response, next: Next
   try {
     const tenantId = (req as any).tenantId as string;
     const body = addSchema.parse(req.body);
-    const monitor = monitorsService.add(tenantId, body);
+    const monitor = await monitorsService.add(tenantId, body);
 
     // Import into tenant's Bitcoin Core watch-only wallet so listunspent can detect UTXOs
     if (body.chain === 'bitcoin') {
@@ -63,11 +63,11 @@ monitorsRouter.post('/addresses', async (req: Request, res: Response, next: Next
 });
 
 // GET /v1/monitors/addresses
-monitorsRouter.get('/addresses', (req: Request, res: Response, next: NextFunction) => {
+monitorsRouter.get('/addresses', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const query = listQuerySchema.parse(req.query);
-    const result = monitorsService.list(tenantId, query);
+    const result = await monitorsService.list(tenantId, query);
     res.json({
       data: result.data,
       pagination: {
@@ -82,10 +82,10 @@ monitorsRouter.get('/addresses', (req: Request, res: Response, next: NextFunctio
 });
 
 // DELETE /v1/monitors/addresses/:monitorId
-monitorsRouter.delete('/addresses/:monitorId', (req: Request, res: Response, next: NextFunction) => {
+monitorsRouter.delete('/addresses/:monitorId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const monitor = monitorsService.deactivate(tenantId, req.params['monitorId']!);
+    const monitor = await monitorsService.deactivate(tenantId, req.params['monitorId']!);
     ticklerService.record({
       tenantId,
       category: 'address',

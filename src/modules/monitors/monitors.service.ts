@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ValidationError, ConflictError } from '../../shared/errors/index';
 import { adapterRegistry } from '../../chain-adapters/registry';
 import { toUnixTs } from '../../shared/time/index';
@@ -31,7 +31,7 @@ function mapWatchedAddress(row: any): WatchedAddress {
 }
 
 export const monitorsService = {
-  add(tenantId: string, input: {
+  async add(tenantId: string, input: {
     chain: string;
     address: string;
     label?: string;
@@ -39,11 +39,11 @@ export const monitorsService = {
     events?: string[];
     webhookId?: string;
     metadata?: Record<string, unknown>;
-  }): WatchedAddress {
-    const db = getDb();
+  }): Promise<WatchedAddress> {
+    const db = getDbClient();
 
     // Validate chain
-    const chain = db.prepare('SELECT id FROM chains WHERE id = ?').get(input.chain);
+    const chain = await db.get('SELECT id FROM chains WHERE id = ?', [input.chain]);
     if (!chain) throw new NotFoundError('Chain', input.chain);
 
     // Validate address
@@ -56,10 +56,10 @@ export const monitorsService = {
     const now = new Date().toISOString();
 
     try {
-      db.prepare(`
+      await db.run(`
         INSERT INTO watched_addresses (id, tenant_id, chain_id, address, wallet_id, label, events, webhook_id, is_active, metadata, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-      `).run(
+      `, [
         id,
         tenantId,
         input.chain,
@@ -71,7 +71,7 @@ export const monitorsService = {
         input.metadata ? JSON.stringify(input.metadata) : null,
         now,
         now
-      );
+      ]);
     } catch (err: any) {
       if (err?.message?.includes('UNIQUE constraint')) {
         throw new ConflictError(`Address ${input.address} is already monitored for chain ${input.chain}`);
@@ -79,17 +79,17 @@ export const monitorsService = {
       throw err;
     }
 
-    return monitorsService.getById(tenantId, id);
+    return await monitorsService.getById(tenantId, id);
   },
 
-  list(tenantId: string, filters: {
+  async list(tenantId: string, filters: {
     chain?: string;
     walletId?: string;
     isActive?: boolean;
     limit?: number;
     cursor?: string;
-  } = {}): { data: WatchedAddress[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: WatchedAddress[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM watched_addresses WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -112,7 +112,7 @@ export const monitorsService = {
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -122,21 +122,21 @@ export const monitorsService = {
     };
   },
 
-  getById(tenantId: string, id: string): WatchedAddress {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM watched_addresses WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getById(tenantId: string, id: string): Promise<WatchedAddress> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM watched_addresses WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Monitor', id);
     return mapWatchedAddress(row);
   },
 
-  deactivate(tenantId: string, id: string): WatchedAddress {
-    const db = getDb();
-    const existing = monitorsService.getById(tenantId, id);
-    db.prepare('UPDATE watched_addresses SET is_active = 0, updated_at = ? WHERE id = ? AND tenant_id = ?').run(
+  async deactivate(tenantId: string, id: string): Promise<WatchedAddress> {
+    const db = getDbClient();
+    const existing = await monitorsService.getById(tenantId, id);
+    await db.run('UPDATE watched_addresses SET is_active = 0, updated_at = ? WHERE id = ? AND tenant_id = ?', [
       new Date().toISOString(),
       id,
       tenantId
-    );
+    ]);
     return { ...existing, is_active: false };
   },
 
@@ -145,28 +145,29 @@ export const monitorsService = {
    * Used by addresses.service when registering a new address so it gets monitored
    * without duplicating business logic or throwing on conflict.
    */
-  ensureWatched(tenantId: string, input: {
+  async ensureWatched(tenantId: string, input: {
     chainId: string;
     address: string;
     walletId?: string;
     label?: string;
-  }): void {
-    const db = getDb();
+  }): Promise<void> {
+    const db = getDbClient();
     const id = `mon_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
-    db.prepare(`
+    await db.run(`
       INSERT OR IGNORE INTO watched_addresses
         (id, tenant_id, chain_id, address, wallet_id, label, events, is_active, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, '["incoming"]', 1, ?, ?)
-    `).run(id, tenantId, input.chainId, input.address, input.walletId ?? null, input.label ?? null, now, now);
+    `, [id, tenantId, input.chainId, input.address, input.walletId ?? null, input.label ?? null, now, now]);
   },
 
   // Used by workers — intentionally cross-tenant
-  getActiveByChain(chainId: string): WatchedAddress[] {
-    const db = getDb();
-    const rows = db
-      .prepare('SELECT * FROM watched_addresses WHERE chain_id = ? AND is_active = 1')
-      .all(chainId);
+  async getActiveByChain(chainId: string): Promise<WatchedAddress[]> {
+    const db = getDbClient();
+    const rows = await db.all(
+      'SELECT * FROM watched_addresses WHERE chain_id = ? AND is_active = 1',
+      [chainId]
+    );
     return rows.map(mapWatchedAddress);
   },
 };

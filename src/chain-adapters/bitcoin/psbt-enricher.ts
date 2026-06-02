@@ -13,7 +13,7 @@
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 import BIP32Factory from 'bip32';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { logger } from '../../shared/logging/index';
 
 try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
@@ -38,14 +38,15 @@ export async function enrichSweepPsbt(
   // fingerprint = first 4 bytes of hash160(accountNode.publicKey) — identifies this key to the signer
   const masterFingerprint = Buffer.from(accountNode.fingerprint);
 
-  const db = getDb();
+  const db = getDbClient();
 
   for (let i = 0; i < inputAddresses.length; i++) {
     const address = inputAddresses[i];
 
-    const row = db.prepare(
-      'SELECT metadata FROM addresses WHERE tenant_id = ? AND address = ? LIMIT 1'
-    ).get(tenantId, address) as { metadata: string | null } | undefined;
+    const row = await db.get<{ metadata: string | null }>(
+      'SELECT metadata FROM addresses WHERE tenant_id = ? AND address = ? LIMIT 1',
+      [tenantId, address]
+    );
 
     if (!row?.metadata) {
       throw new Error(

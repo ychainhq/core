@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { adapterRegistry } from '../../chain-adapters/registry';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { ValidationError, UnprocessableEntityError, NotFoundError } from '../../shared/errors/index';
 import { satoshiToBtc, addSatoshi } from '../../shared/money/index';
 import { validateRawTransaction, validatePsbt } from '../../shared/validation/bitcoin';
@@ -171,13 +171,13 @@ export const bitcoinTransactionsService = {
       }
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const txId = `tx_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
-    db.prepare(`
+    await db.run(`
       INSERT INTO transactions (id, chain_id, tx_hash, psbt, status, fee_raw, fee_rate, wallet_id, metadata, created_at, updated_at)
       VALUES (?, 'bitcoin', NULL, ?, 'prepared', ?, ?, ?, ?, ?, ?)
-    `).run(
+    `, [
       txId,
       psbtResult?.psbt ?? null,
       coinSel.estimatedFee,
@@ -186,7 +186,7 @@ export const bitcoinTransactionsService = {
       JSON.stringify({ tenantId, fromAddresses: input.fromAddresses }),
       now,
       now
-    );
+    ]);
 
     return {
       txId,
@@ -224,7 +224,7 @@ export const bitcoinTransactionsService = {
     }
 
     const txHash = await adapter.sendRawTransaction(rawTransaction);
-    const tx = transactionsService.upsertByHash(chain, txHash, {
+    const tx = await transactionsService.upsertByHash(chain, txHash, {
       raw_tx: rawTransaction,
       status: 'broadcasted',
       broadcast_at: new Date().toISOString(),
@@ -250,7 +250,7 @@ export const bitcoinTransactionsService = {
     const adapter = adapterRegistry.get(chain);
     const [rawTx, localTx] = await Promise.all([
       adapter.getRawTransaction(txHash, true),
-      Promise.resolve(transactionsService.getByTxHash(chain, txHash)),
+      transactionsService.getByTxHash(chain, txHash),
     ]);
     return { ...(rawTx as Record<string, unknown>), local: localTx ?? null };
   },
@@ -258,7 +258,7 @@ export const bitcoinTransactionsService = {
   async getTransactionStatus(chain: string, txHash: string): Promise<Record<string, unknown>> {
     const adapter = adapterRegistry.get(chain);
     const status = await adapter.getTransactionStatus(txHash);
-    const localTx = transactionsService.getByTxHash(chain, txHash);
+    const localTx = await transactionsService.getByTxHash(chain, txHash);
     return { ...((status as unknown) as Record<string, unknown>), localStatus: localTx?.status ?? null };
   },
 
@@ -269,13 +269,14 @@ export const bitcoinTransactionsService = {
   },
 
   async getWalletUtxos(tenantId: string, walletId: string, minConfirmations = 0): Promise<unknown[]> {
-    const db = getDb();
-    const wallet = db.prepare('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?').get(walletId, tenantId);
+    const db = getDbClient();
+    const wallet = await db.get('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?', [walletId, tenantId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
-    const addresses = db
-      .prepare("SELECT address FROM addresses WHERE wallet_id = ? AND chain_id = 'bitcoin' AND status = 'active'")
-      .all(walletId) as { address: string }[];
+    const addresses = await db.all<{ address: string }>(
+      "SELECT address FROM addresses WHERE wallet_id = ? AND chain_id = 'bitcoin' AND status = 'active'",
+      [walletId]
+    );
 
     const allUtxos: unknown[] = [];
     for (const { address } of addresses) {
@@ -305,13 +306,13 @@ export const bitcoinTransactionsService = {
   },
 
   async getWalletBalances(tenantId: string, walletId: string): Promise<Record<string, unknown>> {
-    const db = getDb();
-    const wallet = db.prepare('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?').get(walletId, tenantId);
+    const db = getDbClient();
+    const wallet = await db.get('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?', [walletId, tenantId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
-    const addresses = db
-      .prepare('SELECT * FROM addresses WHERE wallet_id = ? AND status = ?')
-      .all(walletId, 'active') as { chain_id: string; address: string }[];
+    const addresses = await db.all<{ chain_id: string; address: string }>(
+      'SELECT * FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active']
+    );
 
     const chainGroups = new Map<string, string[]>();
     for (const addr of addresses) {

@@ -57,12 +57,12 @@ validateAddressRouter.post('/', (req: Request, res: Response, next: NextFunction
 });
 
 // POST /v1/wallets/:walletId/addresses
-addressesRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
+addressesRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const walletId = req.params['walletId']!;
     const body = addAddressSchema.parse(req.body);
-    const address = addressesService.addToWallet(tenantId, walletId, {
+    const address = await addressesService.addToWallet(tenantId, walletId, {
       ...body,
       customerId: body.customerId,
     });
@@ -85,11 +85,11 @@ addressesRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
 
 // GET /v1/addresses/resolve?address=<addr>
 // Returns whether the given address is a registered platform deposit address for this tenant.
-resolveAddressRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+resolveAddressRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const { address } = z.object({ address: z.string().min(1) }).parse(req.query);
-    const result = addressesService.resolveCustomerDeposit(tenantId, address);
+    const result = await addressesService.resolveCustomerDeposit(tenantId, address);
     res.json({ data: result });
   } catch (err) {
     next(err);
@@ -97,12 +97,12 @@ resolveAddressRouter.get('/', (req: Request, res: Response, next: NextFunction) 
 });
 
 // GET /v1/wallets/:walletId/addresses
-addressesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+addressesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const walletId = req.params['walletId']!;
     const query = listQuerySchema.parse(req.query);
-    const result = addressesService.listByWallet(tenantId, walletId, query);
+    const result = await addressesService.listByWallet(tenantId, walletId, query);
     res.json({
       data: result.data,
       pagination: {

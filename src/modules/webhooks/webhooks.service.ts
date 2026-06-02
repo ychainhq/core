@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
 import { toUnixTs } from '../../shared/time/index';
@@ -73,23 +73,23 @@ function payloadMatchesDedupe(payload: unknown, dedupe: WebhookEventDedupe): boo
 }
 
 export const webhooksService = {
-  create(tenantId: string, input: {
+  async create(tenantId: string, input: {
     url: string;
     events: string[];
     chains?: string[];
     walletId?: string;
     secret?: string;
     metadata?: Record<string, unknown>;
-  }): { webhook: Webhook; secret: string } {
-    const db = getDb();
+  }): Promise<{ webhook: Webhook; secret: string }> {
+    const db = getDbClient();
     const id = `wh_${crypto.randomBytes(8).toString('hex')}`;
     const secret = input.secret ?? crypto.randomBytes(32).toString('hex');
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO webhooks (id, tenant_id, url, events, chains, wallet_id, secret, is_active, metadata, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    `).run(
+    `, [
       id,
       tenantId,
       input.url,
@@ -99,20 +99,20 @@ export const webhooksService = {
       secret,
       input.metadata ? JSON.stringify(input.metadata) : null,
       now,
-      now
-    );
+      now,
+    ]);
 
     return {
-      webhook: webhooksService.getById(tenantId, id),
+      webhook: await webhooksService.getById(tenantId, id),
       secret,
     };
   },
 
-  list(tenantId: string, filters: { walletId?: string; limit?: number; cursor?: string } = {}): {
+  async list(tenantId: string, filters: { walletId?: string; limit?: number; cursor?: string } = {}): Promise<{
     data: Webhook[];
     nextCursor: string | null;
-  } {
-    const db = getDb();
+  }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM webhooks WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -128,7 +128,7 @@ export const webhooksService = {
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -138,21 +138,21 @@ export const webhooksService = {
     };
   },
 
-  getById(tenantId: string, id: string): Webhook {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM webhooks WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getById(tenantId: string, id: string): Promise<Webhook> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM webhooks WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Webhook', id);
     return mapWebhook(row);
   },
 
-  update(tenantId: string, id: string, input: {
+  async update(tenantId: string, id: string, input: {
     url?: string;
     events?: string[];
     chains?: string[];
     isActive?: boolean;
-  }): Webhook {
-    const db = getDb();
-    const existing = webhooksService.getById(tenantId, id);
+  }): Promise<Webhook> {
+    const db = getDbClient();
+    const existing = await webhooksService.getById(tenantId, id);
     const now = new Date().toISOString();
 
     const updates: string[] = [];
@@ -168,32 +168,32 @@ export const webhooksService = {
     updates.push('updated_at = ?');
     params.push(now, id, tenantId);
 
-    db.prepare(`UPDATE webhooks SET ${updates.join(', ')} WHERE id = ? AND tenant_id = ?`).run(...params);
+    await db.run(`UPDATE webhooks SET ${updates.join(', ')} WHERE id = ? AND tenant_id = ?`, params);
     return webhooksService.getById(tenantId, id);
   },
 
-  deactivate(tenantId: string, id: string): Webhook {
+  async deactivate(tenantId: string, id: string): Promise<Webhook> {
     return webhooksService.update(tenantId, id, { isActive: false });
   },
 
-  getSecret(tenantId: string, id: string): string {
-    const db = getDb();
-    const row = db.prepare('SELECT secret FROM webhooks WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { secret: string } | undefined;
+  async getSecret(tenantId: string, id: string): Promise<string> {
+    const db = getDbClient();
+    const row = await db.get<{ secret: string }>('SELECT secret FROM webhooks WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Webhook', id);
     return row.secret;
   },
 
   // Internal lookups without tenant filter — for webhook-delivery worker
-  getByIdInternal(id: string): Webhook {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM webhooks WHERE id = ?').get(id);
+  async getByIdInternal(id: string): Promise<Webhook> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM webhooks WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Webhook', id);
     return mapWebhook(row);
   },
 
-  getSecretInternal(id: string): string {
-    const db = getDb();
-    const row = db.prepare('SELECT secret FROM webhooks WHERE id = ?').get(id) as { secret: string } | undefined;
+  async getSecretInternal(id: string): Promise<string> {
+    const db = getDbClient();
+    const row = await db.get<{ secret: string }>('SELECT secret FROM webhooks WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Webhook', id);
     return row.secret;
   },
@@ -217,7 +217,14 @@ export const webhooksService = {
   },
 
   queueEventInternal(eventType: string, payload: unknown, chain?: string, walletId?: string, tenantId?: string, dedupe?: WebhookEventDedupe): void {
-    const db = getDb();
+    // Fire-and-forget async; errors are logged internally
+    webhooksService._queueEventInternalAsync(eventType, payload, chain, walletId, tenantId, dedupe).catch((err) => {
+      logger.error('queueEventInternal failed', { eventType, error: String(err) });
+    });
+  },
+
+  async _queueEventInternalAsync(eventType: string, payload: unknown, chain?: string, walletId?: string, tenantId?: string, dedupe?: WebhookEventDedupe): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
     let query = 'SELECT * FROM webhooks WHERE is_active = 1';
@@ -228,7 +235,7 @@ export const webhooksService = {
       params.push(tenantId);
     }
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all(query, params);
 
     for (const row of rows) {
       const webhook = mapWebhook(row);
@@ -252,9 +259,10 @@ export const webhooksService = {
       const eventId = `evt_${crypto.randomBytes(8).toString('hex')}`;
 
       if (dedupe && Object.keys(dedupe).length > 0) {
-        const existingDeliveries = db
-          .prepare('SELECT payload FROM webhook_deliveries WHERE webhook_id = ? AND event_type = ?')
-          .all(webhook.id, eventType) as { payload: string }[];
+        const existingDeliveries = await db.all<{ payload: string }>(
+          'SELECT payload FROM webhook_deliveries WHERE webhook_id = ? AND event_type = ?',
+          [webhook.id, eventType]
+        );
 
         const alreadyQueued = existingDeliveries.some((delivery) => {
           try {
@@ -269,10 +277,10 @@ export const webhooksService = {
         }
       }
 
-      db.prepare(`
+      await db.run(`
         INSERT INTO webhook_deliveries (id, webhook_id, event_id, event_type, payload, status, attempts, next_retry_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-      `).run(
+      `, [
         deliveryId,
         webhook.id,
         eventId,
@@ -280,21 +288,21 @@ export const webhooksService = {
         JSON.stringify(payload),
         now,
         now,
-        now
-      );
+        now,
+      ]);
 
       logger.debug('Queued webhook delivery', { deliveryId, eventType, webhookId: webhook.id });
     }
   },
 
-  listDeliveries(tenantId: string, filters: {
+  async listDeliveries(tenantId: string, filters: {
     webhookId?: string;
     eventType?: string;
     status?: string;
     limit?: number;
     cursor?: string;
-  } = {}): { data: WebhookDelivery[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: WebhookDelivery[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     // Join with webhooks to enforce tenant isolation
     let query = `
@@ -312,7 +320,7 @@ export const webhooksService = {
     query += ' ORDER BY wd.created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -322,24 +330,25 @@ export const webhooksService = {
     };
   },
 
-  getDeliveryById(tenantId: string, id: string): WebhookDelivery {
-    const db = getDb();
-    const row = db.prepare(`
+  async getDeliveryById(tenantId: string, id: string): Promise<WebhookDelivery> {
+    const db = getDbClient();
+    const row = await db.get(`
       SELECT wd.* FROM webhook_deliveries wd
       JOIN webhooks wh ON wh.id = wd.webhook_id
       WHERE wd.id = ? AND wh.tenant_id = ?
-    `).get(id, tenantId);
+    `, [id, tenantId]);
     if (!row) throw new NotFoundError('WebhookDelivery', id);
     return mapDelivery(row);
   },
 
-  retryDelivery(tenantId: string, id: string): WebhookDelivery {
-    const db = getDb();
+  async retryDelivery(tenantId: string, id: string): Promise<WebhookDelivery> {
+    const db = getDbClient();
     const now = new Date().toISOString();
-    const existing = webhooksService.getDeliveryById(tenantId, id);
-    db.prepare(`
-      UPDATE webhook_deliveries SET status = 'pending', next_retry_at = ?, updated_at = ? WHERE id = ?
-    `).run(now, now, id);
+    const existing = await webhooksService.getDeliveryById(tenantId, id);
+    await db.run(
+      `UPDATE webhook_deliveries SET status = 'pending', next_retry_at = ?, updated_at = ? WHERE id = ?`,
+      [now, now, id]
+    );
     return { ...existing, status: 'pending', next_retry_at: now };
   },
 
@@ -350,8 +359,8 @@ export const webhooksService = {
     responseTimeMs: number;
     error?: string;
   }> {
-    const webhook = webhooksService.getById(tenantId, webhookId);
-    const secret = webhooksService.getSecret(tenantId, webhookId);
+    const webhook = await webhooksService.getById(tenantId, webhookId);
+    const secret = await webhooksService.getSecret(tenantId, webhookId);
     const timestamp = Date.now();
     const payload = {
       event: 'webhook.test',

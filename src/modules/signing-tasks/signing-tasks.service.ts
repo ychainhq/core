@@ -7,7 +7,7 @@
  */
 
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ValidationError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
 import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
@@ -64,7 +64,7 @@ export interface SigningTask {
 }
 
 export const signingTasksService = {
-  create(input: {
+  async create(input: {
     tenantId: string;
     signerId: string | null;
     requestType: string;
@@ -80,8 +80,8 @@ export const signingTasksService = {
     unsignedPayload: string;
     decisionMode: string;
     decisionReason?: string;
-  }): SigningTask {
-    const db = getDb();
+  }): Promise<SigningTask> {
+    const db = getDbClient();
     const id = `sigtsk_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + TASK_TTL_SECONDS * 1000).toISOString();
@@ -95,7 +95,7 @@ export const signingTasksService = {
     // Status: if manual decision, start at pending_approval; if auto, start at available
     const initialStatus = input.decisionMode === 'manual' ? 'pending_approval' : 'available';
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO signing_tasks (
         id, tenant_id, signer_id,
         request_type, chain_id, asset_id,
@@ -105,44 +105,45 @@ export const signingTasksService = {
         status, decision_mode, decision_reason,
         expires_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `, [
       id, input.tenantId, input.signerId,
       input.requestType, input.chainId, input.assetId,
       input.withdrawalBatchId ?? null, input.sweepId ?? null,
       input.amountRaw, input.feeRaw ?? null, input.feeRateSatVb ?? null, input.outputsCount ?? null,
       input.payloadFormat, input.unsignedPayload, unsignedPayloadHash,
       initialStatus, input.decisionMode, input.decisionReason ?? null,
-      expiresAt, now, now
-    );
+      expiresAt, now, now,
+    ]);
 
     logger.info('Signing task created', { id, tenantId: input.tenantId, status: initialStatus });
     return signingTasksService.getByIdInternal(id);
   },
 
-  getByIdInternal(id: string): SigningTask {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM signing_tasks WHERE id = ?').get(id) as SigningTask | undefined;
+  async getByIdInternal(id: string): Promise<SigningTask> {
+    const db = getDbClient();
+    const row = await db.get<SigningTask>('SELECT * FROM signing_tasks WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('SigningTask', id);
     return row;
   },
 
-  getById(tenantId: string, id: string): SigningTask {
-    const db = getDb();
-    const row = db.prepare(
-      'SELECT * FROM signing_tasks WHERE id = ? AND tenant_id = ?'
-    ).get(id, tenantId) as SigningTask | undefined;
+  async getById(tenantId: string, id: string): Promise<SigningTask> {
+    const db = getDbClient();
+    const row = await db.get<SigningTask>(
+      'SELECT * FROM signing_tasks WHERE id = ? AND tenant_id = ?',
+      [id, tenantId]
+    );
     if (!row) throw new NotFoundError('SigningTask', id);
     return row;
   },
 
-  list(tenantId: string, filters: {
+  async list(tenantId: string, filters: {
     status?: string;
     chainId?: string;
     requestType?: string;
     limit?: number;
     cursor?: string;
-  } = {}): { data: SigningTask[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: SigningTask[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM signing_tasks WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -154,7 +155,7 @@ export const signingTasksService = {
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as SigningTask[];
+    const rows = await db.all<SigningTask>(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
     return { data: items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
@@ -163,11 +164,11 @@ export const signingTasksService = {
   /**
    * List tasks that are available for a specific signer to claim.
    */
-  listAvailableForSigner(tenantId: string, signerId: string, limit = 10): SigningTask[] {
-    const db = getDb();
+  async listAvailableForSigner(tenantId: string, signerId: string, limit = 10): Promise<SigningTask[]> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    return db.prepare(`
+    return db.all<SigningTask>(`
       SELECT * FROM signing_tasks
       WHERE tenant_id = ?
         AND (signer_id = ? OR signer_id IS NULL)
@@ -175,14 +176,14 @@ export const signingTasksService = {
         AND (expires_at IS NULL OR expires_at > ?)
       ORDER BY created_at ASC
       LIMIT ?
-    `).all(tenantId, signerId, now, limit) as SigningTask[];
+    `, [tenantId, signerId, now, limit]);
   },
 
   /**
    * Claim a task for signing. Idempotent if already claimed by same signer.
    */
   async claimTask(tenantId: string, taskId: string, signerId: string): Promise<SigningTask> {
-    const task = signingTasksService.getById(tenantId, taskId);
+    const task = await signingTasksService.getById(tenantId, taskId);
 
     if (task.status === 'claimed' && task.claimed_by_signer_id === signerId) {
       return task; // Idempotent
@@ -194,18 +195,18 @@ export const signingTasksService = {
 
     // Check expiry
     if (task.expires_at && new Date(task.expires_at) < new Date()) {
-      signingTasksService.expireTask(taskId);
+      await signingTasksService.expireTask(taskId);
       throw new ValidationError(`Task ${taskId} has expired`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    const result = db.prepare(`
+    const result = await db.run(`
       UPDATE signing_tasks
       SET status = 'claimed', claimed_by_signer_id = ?, claimed_at = ?, updated_at = ?
       WHERE id = ? AND status = 'available'
-    `).run(signerId, now, now, taskId);
+    `, [signerId, now, now, taskId]);
 
     if (result.changes === 0) {
       throw new ValidationError(`Task ${taskId} was concurrently claimed by another signer`);
@@ -230,7 +231,7 @@ export const signingTasksService = {
       signedAt?: string;
     }
   ): Promise<SigningTask> {
-    const task = signingTasksService.getById(tenantId, taskId);
+    const task = await signingTasksService.getById(tenantId, taskId);
 
     if (task.status === 'signed' || task.status === 'submitted') {
       return task; // Idempotent
@@ -254,10 +255,10 @@ export const signingTasksService = {
       throw new ValidationError('signedPayloadHash does not match signed payload');
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       UPDATE signing_tasks
       SET status = 'signed',
           signed_payload = ?,
@@ -267,18 +268,18 @@ export const signingTasksService = {
           signed_at = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(
+    `, [
       input.signedPayload,
       input.signedPayloadHash,
       input.signerFingerprint,
       input.signerResponseSignature ?? null,
       input.signedAt ?? now,
       now,
-      taskId
-    );
+      taskId,
+    ]);
 
     // Record in audit log
-    signingTasksService.recordAudit(task, 'signed', signerId, input.signedPayloadHash);
+    await signingTasksService.recordAudit(task, 'signed', signerId, input.signedPayloadHash);
 
     logger.info('Signing task signed', { taskId, signerId, tenantId });
 
@@ -330,7 +331,7 @@ export const signingTasksService = {
       rejectedAt?: string;
     }
   ): Promise<SigningTask> {
-    const task = signingTasksService.getById(tenantId, taskId);
+    const task = await signingTasksService.getById(tenantId, taskId);
 
     if (task.status === 'rejected') return task; // Idempotent
 
@@ -338,10 +339,10 @@ export const signingTasksService = {
       throw new ValidationError(`Task ${taskId} is in status '${task.status}', cannot reject`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       UPDATE signing_tasks
       SET status = 'rejected',
           rejection_reason_code = ?,
@@ -349,18 +350,18 @@ export const signingTasksService = {
           rejected_at = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(input.reasonCode, input.reasonMessage, input.rejectedAt ?? now, now, taskId);
+    `, [input.reasonCode, input.reasonMessage, input.rejectedAt ?? now, now, taskId]);
 
     // Release UTXO locks and revert batch + withdrawals to queued so batcher retries
     if (task.withdrawal_batch_id) {
       try {
-        utxoLockService.releaseLocksForBatch(tenantId, task.withdrawal_batch_id);
+        await utxoLockService.releaseLocksForBatch(tenantId, task.withdrawal_batch_id);
       } catch (err) {
         logger.warn('Failed to release UTXO locks on task rejection', { taskId, error: String(err) });
       }
       try {
         const batcher = await getBatcherService();
-        batcher.onSigningTaskRejected(
+        await batcher.onSigningTaskRejected(
           tenantId,
           task.withdrawal_batch_id,
           `Signing task rejected: ${input.reasonCode} — ${input.reasonMessage}`
@@ -370,7 +371,7 @@ export const signingTasksService = {
       }
     }
 
-    signingTasksService.recordAudit(task, 'rejected', signerId, null, {
+    await signingTasksService.recordAudit(task, 'rejected', signerId, null, {
       errorCode: input.reasonCode,
       errorMessage: input.reasonMessage,
     });
@@ -382,21 +383,21 @@ export const signingTasksService = {
   /**
    * Approve a task for signing (manual approval flow).
    */
-  approveTask(tenantId: string, taskId: string, approvedBy: string): SigningTask {
-    const task = signingTasksService.getById(tenantId, taskId);
+  async approveTask(tenantId: string, taskId: string, approvedBy: string): Promise<SigningTask> {
+    const task = await signingTasksService.getById(tenantId, taskId);
 
     if (task.status !== 'pending_approval') {
       throw new ValidationError(`Task ${taskId} is in status '${task.status}', expected 'pending_approval'`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       UPDATE signing_tasks
       SET status = 'available', decision_reason = ?, updated_at = ?
       WHERE id = ?
-    `).run(`manual_approved_by:${approvedBy}`, now, taskId);
+    `, [`manual_approved_by:${approvedBy}`, now, taskId]);
 
     return signingTasksService.getByIdInternal(taskId);
   },
@@ -404,29 +405,29 @@ export const signingTasksService = {
   /**
    * Manually reject a task (tenant UI decision).
    */
-  manualRejectTask(tenantId: string, taskId: string, rejectedBy: string, reason: string): SigningTask {
-    const task = signingTasksService.getById(tenantId, taskId);
+  async manualRejectTask(tenantId: string, taskId: string, rejectedBy: string, reason: string): Promise<SigningTask> {
+    const task = await signingTasksService.getById(tenantId, taskId);
 
     if (!['pending_approval', 'available', 'created'].includes(task.status)) {
       throw new ValidationError(`Task ${taskId} is in status '${task.status}', cannot reject`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       UPDATE signing_tasks
       SET status = 'cancelled',
           rejection_reason_code = 'manual_rejection',
           rejection_reason_message = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(`Rejected by ${rejectedBy}: ${reason}`, now, taskId);
+    `, [`Rejected by ${rejectedBy}: ${reason}`, now, taskId]);
 
     // Release UTXO locks
     if (task.withdrawal_batch_id) {
       try {
-        utxoLockService.releaseLocksForBatch(tenantId, task.withdrawal_batch_id);
+        await utxoLockService.releaseLocksForBatch(tenantId, task.withdrawal_batch_id);
       } catch (err) {
         logger.warn('Failed to release UTXO locks on manual rejection', { taskId, error: String(err) });
       }
@@ -435,26 +436,27 @@ export const signingTasksService = {
     return signingTasksService.getByIdInternal(taskId);
   },
 
-  expireTask(taskId: string): void {
-    const db = getDb();
+  async expireTask(taskId: string): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    const row = db.prepare(
-      'SELECT tenant_id, withdrawal_batch_id, status FROM signing_tasks WHERE id = ?'
-    ).get(taskId) as { tenant_id: string; withdrawal_batch_id: string | null; status: string } | undefined;
+    const row = await db.get<{ tenant_id: string; withdrawal_batch_id: string | null; status: string }>(
+      'SELECT tenant_id, withdrawal_batch_id, status FROM signing_tasks WHERE id = ?',
+      [taskId]
+    );
 
     if (!row || ['signed', 'submitted', 'expired', 'cancelled'].includes(row.status)) return;
 
-    db.prepare(`
+    await db.run(`
       UPDATE signing_tasks
       SET status = 'expired', updated_at = ?
       WHERE id = ? AND status NOT IN ('signed', 'submitted', 'expired', 'cancelled')
-    `).run(now, taskId);
+    `, [now, taskId]);
 
     // Release UTXO locks
     if (row.withdrawal_batch_id) {
       try {
-        utxoLockService.releaseLocksForBatch(row.tenant_id, row.withdrawal_batch_id);
+        await utxoLockService.releaseLocksForBatch(row.tenant_id, row.withdrawal_batch_id);
       } catch (err) {
         logger.warn('Failed to release UTXO locks on task expiry', { taskId, error: String(err) });
       }
@@ -465,47 +467,47 @@ export const signingTasksService = {
    * Expire all tasks past their expiry time.
    * Called by the expiry worker.
    */
-  expireAllOverdue(): number {
-    const db = getDb();
+  async expireAllOverdue(): Promise<number> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    const overdue = db.prepare(`
+    const overdue = await db.all<{ id: string; tenant_id: string; withdrawal_batch_id: string | null }>(`
       SELECT id, tenant_id, withdrawal_batch_id
       FROM signing_tasks
       WHERE expires_at < ?
         AND status NOT IN ('signed', 'submitted', 'expired', 'cancelled', 'rejected', 'failed')
-    `).all(now) as Array<{ id: string; tenant_id: string; withdrawal_batch_id: string | null }>;
+    `, [now]);
 
     for (const task of overdue) {
-      signingTasksService.expireTask(task.id);
+      await signingTasksService.expireTask(task.id);
     }
 
     return overdue.length;
   },
 
-  markSubmitted(taskId: string, txHash: string): void {
-    const db = getDb();
+  async markSubmitted(taskId: string, txHash: string): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
-    db.prepare(`
+    await db.run(`
       UPDATE signing_tasks
       SET status = 'submitted', submitted_at = ?, tx_hash = ?, updated_at = ?
       WHERE id = ?
-    `).run(now, txHash, now, taskId);
+    `, [now, txHash, now, taskId]);
   },
 
-  recordAudit(
+  async recordAudit(
     task: SigningTask,
     result: string,
     actorId: string,
     signedPayloadHash: string | null,
     extra?: { errorCode?: string; errorMessage?: string }
-  ): void {
+  ): Promise<void> {
     try {
-      const db = getDb();
+      const db = getDbClient();
       const id = `saud_${crypto.randomBytes(8).toString('hex')}`;
       const now = new Date().toISOString();
 
-      db.prepare(`
+      await db.run(`
         INSERT INTO signer_signature_audit (
           id, tenant_id, signing_task_id, signer_id,
           decision_mode, signed_by_actor_type, signed_by_actor_id,
@@ -514,7 +516,7 @@ export const signingTasksService = {
           signature_result, error_code, error_message,
           created_at
         ) VALUES (?, ?, ?, ?, ?, 'signer_daemon', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      `, [
         id, task.tenant_id, task.id, task.signer_id,
         task.decision_mode, actorId,
         task.chain_id, task.asset_id, task.amount_raw,
@@ -522,8 +524,8 @@ export const signingTasksService = {
         result,
         extra?.errorCode ?? null,
         extra?.errorMessage ?? null,
-        now
-      );
+        now,
+      ]);
     } catch (err) {
       logger.warn('Failed to record signature audit', { taskId: task.id, error: String(err) });
     }

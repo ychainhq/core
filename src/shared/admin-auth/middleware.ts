@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { UnauthorizedError } from '../errors/index';
 
 interface AdminKeyRow {
@@ -15,17 +15,18 @@ export interface AdminAuthContext {
   adminKeyName: string;
 }
 
-export function resolveAdminKey(adminKey: string | undefined): AdminAuthContext {
+export async function resolveAdminKey(adminKey: string | undefined): Promise<AdminAuthContext> {
   if (!adminKey) {
     throw new UnauthorizedError('Admin key required');
   }
 
   const keyHash = crypto.createHash('sha256').update(adminKey).digest('hex');
 
-  const db = getDb();
-  const key = db
-    .prepare('SELECT * FROM admin_keys WHERE key_hash = ? AND is_active = 1')
-    .get(keyHash) as AdminKeyRow | undefined;
+  const db = getDbClient();
+  const key = await db.get<AdminKeyRow>(
+    'SELECT * FROM admin_keys WHERE key_hash = ? AND is_active = 1',
+    [keyHash]
+  );
 
   if (!key) {
     throw new UnauthorizedError('Invalid admin key');
@@ -45,11 +46,12 @@ export function adminAuthMiddleware(req: Request, res: Response, next: NextFunct
       ? req.headers['authorization'].slice(7)
       : undefined);
 
-  try {
-    const auth = resolveAdminKey(adminKey);
-    req.adminKeyName = auth.adminKeyName;
-    next();
-  } catch (err) {
-    next(err);
-  }
+  resolveAdminKey(adminKey)
+    .then((auth) => {
+      req.adminKeyName = auth.adminKeyName;
+      next();
+    })
+    .catch((err) => {
+      next(err);
+    });
 }

@@ -15,6 +15,7 @@
 import { runMigrations } from '../../src/db/migrate';
 import { runSeed } from '../../src/db/seed';
 import { closeDb, getDb } from '../../src/db/sqlite';
+import { resetDbClient } from '../../src/db/client';
 import { BitcoinAdapter } from '../../src/chain-adapters/bitcoin/adapter';
 import { adapterRegistry } from '../../src/chain-adapters/registry';
 import { SweepWorker } from '../../src/workers/sweep.worker';
@@ -65,7 +66,7 @@ beforeAll(() => {
   (BitcoinAdapter as jest.MockedClass<typeof BitcoinAdapter>).mockImplementation(() => mockAdapter as any);
 });
 
-afterEach(() => closeDb());
+afterEach(() => { closeDb(); resetDbClient(); });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -90,7 +91,8 @@ function makeUtxo(txHash: string, vout = 0, amountSats = 500_000, confirmations 
  */
 async function bootstrap({ thresholdSats = '100000' }: { thresholdSats?: string } = {}) {
   closeDb();
-  runMigrations();
+  resetDbClient();
+  await runMigrations();
   // Register before runSeed — seed calls adapterRegistry.get('bitcoin') during provisioning
   adapterRegistry.register(mockAdapter as any);
   await runSeed();
@@ -321,7 +323,8 @@ describe('Pre-condition checks', () => {
 
   it('skips when no tenant has btc_sweep_threshold_sats set', async () => {
     closeDb();
-    runMigrations();
+    resetDbClient();
+    await runMigrations();
     adapterRegistry.register(mockAdapter as any);
     await runSeed();
     // btc_sweep_threshold_sats deliberately left as NULL (seed default)

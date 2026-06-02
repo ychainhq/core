@@ -69,7 +69,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'Get the authenticated tenant profile.',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: tenantsService.getById(tenantId) })));
+  }, async () => safeTool(async () => ({ data: await tenantsService.getById(tenantId) })));
 
   server.registerTool('chainapi_update_tenant', {
     description: 'Update the authenticated tenant profile. Does not allow status changes.',
@@ -78,13 +78,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       metadata,
     },
     annotations: write,
-  }, async (input: any) => safeTool(() => ({ data: tenantsService.update(tenantId, input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await tenantsService.update(tenantId, input) })));
 
   server.registerTool('chainapi_get_tenant_config', {
     description: 'Get the authenticated tenant configuration.',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: tenantsService.getById(tenantId).config })));
+  }, async () => safeTool(async () => ({ data: (await tenantsService.getById(tenantId)).config })));
 
   server.registerTool('chainapi_update_tenant_config', {
     description: 'Update safe tenant configuration fields.',
@@ -105,25 +105,25 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'List blockchain networks.',
     inputSchema: { enabled: z.boolean().optional(), type: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => ({ data: chainsService.list(input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await chainsService.list(input) })));
 
   server.registerTool('chainapi_get_chain', {
     description: 'Get blockchain network details.',
     inputSchema: { chain: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ chain }: any) => safeTool(() => ({ data: chainsService.getById(chain) })));
+  }, async ({ chain }: any) => safeTool(async () => ({ data: await chainsService.getById(chain) })));
 
   server.registerTool('chainapi_list_assets', {
     description: 'List assets, optionally filtered by chain or type.',
     inputSchema: { chain: z.string().optional(), type: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => ({ data: assetsService.list(input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await assetsService.list(input) })));
 
   server.registerTool('chainapi_get_asset', {
     description: 'Get asset details for a chain and symbol.',
     inputSchema: { chain: z.string().min(1), asset: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ chain, asset }: any) => safeTool(() => ({ data: assetsService.getByChainAndSymbol(chain, asset) })));
+  }, async ({ chain, asset }: any) => safeTool(async () => ({ data: await assetsService.getByChainAndSymbol(chain, asset) })));
 
   server.registerTool('chainapi_create_customer', {
     description: 'Create a tenant-scoped customer (Party). party_type defaults to natural_person.',
@@ -135,7 +135,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       metadata,
     },
     annotations: write,
-  }, async (input: any) => safeTool(() => ({ data: customersService.create(tenantId, input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await customersService.create(tenantId, input) })));
 
   server.registerTool('chainapi_list_customers', {
     description: 'List tenant customers with optional filters. All text search fields support * as wildcard (e.g. "jan*" = starts with, "*ski" = ends with, "jan" = substring).',
@@ -165,13 +165,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       rel_identifier_value: z.string().optional(),
     },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(customersService.list(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await customersService.list(tenantId, input), input)));
 
   server.registerTool('chainapi_get_customer', {
     description: 'Get customer details.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersService.getById(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersService.getById(tenantId, customerId) })));
 
   server.registerTool('chainapi_update_customer', {
     description: 'Update a tenant customer.',
@@ -184,40 +184,40 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       metadata,
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersService.update(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersService.update(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_disable_customer', {
     description: 'Disable a tenant customer.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: destructive,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersService.disable(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersService.disable(tenantId, customerId) })));
 
   server.registerTool('chainapi_get_customer_balances', {
     description: 'Get customer ledger balances.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersService.getBalances(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersService.getBalances(tenantId, customerId) })));
 
   server.registerTool('chainapi_list_customer_deposits', {
     description: 'List deposits for a customer.',
     inputSchema: { customerId: z.string().min(1), ...paging, ...customerDepositFilters },
     annotations: readOnly,
-  }, async ({ customerId, ...input }: any) => safeTool(() => page(customersService.getDeposits(tenantId, customerId, input), input)));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => page(await customersService.getDeposits(tenantId, customerId, input), input)));
 
   server.registerTool('chainapi_list_customer_addresses', {
     description: 'List deposit addresses for a customer.',
     inputSchema: { customerId: z.string().min(1), ...paging },
     annotations: readOnly,
-  }, async ({ customerId, ...input }: any) => safeTool(() => page(customersService.getAddresses(tenantId, customerId, input), input)));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => page(await customersService.getAddresses(tenantId, customerId, input), input)));
 
   server.registerTool('chainapi_create_customer_session', {
     description: 'Issue a short-lived customer session token.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: write,
-  }, async ({ customerId }: any) => safeTool(() => {
-    const customer = customersService.getById(tenantId, customerId);
+  }, async ({ customerId }: any) => safeTool(async () => {
+    const customer = await customersService.getById(tenantId, customerId);
     if (customer.status !== 'active') throw new Error(`Customer account is ${customer.status}`);
-    const ttl = tenantsService.getById(tenantId).config?.customer_session_ttl_seconds ?? undefined;
+    const ttl = (await tenantsService.getById(tenantId)).config?.customer_session_ttl_seconds ?? undefined;
     const { accessToken, expiresAt } = issueCustomerToken(tenantId, customer.id, ttl);
     return { data: { accessToken, expiresAt, customerId: customer.id } };
   }));
@@ -227,7 +227,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     inputSchema: { customerId: z.string().min(1) },
     annotations: write,
   }, async ({ customerId }: any) => safeTool(async () => {
-    customersService.getById(tenantId, customerId);
+    await customersService.getById(tenantId, customerId);
     return { data: await depositAddressService.generateForCustomer(tenantId, customerId) };
   }));
 
@@ -237,7 +237,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'Get the KYC profile for a customer (natural person or legal entity).',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersProfileService.get(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersProfileService.get(tenantId, customerId) })));
 
   server.registerTool('chainapi_upsert_customer_profile', {
     description: 'Create or replace the KYC profile for a customer. partyType must match the customer party_type.',
@@ -277,13 +277,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       stock_exchange: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersProfileService.upsert(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersProfileService.upsert(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_list_customer_identifiers', {
     description: 'List KYC identifiers for a customer (passport, tax ID, LEI, etc.).',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersIdentifiersService.list(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersIdentifiersService.list(tenantId, customerId) })));
 
   server.registerTool('chainapi_add_customer_identifier', {
     description: 'Add a KYC identifier to a customer.',
@@ -300,7 +300,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       verified_by: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersIdentifiersService.create(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersIdentifiersService.create(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_update_customer_identifier', {
     description: 'Update a KYC identifier record.',
@@ -317,19 +317,19 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       verified_by: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, identifierId, ...input }: any) => safeTool(() => ({ data: customersIdentifiersService.update(tenantId, customerId, identifierId, input) })));
+  }, async ({ customerId, identifierId, ...input }: any) => safeTool(async () => ({ data: await customersIdentifiersService.update(tenantId, customerId, identifierId, input) })));
 
   server.registerTool('chainapi_delete_customer_identifier', {
     description: 'Delete a KYC identifier from a customer.',
     inputSchema: { customerId: z.string().min(1), identifierId: z.string().min(1) },
     annotations: destructive,
-  }, async ({ customerId, identifierId }: any) => safeTool(() => { customersIdentifiersService.delete(tenantId, customerId, identifierId); return { data: null }; }));
+  }, async ({ customerId, identifierId }: any) => safeTool(async () => { await customersIdentifiersService.delete(tenantId, customerId, identifierId); return { data: null }; }));
 
   server.registerTool('chainapi_list_customer_relationships', {
     description: 'List party relationships for a customer (UBOs, directors, representatives, etc.).',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersRelationshipsService.list(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersRelationshipsService.list(tenantId, customerId) })));
 
   server.registerTool('chainapi_add_customer_relationship', {
     description: 'Add a party relationship to a customer. Provide related_customer_id (internal) or external_party snapshot.',
@@ -350,7 +350,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       notes: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersRelationshipsService.create(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersRelationshipsService.create(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_update_customer_relationship', {
     description: 'Update a party relationship record.',
@@ -364,19 +364,19 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       notes: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, relationshipId, ...input }: any) => safeTool(() => ({ data: customersRelationshipsService.update(tenantId, customerId, relationshipId, input) })));
+  }, async ({ customerId, relationshipId, ...input }: any) => safeTool(async () => ({ data: await customersRelationshipsService.update(tenantId, customerId, relationshipId, input) })));
 
   server.registerTool('chainapi_delete_customer_relationship', {
     description: 'Delete a party relationship from a customer.',
     inputSchema: { customerId: z.string().min(1), relationshipId: z.string().min(1) },
     annotations: destructive,
-  }, async ({ customerId, relationshipId }: any) => safeTool(() => { customersRelationshipsService.delete(tenantId, customerId, relationshipId); return { data: null }; }));
+  }, async ({ customerId, relationshipId }: any) => safeTool(async () => { await customersRelationshipsService.delete(tenantId, customerId, relationshipId); return { data: null }; }));
 
   server.registerTool('chainapi_get_customer_aml_kyc', {
     description: 'Get the AML/KYC record for a customer.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersAmlKycService.get(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersAmlKycService.get(tenantId, customerId) })));
 
   server.registerTool('chainapi_upsert_customer_aml_kyc', {
     description: 'Create or update the AML/KYC record for a customer.',
@@ -416,13 +416,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       next_review_date: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersAmlKycService.upsert(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersAmlKycService.upsert(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_get_customer_data_governance', {
     description: 'Get the GDPR/DORA data governance record for a customer.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersDataGovernanceService.get(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersDataGovernanceService.get(tenantId, customerId) })));
 
   server.registerTool('chainapi_upsert_customer_data_governance', {
     description: 'Create or update the GDPR/DORA data governance record for a customer. Increments version on every write.',
@@ -441,13 +441,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       dora_classification: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersDataGovernanceService.upsert(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersDataGovernanceService.upsert(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_get_customer_contact', {
     description: 'Get contact details for a customer.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersContactService.get(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersContactService.get(tenantId, customerId) })));
 
   server.registerTool('chainapi_upsert_customer_contact', {
     description: 'Create or update contact details for a customer.',
@@ -469,13 +469,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       })).nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersContactService.upsert(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersContactService.upsert(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_list_customer_documents', {
     description: 'List KYC documents for a customer.',
     inputSchema: { customerId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ customerId }: any) => safeTool(() => ({ data: customersDocumentsService.list(tenantId, customerId) })));
+  }, async ({ customerId }: any) => safeTool(async () => ({ data: await customersDocumentsService.list(tenantId, customerId) })));
 
   server.registerTool('chainapi_add_customer_document', {
     description: 'Add a KYC document reference for a customer.',
@@ -496,7 +496,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       uploaded_by: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, ...input }: any) => safeTool(() => ({ data: customersDocumentsService.create(tenantId, customerId, input) })));
+  }, async ({ customerId, ...input }: any) => safeTool(async () => ({ data: await customersDocumentsService.create(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_update_customer_document', {
     description: 'Update a KYC document record (e.g. set verification_status after review).',
@@ -513,13 +513,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       file_hash: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async ({ customerId, documentId, ...input }: any) => safeTool(() => ({ data: customersDocumentsService.update(tenantId, customerId, documentId, input) })));
+  }, async ({ customerId, documentId, ...input }: any) => safeTool(async () => ({ data: await customersDocumentsService.update(tenantId, customerId, documentId, input) })));
 
   server.registerTool('chainapi_delete_customer_document', {
     description: 'Delete a KYC document from a customer.',
     inputSchema: { customerId: z.string().min(1), documentId: z.string().min(1) },
     annotations: destructive,
-  }, async ({ customerId, documentId }: any) => safeTool(() => { customersDocumentsService.delete(tenantId, customerId, documentId); return { data: null }; }));
+  }, async ({ customerId, documentId }: any) => safeTool(async () => { await customersDocumentsService.delete(tenantId, customerId, documentId); return { data: null }; }));
 
   server.registerTool('chainapi_create_wallet', {
     description: 'Create a logical wallet.',
@@ -530,19 +530,19 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       metadata,
     },
     annotations: write,
-  }, async (input: any) => safeTool(() => ({ data: walletsService.create(tenantId, input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await walletsService.create(tenantId, input) })));
 
   server.registerTool('chainapi_list_wallets', {
     description: 'List logical wallets.',
     inputSchema: { ...paging, type: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(walletsService.list(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await walletsService.list(tenantId, input), input)));
 
   server.registerTool('chainapi_get_wallet', {
     description: 'Get logical wallet details.',
     inputSchema: { walletId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ walletId }: any) => safeTool(() => ({ data: walletsService.getById(tenantId, walletId) })));
+  }, async ({ walletId }: any) => safeTool(async () => ({ data: await walletsService.getById(tenantId, walletId) })));
 
   server.registerTool('chainapi_register_wallet_address', {
     description: 'Register an address to a logical wallet and watch it.',
@@ -557,13 +557,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       metadata,
     },
     annotations: write,
-  }, async ({ walletId, ...input }: any) => safeTool(() => ({ data: addressesService.addToWallet(tenantId, walletId, input) })));
+  }, async ({ walletId, ...input }: any) => safeTool(async () => ({ data: await addressesService.addToWallet(tenantId, walletId, input) })));
 
   server.registerTool('chainapi_list_wallet_addresses', {
     description: 'List addresses registered to a wallet.',
     inputSchema: { walletId: z.string().min(1), ...paging },
     annotations: readOnly,
-  }, async ({ walletId, ...input }: any) => safeTool(() => page(addressesService.listByWallet(tenantId, walletId, input), input)));
+  }, async ({ walletId, ...input }: any) => safeTool(async () => page(await addressesService.listByWallet(tenantId, walletId, input), input)));
 
   server.registerTool('chainapi_validate_address', {
     description: 'Validate an address for a chain. This is read-only even though REST uses POST.',
@@ -580,7 +580,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'Check if an address is a registered internal deposit address for this tenant. Returns isInternal=true and customerId if the address belongs to a customer on this tenant. Useful before initiating a withdrawal to detect on-platform transfers.',
     inputSchema: { address: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ address }: any) => safeTool(() => ({ data: addressesService.resolveCustomerDeposit(tenantId, address) })));
+  }, async ({ address }: any) => safeTool(async () => ({ data: await addressesService.resolveCustomerDeposit(tenantId, address) })));
 
   server.registerTool('chainapi_get_wallet_balances', {
     description: 'Get on-chain balances for a wallet.',
@@ -628,12 +628,12 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       idempotencyKey: z.string().optional(),
     },
     annotations: { ...write, idempotentHint: true },
-  }, async ({ idempotencyKey, ...input }: any) => safeTool(() => {
+  }, async ({ idempotencyKey, ...input }: any) => safeTool(async () => {
     if (idempotencyKey) {
-      const existing = idempotencyService.get(tenantId, idempotencyKey, 'payment_request');
+      const existing = await idempotencyService.get(tenantId, idempotencyKey, 'payment_request');
       if (existing) return existing.result;
     }
-    const paymentRequest = paymentRequestsService.create(tenantId, input);
+    const paymentRequest = await paymentRequestsService.create(tenantId, input);
     const result = { data: paymentRequest };
     if (idempotencyKey) idempotencyService.save(tenantId, idempotencyKey, 'payment_request', result, 201);
     return result;
@@ -643,26 +643,26 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'List payment requests.',
     inputSchema: { ...paging, status: z.string().optional(), chain: z.string().optional(), reference: z.string().optional(), walletId: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(paymentRequestsService.list(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await paymentRequestsService.list(tenantId, input), input)));
 
   server.registerTool('chainapi_get_payment_request', {
     description: 'Get payment request details.',
     inputSchema: { paymentRequestId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ paymentRequestId }: any) => safeTool(() => ({ data: paymentRequestsService.getById(tenantId, paymentRequestId) })));
+  }, async ({ paymentRequestId }: any) => safeTool(async () => ({ data: await paymentRequestsService.getById(tenantId, paymentRequestId) })));
 
   server.registerTool('chainapi_get_payment_requests_by_reference', {
     description: 'Get payment requests by tenant reference.',
     inputSchema: { reference: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ reference }: any) => safeTool(() => ({ data: paymentRequestsService.getByReference(tenantId, reference) })));
+  }, async ({ reference }: any) => safeTool(async () => ({ data: await paymentRequestsService.getByReference(tenantId, reference) })));
 
   server.registerTool('chainapi_get_payment_request_qr', {
     description: 'Get BIP-21 QR payload for a payment request.',
     inputSchema: { paymentRequestId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ paymentRequestId }: any) => safeTool(() => {
-    const pr = paymentRequestsService.getById(tenantId, paymentRequestId);
+  }, async ({ paymentRequestId }: any) => safeTool(async () => {
+    const pr = await paymentRequestsService.getById(tenantId, paymentRequestId);
     return { data: { paymentRequestId: pr.id, format: 'payload', qrPayload: pr.qr_payload } };
   }));
 
@@ -670,34 +670,34 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'Cancel a payment request.',
     inputSchema: { paymentRequestId: z.string().min(1) },
     annotations: destructive,
-  }, async ({ paymentRequestId }: any) => safeTool(() => ({ data: paymentRequestsService.cancel(tenantId, paymentRequestId) })));
+  }, async ({ paymentRequestId }: any) => safeTool(async () => ({ data: await paymentRequestsService.cancel(tenantId, paymentRequestId) })));
 
   server.registerTool('chainapi_list_deposits', {
     description: 'List tenant deposits.',
     inputSchema: { ...paging, walletId: z.string().optional(), chain: z.string().optional(), status: z.string().optional(), address: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(depositsService.list(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await depositsService.list(tenantId, input), input)));
 
   server.registerTool('chainapi_get_deposit', {
     description: 'Get deposit details.',
     inputSchema: { depositId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ depositId }: any) => safeTool(() => ({ data: depositsService.getById(tenantId, depositId) })));
+  }, async ({ depositId }: any) => safeTool(async () => ({ data: await depositsService.getById(tenantId, depositId) })));
 
   server.registerTool('chainapi_list_address_deposits', {
     description: 'List deposits for a chain address.',
     inputSchema: { chain: z.string().min(1), address: z.string().min(1), ...paging, status: z.string().optional(), walletId: z.string().optional() },
     annotations: readOnly,
-  }, async ({ chain, address, ...input }: any) => safeTool(() => page(depositsService.list(tenantId, { ...input, chain, address }), input)));
+  }, async ({ chain, address, ...input }: any) => safeTool(async () => page(await depositsService.list(tenantId, { ...input, chain, address }), input)));
 
   server.registerTool('chainapi_list_withdrawals', {
     description: 'List tenant customer withdrawals. Pass customerId to filter by a specific customer.',
     inputSchema: { ...paging, status: z.string().optional(), customerId: z.string().optional() },
     annotations: readOnly,
-  }, async ({ customerId, ...input }: any) => safeTool(() => {
+  }, async ({ customerId, ...input }: any) => safeTool(async () => {
     const result = customerId
-      ? withdrawalsService.list(tenantId, customerId, input)
-      : withdrawalsService.listForTenant(tenantId, input);
+      ? await withdrawalsService.list(tenantId, customerId, input)
+      : await withdrawalsService.listForTenant(tenantId, input);
     return page(result, input);
   }));
 
@@ -705,7 +705,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'Get withdrawal details.',
     inputSchema: { withdrawalId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ withdrawalId }: any) => safeTool(() => ({ data: withdrawalsService.getById(tenantId, withdrawalId) })));
+  }, async ({ withdrawalId }: any) => safeTool(async () => ({ data: await withdrawalsService.getById(tenantId, withdrawalId) })));
 
   server.registerTool('chainapi_submit_signed_withdrawal', {
     description: 'Submit a signed PSBT for a pending withdrawal.',
@@ -717,13 +717,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'List tenant sweeps.',
     inputSchema: { ...paging, status: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(sweepsService.list(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await sweepsService.list(tenantId, input), input)));
 
   server.registerTool('chainapi_get_sweep', {
     description: 'Get sweep details.',
     inputSchema: { sweepId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ sweepId }: any) => safeTool(() => ({ data: sweepsService.getById(tenantId, sweepId) })));
+  }, async ({ sweepId }: any) => safeTool(async () => ({ data: await sweepsService.getById(tenantId, sweepId) })));
 
   server.registerTool('chainapi_submit_signed_sweep', {
     description: 'Submit a signed PSBT for a pending sweep.',
@@ -735,7 +735,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'Get current Bitcoin sweep state: collectible sats vs threshold, address/UTXO counts, pending sweep ID.',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: sweepsService.getSummary(tenantId) })));
+  }, async () => safeTool(async () => ({ data: await sweepsService.getSummary(tenantId) })));
 
   server.registerTool('chainapi_bitcoin_coin_selection', {
     description: 'Preview BTC coin selection. Read-only.',
@@ -779,7 +779,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     annotations: { ...destructive, idempotentHint: true },
   }, async ({ chain, rawTransaction, idempotencyKey }: any) => safeTool(async () => {
     if (idempotencyKey) {
-      const existing = idempotencyService.get(tenantId, idempotencyKey, 'broadcast');
+      const existing = await idempotencyService.get(tenantId, idempotencyKey, 'broadcast');
       if (existing) return existing.result;
     }
     const result = { data: await bitcoinTransactionsService.broadcast(tenantId, chain, rawTransaction) };
@@ -803,19 +803,19 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'List tenant webhooks. Does not return webhook secrets.',
     inputSchema: { ...paging, walletId: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(webhooksService.list(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await webhooksService.list(tenantId, input), input)));
 
   server.registerTool('chainapi_get_webhook', {
     description: 'Get tenant webhook details. Does not return webhook secret.',
     inputSchema: { webhookId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ webhookId }: any) => safeTool(() => ({ data: webhooksService.getById(tenantId, webhookId) })));
+  }, async ({ webhookId }: any) => safeTool(async () => ({ data: await webhooksService.getById(tenantId, webhookId) })));
 
   server.registerTool('chainapi_list_webhook_deliveries', {
     description: 'List webhook delivery attempts.',
     inputSchema: { ...paging, webhookId: z.string().optional(), eventType: z.string().optional(), status: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(webhooksService.listDeliveries(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await webhooksService.listDeliveries(tenantId, input), input)));
 
   server.registerTool('chainapi_test_webhook', {
     description: 'Send a test event to a webhook URL.',
@@ -827,7 +827,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     description: 'Mark a webhook delivery for retry by the delivery worker.',
     inputSchema: { deliveryId: z.string().min(1) },
     annotations: write,
-  }, async ({ deliveryId }: any) => safeTool(() => ({ data: webhooksService.retryDelivery(tenantId, deliveryId) })));
+  }, async ({ deliveryId }: any) => safeTool(async () => ({ data: await webhooksService.retryDelivery(tenantId, deliveryId) })));
 
   // ---- Address Monitors ----
 
@@ -843,7 +843,7 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       metadata: z.record(z.string(), z.unknown()).optional(),
     },
     annotations: write,
-  }, async (input: any) => safeTool(() => ({ data: monitorsService.add(tenantId, input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await monitorsService.add(tenantId, input) })));
 
   server.registerTool('chainapi_list_monitors', {
     description: 'List active address monitors for the tenant.',
@@ -853,13 +853,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       ...paging,
     },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(monitorsService.list(tenantId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await monitorsService.list(tenantId, input), input)));
 
   server.registerTool('chainapi_deactivate_monitor', {
     description: 'Deactivate an address monitor (soft delete).',
     inputSchema: { monitorId: z.string().min(1) },
     annotations: destructive,
-  }, async ({ monitorId }: any) => safeTool(() => ({ data: monitorsService.deactivate(tenantId, monitorId) })));
+  }, async ({ monitorId }: any) => safeTool(async () => ({ data: await monitorsService.deactivate(tenantId, monitorId) })));
 
   // ---- External Signers — Management ----
 
@@ -959,8 +959,8 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       keyFingerprints: z.array(z.string()).optional(),
     },
     annotations: write,
-  }, async ({ signerId, ...body }: any) => safeTool(() => {
-    const signer = externalSignersService.heartbeat(tenantId, signerId, body);
+  }, async ({ signerId, ...body }: any) => safeTool(async () => {
+    const signer = await externalSignersService.heartbeat(tenantId, signerId, body);
     return { data: { signerId: signer.id, status: signer.status, serverTime: new Date().toISOString() } };
   }));
 
@@ -1016,8 +1016,8 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       ...paging,
     },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => {
-    const result = ticklerService.list({ tenantId, includeGlobal: false, ...input });
+  }, async (input: any) => safeTool(async () => {
+    const result = await ticklerService.list({ tenantId, includeGlobal: false, ...input });
     return page(result, input);
   }));
 }

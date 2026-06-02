@@ -16,22 +16,22 @@ export function registerTenantResources(server: McpServer, ctx: Extract<McpAuthC
   server.registerResource('tenant-profile', 'chainapi://tenant/profile', {
     title: 'Tenant profile',
     mimeType: 'application/json',
-  }, async (uri) => jsonResource(uri.href, { data: tenantsService.getById(tenantId) }));
+  }, async (uri) => jsonResource(uri.href, { data: await tenantsService.getById(tenantId) }));
 
   server.registerResource('tenant-config', 'chainapi://tenant/config', {
     title: 'Tenant config',
     mimeType: 'application/json',
-  }, async (uri) => jsonResource(uri.href, { data: tenantsService.getById(tenantId).config }));
+  }, async (uri) => jsonResource(uri.href, { data: (await tenantsService.getById(tenantId)).config }));
 
   server.registerResource('tenant-chains', 'chainapi://tenant/chains', {
     title: 'Chains',
     mimeType: 'application/json',
-  }, async (uri) => jsonResource(uri.href, { data: chainsService.list() }));
+  }, async (uri) => jsonResource(uri.href, { data: await chainsService.list() }));
 
   server.registerResource('tenant-assets', 'chainapi://tenant/assets', {
     title: 'Assets',
     mimeType: 'application/json',
-  }, async (uri) => jsonResource(uri.href, { data: assetsService.list() }));
+  }, async (uri) => jsonResource(uri.href, { data: await assetsService.list() }));
 
   server.registerResource('customer-summary', new ResourceTemplate('chainapi://customers/{customerId}/summary', { list: undefined }), {
     title: 'Customer summary',
@@ -40,8 +40,8 @@ export function registerTenantResources(server: McpServer, ctx: Extract<McpAuthC
     const customerId = String(vars.customerId);
     return jsonResource(uri.href, {
       data: {
-        customer: customersService.getById(tenantId, customerId),
-        balances: customersService.getBalances(tenantId, customerId),
+        customer: await customersService.getById(tenantId, customerId),
+        balances: await customersService.getBalances(tenantId, customerId),
       },
     });
   });
@@ -51,35 +51,35 @@ export function registerTenantResources(server: McpServer, ctx: Extract<McpAuthC
     mimeType: 'application/json',
   }, async (uri, vars) => {
     const customerId = String(vars.customerId);
-    return jsonResource(uri.href, { data: customersService.getAddresses(tenantId, customerId).data });
+    return jsonResource(uri.href, { data: (await customersService.getAddresses(tenantId, customerId)).data });
   });
 
   server.registerResource('payment-request', new ResourceTemplate('chainapi://payment-requests/{paymentRequestId}', { list: undefined }), {
     title: 'Payment request',
     mimeType: 'application/json',
   }, async (uri, vars) => jsonResource(uri.href, {
-    data: paymentRequestsService.getById(tenantId, String(vars.paymentRequestId)),
+    data: await paymentRequestsService.getById(tenantId, String(vars.paymentRequestId)),
   }));
 
   server.registerResource('deposit', new ResourceTemplate('chainapi://deposits/{depositId}', { list: undefined }), {
     title: 'Deposit',
     mimeType: 'application/json',
   }, async (uri, vars) => jsonResource(uri.href, {
-    data: depositsService.getById(tenantId, String(vars.depositId)),
+    data: await depositsService.getById(tenantId, String(vars.depositId)),
   }));
 
   server.registerResource('withdrawal', new ResourceTemplate('chainapi://withdrawals/{withdrawalId}', { list: undefined }), {
     title: 'Withdrawal',
     mimeType: 'application/json',
   }, async (uri, vars) => jsonResource(uri.href, {
-    data: withdrawalsService.getById(tenantId, String(vars.withdrawalId)),
+    data: await withdrawalsService.getById(tenantId, String(vars.withdrawalId)),
   }));
 
   server.registerResource('sweep', new ResourceTemplate('chainapi://sweeps/{sweepId}', { list: undefined }), {
     title: 'Sweep',
     mimeType: 'application/json',
   }, async (uri, vars) => jsonResource(uri.href, {
-    data: sweepsService.getById(tenantId, String(vars.sweepId)),
+    data: await sweepsService.getById(tenantId, String(vars.sweepId)),
   }));
 
   server.registerResource('tenant-tool-schema', 'chainapi://schemas/tenant-tools', {

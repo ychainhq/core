@@ -12,7 +12,7 @@
  */
 
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ValidationError, UnprocessableEntityError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
 import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
@@ -137,26 +137,28 @@ function getDefaultConfig(): BatchConfig {
 }
 
 export const withdrawalBatcherService = {
-  getBatchConfig(tenantId: string): BatchConfig {
-    const db = getDb();
-    const row = db.prepare(
-      'SELECT * FROM tenant_withdrawal_batch_configs WHERE tenant_id = ?'
-    ).get(tenantId) as BatchConfig | undefined;
+  async getBatchConfig(tenantId: string): Promise<BatchConfig> {
+    const db = getDbClient();
+    const row = await db.get<BatchConfig>(
+      'SELECT * FROM tenant_withdrawal_batch_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
     return row ?? getDefaultConfig();
   },
 
-  upsertBatchConfig(tenantId: string, input: Partial<BatchConfig>): BatchConfig {
-    const db = getDb();
-    const existing = db.prepare(
-      'SELECT * FROM tenant_withdrawal_batch_configs WHERE tenant_id = ?'
-    ).get(tenantId);
+  async upsertBatchConfig(tenantId: string, input: Partial<BatchConfig>): Promise<BatchConfig> {
+    const db = getDbClient();
+    const existing = await db.get(
+      'SELECT * FROM tenant_withdrawal_batch_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
 
     const now = new Date().toISOString();
 
     if (!existing) {
       const def = getDefaultConfig();
       const merged = { ...def, ...input };
-      db.prepare(`
+      await db.run(`
         INSERT INTO tenant_withdrawal_batch_configs (
           tenant_id,
           btc_batching_enabled, btc_batch_interval_seconds,
@@ -168,7 +170,7 @@ export const withdrawalBatcherService = {
           btc_rbf_enabled, btc_rbf_strategy, btc_cpfp_enabled,
           btc_batch_retry_max_attempts, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      `, [
         tenantId,
         merged.btc_batching_enabled, merged.btc_batch_interval_seconds,
         merged.btc_max_outputs_per_batch, merged.btc_min_outputs_per_batch, merged.btc_max_batch_age_seconds,
@@ -177,8 +179,8 @@ export const withdrawalBatcherService = {
         merged.btc_fee_sanity_max_fee_sats, merged.btc_fee_sanity_max_fee_percent_bps,
         merged.btc_dust_policy, merged.btc_change_address_policy,
         merged.btc_rbf_enabled, merged.btc_rbf_strategy, merged.btc_cpfp_enabled,
-        merged.btc_batch_retry_max_attempts, now
-      );
+        merged.btc_batch_retry_max_attempts, now,
+      ]);
     } else {
       // Build dynamic update
       const sets: string[] = ['updated_at = ?'];
@@ -190,7 +192,7 @@ export const withdrawalBatcherService = {
         }
       }
       params.push(tenantId);
-      db.prepare(`UPDATE tenant_withdrawal_batch_configs SET ${sets.join(', ')} WHERE tenant_id = ?`).run(...params);
+      await db.run(`UPDATE tenant_withdrawal_batch_configs SET ${sets.join(', ')} WHERE tenant_id = ?`, params);
     }
 
     return withdrawalBatcherService.getBatchConfig(tenantId);
@@ -201,8 +203,8 @@ export const withdrawalBatcherService = {
    * Called by the withdrawal batcher worker.
    */
   async buildBatchForTenant(tenantId: string): Promise<WithdrawalBatch | null> {
-    const db = getDb();
-    const config = withdrawalBatcherService.getBatchConfig(tenantId);
+    const db = getDbClient();
+    const config = await withdrawalBatcherService.getBatchConfig(tenantId);
 
     if (!config.btc_batching_enabled) return null;
 
@@ -210,7 +212,7 @@ export const withdrawalBatcherService = {
     const maxAge = config.btc_max_batch_age_seconds;
     const cutoffTime = new Date(Date.now() - maxAge * 1000).toISOString();
 
-    const queuedWithdrawals = db.prepare(`
+    const queuedWithdrawals = await db.all(`
       SELECT cw.*
       FROM customer_withdrawals cw
       WHERE cw.tenant_id = ?
@@ -218,7 +220,7 @@ export const withdrawalBatcherService = {
         AND cw.chain_id = 'bitcoin'
       ORDER BY cw.created_at ASC
       LIMIT ?
-    `).all(tenantId, config.btc_max_outputs_per_batch) as any[];
+    `, [tenantId, config.btc_max_outputs_per_batch]) as any[];
 
     if (queuedWithdrawals.length === 0) return null;
 
@@ -239,7 +241,7 @@ export const withdrawalBatcherService = {
       if (amount < DUST_THRESHOLD_SATS) {
         if (config.btc_dust_policy === 'reject') {
           logger.warn('Dust withdrawal skipped', { tenantId, withdrawalId: wd.id, amount: wd.amount_raw });
-          withdrawalsService.updateStatus(wd.id, 'failed', { error: 'dust_output' });
+          await withdrawalsService.updateStatus(wd.id, 'failed', { error: 'dust_output' });
           continue;
         }
       }
@@ -274,14 +276,14 @@ export const withdrawalBatcherService = {
     });
 
     // Find change address (tenant hot wallet)
-    const changeAddrRow = db.prepare(`
+    const changeAddrRow = await db.get<{ address: string }>(`
       SELECT a.address
       FROM addresses a
       JOIN wallets w ON w.id = a.wallet_id
       WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
       LIMIT 1
-    `).get(tenantId) as { address: string } | undefined;
+    `, [tenantId]);
 
     if (!changeAddrRow) {
       logger.warn('No tenant hot wallet address for change output', { tenantId });
@@ -314,31 +316,31 @@ export const withdrawalBatcherService = {
     const batchId = `wdb_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO withdrawal_batches (
         id, tenant_id, chain_id, asset_id,
         status, outputs_count, total_output_raw, fee_rate_sat_vb,
         rbf_enabled, decision_mode, attempt_count, created_at, updated_at
       ) VALUES (?, ?, 'bitcoin', 'bitcoin:BTC', 'building', ?, ?, ?, ?, 'auto', 0, ?, ?)
-    `).run(
+    `, [
       batchId, tenantId,
       validWithdrawals.length, totalOutput.toString(), feeRateSatVb.toString(),
-      config.btc_rbf_enabled, now, now
-    );
+      config.btc_rbf_enabled, now, now,
+    ]);
 
     // Mark withdrawals as batched
     for (const wd of validWithdrawals) {
-      db.prepare(`
+      await db.run(`
         INSERT INTO withdrawal_batch_items (batch_id, withdrawal_id, amount_raw, to_address)
         VALUES (?, ?, ?, ?)
-      `).run(batchId, wd.id, wd.amount_raw, wd.to_address);
+      `, [batchId, wd.id, wd.amount_raw, wd.to_address]);
     }
-    withdrawalsService.markBatched(validWithdrawals.map((wd: any) => wd.id));
+    await withdrawalsService.markBatched(validWithdrawals.map((wd: any) => wd.id));
 
     // Lock UTXOs
     let lockedUtxos: any[];
     try {
-      lockedUtxos = utxoLockService.lockUtxosForBatch(
+      lockedUtxos = await utxoLockService.lockUtxosForBatch(
         tenantId, batchId, 'bitcoin',
         1, // min 1 confirmation
         totalOutput.toString(),
@@ -348,9 +350,9 @@ export const withdrawalBatcherService = {
       logger.error('UTXO locking failed for batch', { batchId, tenantId, error: String(err) });
 
       // Undo batch items and revert withdrawal statuses
-      db.prepare('DELETE FROM withdrawal_batch_items WHERE batch_id = ?').run(batchId);
-      withdrawalsService.requeue(validWithdrawals.map((wd: any) => wd.id));
-      db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(batchId);
+      await db.run('DELETE FROM withdrawal_batch_items WHERE batch_id = ?', [batchId]);
+      await withdrawalsService.requeue(validWithdrawals.map((wd: any) => wd.id));
+      await db.run('DELETE FROM withdrawal_batches WHERE id = ?', [batchId]);
       return null;
     }
 
@@ -373,26 +375,26 @@ export const withdrawalBatcherService = {
     } catch (err: any) {
       logger.error('PSBT building failed', { batchId, tenantId, error: String(err) });
 
-      utxoLockService.releaseLocksForBatch(tenantId, batchId);
-      db.prepare('DELETE FROM withdrawal_batch_items WHERE batch_id = ?').run(batchId);
-      withdrawalsService.requeue(validWithdrawals.map((wd: any) => wd.id));
-      db.prepare(`UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?`)
-        .run(String(err), now, batchId);
+      await utxoLockService.releaseLocksForBatch(tenantId, batchId);
+      await db.run('DELETE FROM withdrawal_batch_items WHERE batch_id = ?', [batchId]);
+      await withdrawalsService.requeue(validWithdrawals.map((wd: any) => wd.id));
+      await db.run(`UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?`,
+        [String(err), now, batchId]);
       return withdrawalBatcherService.getBatchById(tenantId, batchId);
     }
 
     // Update batch with PSBT and fee
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches
       SET psbt = ?, fee_raw = ?, status = 'pending_signature', updated_at = ?
       WHERE id = ?
-    `).run(psbtBase64, actualFeeSats, now, batchId);
+    `, [psbtBase64, actualFeeSats, now, batchId]);
 
     // Select signer via round-robin
-    const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
+    const selectedSigner = await externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
 
     // Evaluate policy decision (auto vs manual)
-    const policyDecision = signerPolicyService.evaluateDecision(
+    const policyDecision = await signerPolicyService.evaluateDecision(
       tenantId,
       selectedSigner?.id ?? null,
       'bitcoin',
@@ -403,14 +405,14 @@ export const withdrawalBatcherService = {
     );
 
     // Update batch decision mode
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches
       SET signer_id = ?, decision_mode = ?, updated_at = ?
       WHERE id = ?
-    `).run(selectedSigner?.id ?? null, policyDecision.mode, now, batchId);
+    `, [selectedSigner?.id ?? null, policyDecision.mode, now, batchId]);
 
     // Create signing task
-    const signingTask = signingTasksService.create({
+    const signingTask = await signingTasksService.create({
       tenantId,
       signerId: selectedSigner?.id ?? null,
       requestType: 'btc_withdrawal_batch',
@@ -428,11 +430,11 @@ export const withdrawalBatcherService = {
     });
 
     // Link task to batch
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches
       SET signing_task_id = ?, updated_at = ?
       WHERE id = ?
-    `).run(signingTask.id, now, batchId);
+    `, [signingTask.id, now, batchId]);
 
     logger.info('Withdrawal batch created', {
       batchId, tenantId, outputsCount: validWithdrawals.length,
@@ -442,22 +444,23 @@ export const withdrawalBatcherService = {
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
 
-  getBatchById(tenantId: string, batchId: string): WithdrawalBatch {
-    const db = getDb();
-    const row = db.prepare(
-      'SELECT * FROM withdrawal_batches WHERE id = ? AND tenant_id = ?'
-    ).get(batchId, tenantId) as WithdrawalBatch | undefined;
+  async getBatchById(tenantId: string, batchId: string): Promise<WithdrawalBatch> {
+    const db = getDbClient();
+    const row = await db.get<WithdrawalBatch>(
+      'SELECT * FROM withdrawal_batches WHERE id = ? AND tenant_id = ?',
+      [batchId, tenantId]
+    );
     if (!row) throw new NotFoundError('WithdrawalBatch', batchId);
     return row;
   },
 
-  listBatches(tenantId: string, filters: {
+  async listBatches(tenantId: string, filters: {
     status?: string;
     chainId?: string;
     limit?: number;
     cursor?: string;
-  } = {}): { data: WithdrawalBatch[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: WithdrawalBatch[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM withdrawal_batches WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -468,32 +471,32 @@ export const withdrawalBatcherService = {
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as WithdrawalBatch[];
+    const rows = await db.all<WithdrawalBatch>(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
     return { data: items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
   },
 
-  approveBatch(tenantId: string, batchId: string, approvedBy: string): WithdrawalBatch {
-    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+  async approveBatch(tenantId: string, batchId: string, approvedBy: string): Promise<WithdrawalBatch> {
+    const batch = await withdrawalBatcherService.getBatchById(tenantId, batchId);
 
     if (batch.status !== 'pending_approval') {
       throw new ValidationError(`Batch ${batchId} is in status '${batch.status}', expected 'pending_approval'`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches
       SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ?
       WHERE id = ?
-    `).run(approvedBy, now, now, batchId);
+    `, [approvedBy, now, now, batchId]);
 
     // Also approve the signing task
     if (batch.signing_task_id) {
       try {
-        signingTasksService.approveTask(tenantId, batch.signing_task_id, approvedBy);
+        await signingTasksService.approveTask(tenantId, batch.signing_task_id, approvedBy);
       } catch (err) {
         logger.warn('Failed to approve signing task', { batchId, taskId: batch.signing_task_id, error: String(err) });
       }
@@ -502,63 +505,63 @@ export const withdrawalBatcherService = {
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
 
-  rejectBatch(tenantId: string, batchId: string, rejectedBy: string, reason: string): WithdrawalBatch {
-    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+  async rejectBatch(tenantId: string, batchId: string, rejectedBy: string, reason: string): Promise<WithdrawalBatch> {
+    const batch = await withdrawalBatcherService.getBatchById(tenantId, batchId);
 
     if (!['pending_approval', 'pending_signature', 'building'].includes(batch.status)) {
       throw new ValidationError(`Batch ${batchId} cannot be rejected in status '${batch.status}'`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches SET status = 'rejected', last_error = ?, updated_at = ? WHERE id = ?
-    `).run(`Rejected by ${rejectedBy}: ${reason}`, now, batchId);
+    `, [`Rejected by ${rejectedBy}: ${reason}`, now, batchId]);
 
     // Release UTXO locks and revert withdrawal statuses
-    utxoLockService.releaseLocksForBatch(tenantId, batchId);
-    withdrawalsService.requeue(withdrawalBatcherService._getWithdrawalIds(batchId));
+    await utxoLockService.releaseLocksForBatch(tenantId, batchId);
+    await withdrawalsService.requeue(await withdrawalBatcherService._getWithdrawalIds(batchId));
 
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
 
-  cancelBatch(tenantId: string, batchId: string): WithdrawalBatch {
-    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+  async cancelBatch(tenantId: string, batchId: string): Promise<WithdrawalBatch> {
+    const batch = await withdrawalBatcherService.getBatchById(tenantId, batchId);
 
     if (['broadcast', 'confirmed', 'cancelled', 'replaced'].includes(batch.status)) {
       throw new ValidationError(`Batch ${batchId} cannot be cancelled in status '${batch.status}'`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(`UPDATE withdrawal_batches SET status = 'cancelled', updated_at = ? WHERE id = ?`).run(now, batchId);
+    await db.run(`UPDATE withdrawal_batches SET status = 'cancelled', updated_at = ? WHERE id = ?`, [now, batchId]);
 
-    utxoLockService.releaseLocksForBatch(tenantId, batchId);
-    withdrawalsService.requeue(withdrawalBatcherService._getWithdrawalIds(batchId));
+    await utxoLockService.releaseLocksForBatch(tenantId, batchId);
+    await withdrawalsService.requeue(await withdrawalBatcherService._getWithdrawalIds(batchId));
 
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
 
-  retryBatch(tenantId: string, batchId: string): WithdrawalBatch {
-    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+  async retryBatch(tenantId: string, batchId: string): Promise<WithdrawalBatch> {
+    const batch = await withdrawalBatcherService.getBatchById(tenantId, batchId);
 
     if (!['failed', 'rejected', 'expired'].includes(batch.status)) {
       throw new ValidationError(`Batch ${batchId} cannot be retried in status '${batch.status}'`);
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
     // Revert withdrawals to queued so batcher picks them up again
-    withdrawalsService.requeue(withdrawalBatcherService._getWithdrawalIds(batchId));
+    await withdrawalsService.requeue(await withdrawalBatcherService._getWithdrawalIds(batchId));
 
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches
       SET status = 'cancelled', attempt_count = attempt_count + 1, updated_at = ?
       WHERE id = ?
-    `).run(now, batchId);
+    `, [now, batchId]);
 
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
@@ -568,13 +571,13 @@ export const withdrawalBatcherService = {
    * Called when a signing task transitions to 'signed'.
    */
   async finalizeBatch(tenantId: string, batchId: string): Promise<WithdrawalBatch> {
-    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+    const batch = await withdrawalBatcherService.getBatchById(tenantId, batchId);
 
     if (!batch.signing_task_id) {
       throw new ValidationError('Batch has no associated signing task');
     }
 
-    const signingTask = signingTasksService.getByIdInternal(batch.signing_task_id);
+    const signingTask = await signingTasksService.getByIdInternal(batch.signing_task_id);
 
     if (signingTask.status !== 'signed') {
       throw new ValidationError(`Signing task is in status '${signingTask.status}', expected 'signed'`);
@@ -585,7 +588,7 @@ export const withdrawalBatcherService = {
     }
 
     const adapter = new BitcoinAdapter();
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
     // Finalize PSBT → raw tx
@@ -597,11 +600,11 @@ export const withdrawalBatcherService = {
       }
       rawTx = finalResult.hex;
     } catch (err: any) {
-      db.prepare(`
+      await db.run(`
         UPDATE withdrawal_batches
         SET status = 'failed', last_error = ?, updated_at = ?
         WHERE id = ?
-      `).run(String(err), now, batchId);
+      `, [String(err), now, batchId]);
       throw new UnprocessableEntityError(`Failed to finalize PSBT: ${err.message}`);
     }
 
@@ -610,9 +613,9 @@ export const withdrawalBatcherService = {
       const acceptResult = await adapter.testMempoolAccept(rawTx);
       if (!acceptResult.allowed) {
         const errMsg = `testmempoolaccept rejected: ${acceptResult.rejectReason}`;
-        db.prepare(`
+        await db.run(`
           UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?
-        `).run(errMsg, now, batchId);
+        `, [errMsg, now, batchId]);
         throw new UnprocessableEntityError(errMsg);
       }
     } catch (err: any) {
@@ -625,28 +628,28 @@ export const withdrawalBatcherService = {
     try {
       txHash = await adapter.sendRawTransaction(rawTx);
     } catch (err: any) {
-      db.prepare(`
+      await db.run(`
         UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?
-      `).run(String(err), now, batchId);
+      `, [String(err), now, batchId]);
       throw new UnprocessableEntityError(`Failed to broadcast: ${err.message}`);
     }
 
     // Update batch
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches
       SET status = 'broadcast', raw_tx = ?, tx_hash = ?,
           signed_psbt = ?, broadcast_at = ?, updated_at = ?
       WHERE id = ?
-    `).run(rawTx, txHash, signingTask.signed_payload, now, now, batchId);
+    `, [rawTx, txHash, signingTask.signed_payload, now, now, batchId]);
 
     // Assign txHash to all withdrawals in batch
-    withdrawalsService.markBroadcast(withdrawalBatcherService._getWithdrawalIds(batchId), txHash);
+    await withdrawalsService.markBroadcast(await withdrawalBatcherService._getWithdrawalIds(batchId), txHash);
 
     // Mark UTXOs as spent
-    utxoLockService.markSpentForBatch(tenantId, batchId);
+    await utxoLockService.markSpentForBatch(tenantId, batchId);
 
     // Mark signing task as submitted
-    signingTasksService.markSubmitted(batch.signing_task_id, txHash);
+    await signingTasksService.markSubmitted(batch.signing_task_id, txHash);
 
     logger.info('Withdrawal batch broadcast', { batchId, tenantId, txHash, outputsCount: batch.outputs_count });
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
@@ -664,7 +667,7 @@ export const withdrawalBatcherService = {
     batchId: string,
     newFeeRateSatVb: number
   ): Promise<WithdrawalBatch> {
-    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+    const batch = await withdrawalBatcherService.getBatchById(tenantId, batchId);
 
     if (batch.status !== 'broadcast') {
       throw new ValidationError(
@@ -675,7 +678,7 @@ export const withdrawalBatcherService = {
       throw new ValidationError(`Batch ${batchId} was not created with RBF opt-in`);
     }
 
-    const batchConfig = withdrawalBatcherService.getBatchConfig(tenantId);
+    const batchConfig = await withdrawalBatcherService.getBatchConfig(tenantId);
     if (!batchConfig.btc_rbf_enabled) {
       throw new ValidationError('RBF is disabled — enable btcRbfEnabled in tenant batch config');
     }
@@ -693,33 +696,34 @@ export const withdrawalBatcherService = {
       );
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
     // Get locked UTXOs from original batch
-    const lockedUtxos = db.prepare(`
+    const lockedUtxos = await db.all<{ tx_hash: string; vout: number; amount_raw: string }>(`
       SELECT tx_hash, vout, amount_raw
       FROM utxo_locks
       WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
-    `).all(tenantId, batchId) as Array<{ tx_hash: string; vout: number; amount_raw: string }>;
+    `, [tenantId, batchId]);
 
     if (lockedUtxos.length === 0) {
       throw new ValidationError(`No locked UTXOs found for batch ${batchId}`);
     }
 
     // Get original withdrawal outputs
-    const items = db.prepare(`
-      SELECT withdrawal_id, amount_raw, to_address FROM withdrawal_batch_items WHERE batch_id = ?
-    `).all(batchId) as Array<{ withdrawal_id: string; amount_raw: string; to_address: string }>;
+    const items = await db.all<{ withdrawal_id: string; amount_raw: string; to_address: string }>(
+      `SELECT withdrawal_id, amount_raw, to_address FROM withdrawal_batch_items WHERE batch_id = ?`,
+      [batchId]
+    );
 
     const totalOutput = items.reduce((s: bigint, i) => s + BigInt(i.amount_raw), 0n);
 
-    const changeAddrRow = db.prepare(`
+    const changeAddrRow = await db.get<{ address: string }>(`
       SELECT a.address FROM addresses a JOIN wallets w ON w.id = a.wallet_id
       WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
       LIMIT 1
-    `).get(tenantId) as { address: string } | undefined;
+    `, [tenantId]);
 
     if (!changeAddrRow) {
       throw new ValidationError('No tenant hot wallet address available for change output');
@@ -727,29 +731,29 @@ export const withdrawalBatcherService = {
 
     const newBatchId = `wdb_${crypto.randomBytes(8).toString('hex')}`;
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO withdrawal_batches (
         id, tenant_id, chain_id, asset_id,
         status, outputs_count, total_output_raw, fee_rate_sat_vb,
         rbf_enabled, replacement_of_batch_id, decision_mode, attempt_count, created_at, updated_at
       ) VALUES (?, ?, 'bitcoin', 'bitcoin:BTC', 'building', ?, ?, ?, 1, ?, 'auto', 0, ?, ?)
-    `).run(newBatchId, tenantId, items.length, totalOutput.toString(), newFeeRateSatVb.toString(), batchId, now, now);
+    `, [newBatchId, tenantId, items.length, totalOutput.toString(), newFeeRateSatVb.toString(), batchId, now, now]);
 
     for (const item of items) {
-      db.prepare(`
+      await db.run(`
         INSERT INTO withdrawal_batch_items (batch_id, withdrawal_id, amount_raw, to_address)
         VALUES (?, ?, ?, ?)
-      `).run(newBatchId, item.withdrawal_id, item.amount_raw, item.to_address);
+      `, [newBatchId, item.withdrawal_id, item.amount_raw, item.to_address]);
     }
 
     // Transfer UTXO locks from original to replacement batch and reset TTL
     const newExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    utxoLockService.reassignLocks(tenantId, batchId, newBatchId, newExpiry);
+    await utxoLockService.reassignLocks(tenantId, batchId, newBatchId, newExpiry);
 
     // Mark original as replaced
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches SET status = 'replaced', replaced_by_batch_id = ?, updated_at = ? WHERE id = ?
-    `).run(newBatchId, now, batchId);
+    `, [newBatchId, now, batchId]);
 
     // Build replacement PSBT
     const adapter = new BitcoinAdapter();
@@ -770,20 +774,20 @@ export const withdrawalBatcherService = {
       actualFeeSats = psbtResult.fee ? String(Math.round(psbtResult.fee * 1e8)) : String(newFeeRateSatVb * 200);
     } catch (err: any) {
       // Roll back: restore original batch, re-assign locks, delete new batch
-      utxoLockService.reassignLocks(tenantId, newBatchId, batchId);
-      db.prepare(`UPDATE withdrawal_batches SET status = 'broadcast', replaced_by_batch_id = NULL, updated_at = ? WHERE id = ?`)
-        .run(now, batchId);
-      db.prepare('DELETE FROM withdrawal_batch_items WHERE batch_id = ?').run(newBatchId);
-      db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(newBatchId);
+      await utxoLockService.reassignLocks(tenantId, newBatchId, batchId);
+      await db.run(`UPDATE withdrawal_batches SET status = 'broadcast', replaced_by_batch_id = NULL, updated_at = ? WHERE id = ?`,
+        [now, batchId]);
+      await db.run('DELETE FROM withdrawal_batch_items WHERE batch_id = ?', [newBatchId]);
+      await db.run('DELETE FROM withdrawal_batches WHERE id = ?', [newBatchId]);
       throw new UnprocessableEntityError(`Failed to build RBF PSBT: ${err.message}`);
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches SET psbt = ?, fee_raw = ?, status = 'pending_signature', updated_at = ? WHERE id = ?
-    `).run(psbtBase64, actualFeeSats, now, newBatchId);
+    `, [psbtBase64, actualFeeSats, now, newBatchId]);
 
-    const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
-    const signingTask = signingTasksService.create({
+    const selectedSigner = await externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
+    const signingTask = await signingTasksService.create({
       tenantId,
       signerId: selectedSigner?.id ?? null,
       requestType: 'btc_withdrawal_batch',
@@ -800,8 +804,8 @@ export const withdrawalBatcherService = {
       decisionReason: `RBF replacement of batch ${batchId} at ${newFeeRateSatVb} sat/vb`,
     });
 
-    db.prepare(`UPDATE withdrawal_batches SET signing_task_id = ?, signer_id = ?, updated_at = ? WHERE id = ?`)
-      .run(signingTask.id, selectedSigner?.id ?? null, now, newBatchId);
+    await db.run(`UPDATE withdrawal_batches SET signing_task_id = ?, signer_id = ?, updated_at = ? WHERE id = ?`,
+      [signingTask.id, selectedSigner?.id ?? null, now, newBatchId]);
 
     logger.info('RBF batch created', { originalBatchId: batchId, newBatchId, tenantId, newFeeRateSatVb });
     return withdrawalBatcherService.getBatchById(tenantId, newBatchId);
@@ -820,7 +824,7 @@ export const withdrawalBatcherService = {
     batchId: string,
     targetFeeRateSatVb?: number
   ): Promise<WithdrawalBatch> {
-    const batch = withdrawalBatcherService.getBatchById(tenantId, batchId);
+    const batch = await withdrawalBatcherService.getBatchById(tenantId, batchId);
 
     if (batch.status !== 'broadcast') {
       throw new ValidationError(
@@ -831,22 +835,22 @@ export const withdrawalBatcherService = {
       throw new ValidationError(`Batch ${batchId} has no tx_hash — cannot create CPFP`);
     }
 
-    const batchConfig = withdrawalBatcherService.getBatchConfig(tenantId);
+    const batchConfig = await withdrawalBatcherService.getBatchConfig(tenantId);
     if (!batchConfig.btc_cpfp_enabled) {
       throw new ValidationError('CPFP is disabled — enable btcCpfpEnabled in tenant batch config');
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
     // Find the unspent change output of the parent TX in cached_utxos
-    const changeUtxo = db.prepare(`
+    const changeUtxo = await db.get<{ tx_hash: string; vout: number; amount_raw: string }>(`
       SELECT tx_hash, vout, amount_raw
       FROM cached_utxos
       WHERE tenant_id = ? AND tx_hash = ? AND is_spent = 0 AND is_locked = 0
         AND wallet_role = 'tenant_hot'
       LIMIT 1
-    `).get(tenantId, batch.tx_hash) as { tx_hash: string; vout: number; amount_raw: string } | undefined;
+    `, [tenantId, batch.tx_hash]);
 
     if (!changeUtxo) {
       throw new ValidationError(
@@ -864,12 +868,12 @@ export const withdrawalBatcherService = {
       );
     }
 
-    const changeAddrRow = db.prepare(`
+    const changeAddrRow = await db.get<{ address: string }>(`
       SELECT a.address FROM addresses a JOIN wallets w ON w.id = a.wallet_id
       WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
       LIMIT 1
-    `).get(tenantId) as { address: string } | undefined;
+    `, [tenantId]);
 
     if (!changeAddrRow) {
       throw new ValidationError('No tenant hot wallet address available for CPFP output');
@@ -890,26 +894,26 @@ export const withdrawalBatcherService = {
     const cpfpOutput = changeAmount - cpfpFee;
     const cpfpBatchId = `wdb_${crypto.randomBytes(8).toString('hex')}`;
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO withdrawal_batches (
         id, tenant_id, chain_id, asset_id,
         status, outputs_count, total_output_raw, fee_rate_sat_vb, fee_raw,
         rbf_enabled, replacement_of_batch_id, decision_mode, attempt_count, created_at, updated_at
       ) VALUES (?, ?, 'bitcoin', 'bitcoin:BTC', 'building', 1, ?, ?, ?, 1, ?, 'auto', 0, ?, ?)
-    `).run(
+    `, [
       cpfpBatchId, tenantId,
       cpfpOutput.toString(), effectiveFeeRateSatVb.toString(), cpfpFee.toString(),
-      batchId, now, now
-    );
+      batchId, now, now,
+    ]);
 
     // Atomically lock the change UTXO via utxoLockService
     let cpfpLockId: string;
     try {
-      cpfpLockId = utxoLockService.lockSingleUtxo(
+      cpfpLockId = await utxoLockService.lockSingleUtxo(
         tenantId, cpfpBatchId, 'bitcoin', changeUtxo, 15 * 60 * 1000
       );
     } catch {
-      db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(cpfpBatchId);
+      await db.run('DELETE FROM withdrawal_batches WHERE id = ?', [cpfpBatchId]);
       throw new ValidationError(
         `Change UTXO ${changeUtxo.tx_hash}:${changeUtxo.vout} was concurrently locked`
       );
@@ -928,17 +932,17 @@ export const withdrawalBatcherService = {
       );
       psbtBase64 = psbtResult.psbt;
     } catch (err: any) {
-      utxoLockService.releaseSingleUtxo(tenantId, 'bitcoin', cpfpLockId, changeUtxo);
-      db.prepare('DELETE FROM withdrawal_batches WHERE id = ?').run(cpfpBatchId);
+      await utxoLockService.releaseSingleUtxo(tenantId, 'bitcoin', cpfpLockId, changeUtxo);
+      await db.run('DELETE FROM withdrawal_batches WHERE id = ?', [cpfpBatchId]);
       throw new UnprocessableEntityError(`Failed to build CPFP PSBT: ${err.message}`);
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches SET psbt = ?, status = 'pending_signature', updated_at = ? WHERE id = ?
-    `).run(psbtBase64, now, cpfpBatchId);
+    `, [psbtBase64, now, cpfpBatchId]);
 
-    const selectedSigner = externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
-    const signingTask = signingTasksService.create({
+    const selectedSigner = await externalSignersService.selectSigner(tenantId, 'bitcoin', 'bitcoin:BTC', 'btc_psbt');
+    const signingTask = await signingTasksService.create({
       tenantId,
       signerId: selectedSigner?.id ?? null,
       requestType: 'btc_withdrawal_batch',
@@ -955,8 +959,8 @@ export const withdrawalBatcherService = {
       decisionReason: `CPFP fee bump for parent batch ${batchId} at ${effectiveFeeRateSatVb} sat/vb`,
     });
 
-    db.prepare(`UPDATE withdrawal_batches SET signing_task_id = ?, signer_id = ?, updated_at = ? WHERE id = ?`)
-      .run(signingTask.id, selectedSigner?.id ?? null, now, cpfpBatchId);
+    await db.run(`UPDATE withdrawal_batches SET signing_task_id = ?, signer_id = ?, updated_at = ? WHERE id = ?`,
+      [signingTask.id, selectedSigner?.id ?? null, now, cpfpBatchId]);
 
     logger.info('CPFP batch created', { parentBatchId: batchId, cpfpBatchId, tenantId, effectiveFeeRateSatVb });
     return withdrawalBatcherService.getBatchById(tenantId, cpfpBatchId);
@@ -966,29 +970,30 @@ export const withdrawalBatcherService = {
    * Returns withdrawal IDs associated with a batch via withdrawal_batch_items.
    * Internal helper for methods that need to delegate to withdrawalsService.
    */
-  _getWithdrawalIds(batchId: string): string[] {
-    const db = getDb();
-    return (
-      db.prepare('SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?')
-        .all(batchId) as Array<{ withdrawal_id: string }>
-    ).map(r => r.withdrawal_id);
+  async _getWithdrawalIds(batchId: string): Promise<string[]> {
+    const db = getDbClient();
+    const rows = await db.all<{ withdrawal_id: string }>(
+      'SELECT withdrawal_id FROM withdrawal_batch_items WHERE batch_id = ?',
+      [batchId]
+    );
+    return rows.map(r => r.withdrawal_id);
   },
 
   /**
    * Called by signingTasksService when a signing task is rejected.
    * Marks the batch as failed and requeues its withdrawals.
    */
-  onSigningTaskRejected(tenantId: string, batchId: string, reason: string): void {
-    const db = getDb();
+  async onSigningTaskRejected(tenantId: string, batchId: string, reason: string): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
-    db.prepare(`
+    await db.run(`
       UPDATE withdrawal_batches
       SET status = 'failed', last_error = ?, updated_at = ?
       WHERE id = ? AND tenant_id = ?
         AND status NOT IN ('broadcast', 'confirmed', 'cancelled', 'replaced')
-    `).run(reason, now, batchId, tenantId);
+    `, [reason, now, batchId, tenantId]);
 
-    const ids = withdrawalBatcherService._getWithdrawalIds(batchId);
-    withdrawalsService.requeue(ids);
+    const ids = await withdrawalBatcherService._getWithdrawalIds(batchId);
+    await withdrawalsService.requeue(ids);
   },
 };

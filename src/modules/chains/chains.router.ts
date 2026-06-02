@@ -12,19 +12,19 @@ const listQuerySchema = z.object({
   type: z.string().optional(),
 });
 
-chainsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+chainsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = listQuerySchema.parse(req.query);
-    const chains = chainsService.list({ enabled: query.enabled, type: query.type });
+    const chains = await chainsService.list({ enabled: query.enabled, type: query.type });
     res.json({ data: chains });
   } catch (err) {
     next(err);
   }
 });
 
-chainsRouter.get('/:chain', (req: Request, res: Response, next: NextFunction) => {
+chainsRouter.get('/:chain', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const chain = chainsService.getById(req.params['chain']!);
+    const chain = await chainsService.getById(req.params['chain']!);
     res.json({ data: chain });
   } catch (err) {
     next(err);

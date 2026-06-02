@@ -10,7 +10,7 @@
  * 6. tenant (global)
  */
 
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 
 export interface SignerPolicy {
   id: string;
@@ -41,13 +41,13 @@ export const signerPolicyService = {
   /**
    * Resolve effective policy using precedence chain.
    */
-  resolvePolicy(
+  async resolvePolicy(
     tenantId: string,
     signerId: string | null,
     chainId: string,
     assetId: string
-  ): SignerPolicy | null {
-    const db = getDb();
+  ): Promise<SignerPolicy | null> {
+    const db = getDbClient();
 
     // Build precedence-ordered candidates
     const candidates: Array<{ signer_id: string | null; chain_id: string | null; asset_id: string | null }> = [];
@@ -88,7 +88,7 @@ export const signerPolicyService = {
 
       query += ' LIMIT 1';
 
-      const row = db.prepare(query).get(...params) as SignerPolicy | undefined;
+      const row = await db.get<SignerPolicy>(query, params);
       if (row) return row;
     }
 
@@ -98,7 +98,7 @@ export const signerPolicyService = {
   /**
    * Evaluate whether a batch can be auto-signed or requires manual approval.
    */
-  evaluateDecision(
+  async evaluateDecision(
     tenantId: string,
     signerId: string | null,
     chainId: string,
@@ -106,8 +106,8 @@ export const signerPolicyService = {
     amountRaw: string,
     feeRateSatVb: number,
     outputsCount: number
-  ): PolicyDecision {
-    const policy = signerPolicyService.resolvePolicy(tenantId, signerId, chainId, assetId);
+  ): Promise<PolicyDecision> {
+    const policy = await signerPolicyService.resolvePolicy(tenantId, signerId, chainId, assetId);
 
     if (!policy) {
       // No policy configured — default to manual approval for safety
@@ -165,19 +165,21 @@ export const signerPolicyService = {
     };
   },
 
-  listPolicies(tenantId: string, signerId?: string): SignerPolicy[] {
-    const db = getDb();
+  async listPolicies(tenantId: string, signerId?: string): Promise<SignerPolicy[]> {
+    const db = getDbClient();
     if (signerId) {
-      return db.prepare(
-        'SELECT * FROM external_signer_policies WHERE tenant_id = ? AND signer_id = ? ORDER BY created_at DESC'
-      ).all(tenantId, signerId) as SignerPolicy[];
+      return db.all<SignerPolicy>(
+        'SELECT * FROM external_signer_policies WHERE tenant_id = ? AND signer_id = ? ORDER BY created_at DESC',
+        [tenantId, signerId]
+      );
     }
-    return db.prepare(
-      'SELECT * FROM external_signer_policies WHERE tenant_id = ? ORDER BY created_at DESC'
-    ).all(tenantId) as SignerPolicy[];
+    return db.all<SignerPolicy>(
+      'SELECT * FROM external_signer_policies WHERE tenant_id = ? ORDER BY created_at DESC',
+      [tenantId]
+    );
   },
 
-  upsertPolicies(tenantId: string, policies: Array<{
+  async upsertPolicies(tenantId: string, policies: Array<{
     signerId?: string;
     chainId?: string;
     assetId?: string;
@@ -189,17 +191,17 @@ export const signerPolicyService = {
     maxOutputsPerBatch?: number;
     destinationAllowlist?: string[];
     contractAllowlist?: string[];
-  }>): SignerPolicy[] {
-    const db = getDb();
+  }>): Promise<SignerPolicy[]> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    const upsert = db.transaction(() => {
+    return db.transaction(async (tx) => {
       const results: SignerPolicy[] = [];
 
       for (const p of policies) {
         const id = `spl_${require('crypto').randomBytes(8).toString('hex')}`;
 
-        db.prepare(`
+        await tx.run(`
           INSERT INTO external_signer_policies (
             id, tenant_id, signer_id, chain_id, asset_id,
             auto_sign_limit_raw, manual_approval_from_raw,
@@ -208,7 +210,7 @@ export const signerPolicyService = {
             destination_allowlist, contract_allowlist,
             is_enabled, created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-        `).run(
+        `, [
           id, tenantId,
           p.signerId ?? null,
           p.chainId ?? null,
@@ -221,15 +223,14 @@ export const signerPolicyService = {
           p.maxOutputsPerBatch ?? null,
           p.destinationAllowlist ? JSON.stringify(p.destinationAllowlist) : null,
           p.contractAllowlist ? JSON.stringify(p.contractAllowlist) : null,
-          now, now
-        );
+          now, now,
+        ]);
 
-        results.push(db.prepare('SELECT * FROM external_signer_policies WHERE id = ?').get(id) as SignerPolicy);
+        const row = await tx.get<SignerPolicy>('SELECT * FROM external_signer_policies WHERE id = ?', [id]);
+        results.push(row!);
       }
 
       return results;
     });
-
-    return upsert();
   },
 };

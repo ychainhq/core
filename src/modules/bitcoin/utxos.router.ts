@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { adapterRegistry } from '../../chain-adapters/registry';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { satoshiToBtc } from '../../shared/money/index';
 
@@ -40,14 +40,15 @@ walletUtxosRouter.get('/', async (req: Request, res: Response, next: NextFunctio
   try {
     const walletId = req.params['walletId']!;
     const query = utxoQuerySchema.parse(req.query);
-    const db = getDb();
+    const db = getDbClient();
 
-    const wallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(walletId);
+    const wallet = await db.get('SELECT * FROM wallets WHERE id = ?', [walletId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
-    const addresses = db
-      .prepare("SELECT address FROM addresses WHERE wallet_id = ? AND chain_id = 'bitcoin' AND status = 'active'")
-      .all(walletId) as { address: string }[];
+    const addresses = await db.all<{ address: string }>(
+      "SELECT address FROM addresses WHERE wallet_id = ? AND chain_id = 'bitcoin' AND status = 'active'",
+      [walletId]
+    );
 
     const adapter = adapterRegistry.get('bitcoin');
     const allUtxos: any[] = [];

@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import crypto from 'crypto';
 import { adapterRegistry } from '../../chain-adapters/registry';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { ValidationError, UnprocessableEntityError } from '../../shared/errors/index';
 import { satoshiToBtc, btcToSatoshi } from '../../shared/money/index';
 import { validateRawTransaction, validatePsbt } from '../../shared/validation/bitcoin';
@@ -200,7 +200,7 @@ prepareRouter.post('/prepare', async (req: Request, res: Response, next: NextFun
       finalOutputs.push({ address: body.changeAddress, amount: changeAmount.toString() });
     }
 
-    const db = getDb();
+    const db = getDbClient();
     const txId = `tx_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
@@ -223,10 +223,10 @@ prepareRouter.post('/prepare', async (req: Request, res: Response, next: NextFun
     }
 
     // Save transaction record
-    db.prepare(`
+    await db.run(`
       INSERT INTO transactions (id, chain_id, tx_hash, psbt, status, fee_raw, fee_rate, wallet_id, metadata, created_at, updated_at)
       VALUES (?, 'bitcoin', NULL, ?, 'prepared', ?, ?, ?, ?, ?, ?)
-    `).run(
+    `, [
       txId,
       psbtResult?.psbt ?? null,
       coinSel.estimatedFee,
@@ -235,7 +235,7 @@ prepareRouter.post('/prepare', async (req: Request, res: Response, next: NextFun
       JSON.stringify({ fromAddresses: body.fromAddresses }),
       now,
       now
-    );
+    ]);
 
     res.status(201).json({
       data: {

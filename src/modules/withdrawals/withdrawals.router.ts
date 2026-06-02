@@ -41,7 +41,7 @@ const submitSignedSchema = z.object({
 });
 
 // GET /v1/withdrawals — tenant-level view of all customer withdrawals
-withdrawalsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+withdrawalsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = listQuerySchema.parse(req.query);
     const filters = { status: query.status, limit: query.limit, cursor: query.cursor };
@@ -50,10 +50,10 @@ withdrawalsRouter.get('/', (req: Request, res: Response, next: NextFunction) => 
     if (query.customerId) {
       // Validate actor has access to this customer before returning their withdrawals.
       // Throws NotFoundError (404) if actor's RBAC scope excludes this customer.
-      customersService.getById(tenantId(req), query.customerId, accessFilter);
-      result = withdrawalsService.list(tenantId(req), query.customerId, filters);
+      await customersService.getById(tenantId(req), query.customerId, accessFilter);
+      result = await withdrawalsService.list(tenantId(req), query.customerId, filters);
     } else {
-      result = withdrawalsService.listForTenant(tenantId(req), filters);
+      result = await withdrawalsService.listForTenant(tenantId(req), filters);
     }
     res.json({
       data: result.data,
@@ -65,9 +65,9 @@ withdrawalsRouter.get('/', (req: Request, res: Response, next: NextFunction) => 
 });
 
 // GET /v1/withdrawals/:withdrawalId
-withdrawalsRouter.get('/:withdrawalId', (req: Request, res: Response, next: NextFunction) => {
+withdrawalsRouter.get('/:withdrawalId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const withdrawal = withdrawalsService.getById(tenantId(req), req.params['withdrawalId']!);
+    const withdrawal = await withdrawalsService.getById(tenantId(req), req.params['withdrawalId']!);
     res.json({ data: withdrawal });
   } catch (err) {
     next(err);

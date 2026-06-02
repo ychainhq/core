@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { toUnixTs } from '../../shared/time/index';
 
@@ -35,7 +35,7 @@ function mapDeposit(row: any): Deposit {
 }
 
 export const depositsService = {
-  upsert(input: {
+  async upsert(input: {
     tenantId?: string;
     customerId?: string;
     chainId: string;
@@ -52,23 +52,24 @@ export const depositsService = {
     status: string;
     paymentRequestId?: string;
     metadata?: Record<string, unknown>;
-  }): Deposit {
-    const db = getDb();
+  }): Promise<Deposit> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    const existing = db
-      .prepare('SELECT * FROM deposits WHERE chain_id = ? AND tx_hash = ? AND vout IS ?')
-      .get(input.chainId, input.txHash, input.vout ?? null) as Deposit | undefined;
+    const existing = await db.get<Deposit>(
+      'SELECT * FROM deposits WHERE chain_id = ? AND tx_hash = ? AND vout IS ?',
+      [input.chainId, input.txHash, input.vout ?? null]
+    );
 
     if (existing) {
-      db.prepare(`
+      await db.run(`
         UPDATE deposits SET
           confirmations = ?, status = ?, block_height = ?, block_hash = ?,
           amount_raw = ?, amount_display = ?,
           customer_id = COALESCE(customer_id, ?),
           updated_at = ?
         WHERE id = ?
-      `).run(
+      `, [
         input.confirmations,
         input.status,
         input.blockHeight ?? null,
@@ -78,18 +79,18 @@ export const depositsService = {
         input.customerId ?? null,
         now,
         existing.id
-      );
-      return depositsService.getByIdInternal(existing.id);
+      ]);
+      return await depositsService.getByIdInternal(existing.id);
     }
 
     const id = `dep_${crypto.randomBytes(8).toString('hex')}`;
-    db.prepare(`
+    await db.run(`
       INSERT INTO deposits
         (id, tenant_id, customer_id, chain_id, asset_id, wallet_id, address, amount_raw, amount_display,
          tx_hash, vout, block_height, block_hash, confirmations, status,
          payment_request_id, metadata, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `, [
       id,
       input.tenantId ?? null,
       input.customerId ?? null,
@@ -109,36 +110,36 @@ export const depositsService = {
       input.metadata ? JSON.stringify(input.metadata) : null,
       now,
       now
-    );
+    ]);
 
-    return depositsService.getByIdInternal(id);
+    return await depositsService.getByIdInternal(id);
   },
 
   // Tenant-scoped lookup for API handlers
-  getById(tenantId: string, id: string): Deposit {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM deposits WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getById(tenantId: string, id: string): Promise<Deposit> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM deposits WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Deposit', id);
     return mapDeposit(row);
   },
 
   // Internal lookup without tenant filter (used by workers and upsert)
-  getByIdInternal(id: string): Deposit {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM deposits WHERE id = ?').get(id);
+  async getByIdInternal(id: string): Promise<Deposit> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM deposits WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Deposit', id);
     return mapDeposit(row);
   },
 
-  list(tenantId: string, filters: {
+  async list(tenantId: string, filters: {
     walletId?: string;
     chain?: string;
     status?: string;
     address?: string;
     limit?: number;
     cursor?: string;
-  } = {}): { data: Deposit[]; nextCursor: string | null } {
-    const db = getDb();
+  } = {}): Promise<{ data: Deposit[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM deposits WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -152,7 +153,7 @@ export const depositsService = {
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -163,21 +164,22 @@ export const depositsService = {
   },
 
   // Used by workers — no tenant filter
-  getExistingByAddress(chainId: string, address: string): Deposit[] {
-    const db = getDb();
-    const rows = db
-      .prepare('SELECT * FROM deposits WHERE chain_id = ? AND address = ?')
-      .all(chainId, address);
+  async getExistingByAddress(chainId: string, address: string): Promise<Deposit[]> {
+    const db = getDbClient();
+    const rows = await db.all(
+      'SELECT * FROM deposits WHERE chain_id = ? AND address = ?',
+      [chainId, address]
+    );
     return rows.map(mapDeposit);
   },
 
   // Used by workers — no tenant filter
-  updatePaymentRequestId(depositId: string, paymentRequestId: string): void {
-    const db = getDb();
-    db.prepare('UPDATE deposits SET payment_request_id = ?, updated_at = ? WHERE id = ?').run(
+  async updatePaymentRequestId(depositId: string, paymentRequestId: string): Promise<void> {
+    const db = getDbClient();
+    await db.run('UPDATE deposits SET payment_request_id = ?, updated_at = ? WHERE id = ?', [
       paymentRequestId,
       new Date().toISOString(),
       depositId
-    );
+    ]);
   },
 };

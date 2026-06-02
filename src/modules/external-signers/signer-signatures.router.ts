@@ -5,7 +5,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 
 export const signerSignaturesRouter = Router();
 
@@ -14,9 +14,9 @@ function tenantId(req: Request): string {
 }
 
 // GET /v1/signer-signatures
-signerSignaturesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+signerSignaturesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = getDb();
+    const db = getDbClient();
     const limit = Math.min(parseInt((req.query['limit'] as string) || '20', 10), 100);
     const cursor = req.query['cursor'] as string | undefined;
     const signerId = req.query['signerId'] as string | undefined;
@@ -33,7 +33,7 @@ signerSignaturesRouter.get('/', (req: Request, res: Response, next: NextFunction
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all<any>(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 

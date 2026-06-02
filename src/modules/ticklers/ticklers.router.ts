@@ -21,13 +21,13 @@ export const tenantTicklersRouter = Router();
 
 tenantTicklersRouter.use(authMiddleware);
 
-tenantTicklersRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+tenantTicklersRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.tenantId;
     if (!tenantId) throw new Error('tenantId missing from request context');
 
     const query = querySchema.parse(req.query);
-    const result = ticklerService.list({
+    const result = await ticklerService.list({
       tenantId,
       includeGlobal: false,
       ...query,
@@ -50,11 +50,11 @@ export const adminTicklersRouter = Router();
 
 adminTicklersRouter.use(adminAuthMiddleware);
 
-adminTicklersRouter.get('/ticklers', (req: Request, res: Response, next: NextFunction) => {
+adminTicklersRouter.get('/ticklers', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = querySchema.parse(req.query);
     const tenantFilter = req.query['tenantId'] as string | undefined;
-    const result = ticklerService.list({
+    const result = await ticklerService.list({
       tenantId: tenantFilter,
       includeGlobal: true,
       ...query,
@@ -70,11 +70,11 @@ adminTicklersRouter.get('/ticklers', (req: Request, res: Response, next: NextFun
   }
 });
 
-adminTicklersRouter.get('/tenants/:tenantId/ticklers', (req: Request, res: Response, next: NextFunction) => {
+adminTicklersRouter.get('/tenants/:tenantId/ticklers', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId } = req.params;
     const query = querySchema.parse(req.query);
-    const result = ticklerService.list({
+    const result = await ticklerService.list({
       tenantId,
       includeGlobal: false,
       ...query,

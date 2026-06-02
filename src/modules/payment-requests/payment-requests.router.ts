@@ -34,10 +34,10 @@ const listQuerySchema = z.object({
 // to avoid matching 'by-reference' as an ID.
 
 // GET /v1/payment-requests/by-reference/:reference
-paymentRequestsRouter.get('/by-reference/:reference', (req: Request, res: Response, next: NextFunction) => {
+paymentRequestsRouter.get('/by-reference/:reference', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const requests = paymentRequestsService.getByReference(tenantId, req.params['reference']!);
+    const requests = await paymentRequestsService.getByReference(tenantId, req.params['reference']!);
     res.json({ data: requests });
   } catch (err) {
     next(err);
@@ -51,7 +51,7 @@ paymentRequestsRouter.post('/', async (req: Request, res: Response, next: NextFu
     const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
 
     if (idempotencyKey) {
-      const existing = idempotencyService.get(tenantId, idempotencyKey, 'payment_request');
+      const existing = await idempotencyService.get(tenantId, idempotencyKey, 'payment_request');
       if (existing) {
         res.status(existing.statusCode).json(existing.result);
         return;
@@ -59,7 +59,7 @@ paymentRequestsRouter.post('/', async (req: Request, res: Response, next: NextFu
     }
 
     const body = createSchema.parse(req.body);
-    const paymentRequest = paymentRequestsService.create(tenantId, body);
+    const paymentRequest = await paymentRequestsService.create(tenantId, body);
 
     ticklerService.record({
       tenantId,
@@ -85,11 +85,11 @@ paymentRequestsRouter.post('/', async (req: Request, res: Response, next: NextFu
 });
 
 // GET /v1/payment-requests
-paymentRequestsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+paymentRequestsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const query = listQuerySchema.parse(req.query);
-    const result = paymentRequestsService.list(tenantId, query);
+    const result = await paymentRequestsService.list(tenantId, query);
     res.json({
       data: result.data,
       pagination: {
@@ -104,10 +104,10 @@ paymentRequestsRouter.get('/', (req: Request, res: Response, next: NextFunction)
 });
 
 // GET /v1/payment-requests/:paymentRequestId
-paymentRequestsRouter.get('/:paymentRequestId', (req: Request, res: Response, next: NextFunction) => {
+paymentRequestsRouter.get('/:paymentRequestId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const pr = paymentRequestsService.getById(tenantId, req.params['paymentRequestId']!);
+    const pr = await paymentRequestsService.getById(tenantId, req.params['paymentRequestId']!);
     res.json({ data: pr });
   } catch (err) {
     next(err);
@@ -115,11 +115,11 @@ paymentRequestsRouter.get('/:paymentRequestId', (req: Request, res: Response, ne
 });
 
 // POST /v1/payment-requests/:paymentRequestId/cancel
-paymentRequestsRouter.post('/:paymentRequestId/cancel', (req: Request, res: Response, next: NextFunction) => {
+paymentRequestsRouter.post('/:paymentRequestId/cancel', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const prev = paymentRequestsService.getById(tenantId, req.params['paymentRequestId']!);
-    const pr = paymentRequestsService.cancel(tenantId, req.params['paymentRequestId']!);
+    const prev = await paymentRequestsService.getById(tenantId, req.params['paymentRequestId']!);
+    const pr = await paymentRequestsService.cancel(tenantId, req.params['paymentRequestId']!);
     ticklerService.record({
       tenantId,
       category: 'payment_request',
@@ -136,11 +136,11 @@ paymentRequestsRouter.post('/:paymentRequestId/cancel', (req: Request, res: Resp
 });
 
 // GET /v1/payment-requests/:paymentRequestId/qr
-paymentRequestsRouter.get('/:paymentRequestId/qr', (req: Request, res: Response, next: NextFunction) => {
+paymentRequestsRouter.get('/:paymentRequestId/qr', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const formatQuery = z.object({ format: z.string().optional() }).parse(req.query);
-    const pr = paymentRequestsService.getById(tenantId, req.params['paymentRequestId']!);
+    const pr = await paymentRequestsService.getById(tenantId, req.params['paymentRequestId']!);
 
     // Only 'payload' format is supported in beta; svg/png returns 501
     if (formatQuery.format && formatQuery.format !== 'payload') {

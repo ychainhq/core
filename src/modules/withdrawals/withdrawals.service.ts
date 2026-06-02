@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, UnprocessableEntityError, ValidationError } from '../../shared/errors/index';
 import { ledgerService } from '../ledger/ledger.service';
 import { depositsService } from '../deposits/deposits.service';
@@ -59,13 +59,14 @@ export const withdrawalsService = {
       forceExternal?: boolean;
     }
   ): Promise<CustomerWithdrawal> {
-    const db = getDb();
+    const db = getDbClient();
 
     // Idempotency check
     if (input.idempotencyKey) {
-      const existing = db
-        .prepare('SELECT * FROM customer_withdrawals WHERE tenant_id = ? AND idempotency_key = ?')
-        .get(tenantId, input.idempotencyKey) as any | undefined;
+      const existing = await db.get(
+        'SELECT * FROM customer_withdrawals WHERE tenant_id = ? AND idempotency_key = ?',
+        [tenantId, input.idempotencyKey]
+      ) as any | undefined;
       if (existing) return mapWithdrawal(existing);
     }
 
@@ -76,11 +77,11 @@ export const withdrawalsService = {
     }
 
     // Check sender balance
-    const senderAccount = ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId);
+    const senderAccount = await ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId);
     if (!senderAccount) {
       throw new UnprocessableEntityError('No BTC ledger account found for this customer');
     }
-    const balance = ledgerService.getBalance(senderAccount.id);
+    const balance = await ledgerService.getBalance(senderAccount.id);
     if (BigInt(balance.settled) < amountBigInt) {
       throw new UnprocessableEntityError(
         `Insufficient balance: available ${balance.settled} sats, requested ${input.amountSats} sats`
@@ -88,14 +89,13 @@ export const withdrawalsService = {
     }
 
     // On-platform detection: is toAddress a registered customer deposit address for this tenant?
-    const platformAddr = input.forceExternal ? undefined : db
-      .prepare(
-        "SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1"
-      )
-      .get(input.toAddress, tenantId) as { customer_id: string } | undefined;
+    const platformAddr = input.forceExternal ? undefined : await db.get<{ customer_id: string }>(
+      "SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1",
+      [input.toAddress, tenantId]
+    );
 
     if (platformAddr) {
-      return withdrawalsService._executeInternalTransfer(db, {
+      return withdrawalsService._executeInternalTransfer({
         tenantId,
         senderCustomerId: customerId,
         recipientCustomerId: platformAddr.customer_id,
@@ -116,20 +116,20 @@ export const withdrawalsService = {
     const id = `wd_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO customer_withdrawals
         (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
          status, idempotency_key, withdrawal_type, recipient_customer_id, created_at, updated_at)
       VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, NULL, NULL, 'queued', ?, 'external', NULL, ?, ?)
-    `).run(
+    `, [
       id, tenantId, customerId,
       input.toAddress, input.amountSats,
       input.idempotencyKey ?? null,
-      now, now
-    );
+      now, now,
+    ]);
 
     // Reserve customer balance immediately — prevents double-spend while PSBT awaits signing
-    ledgerService.addEntry({
+    await ledgerService.addEntry({
       ledgerAccountId: senderAccount.id,
       type: 'withdrawal_reserve',
       amountRaw: (-amountBigInt).toString(),
@@ -137,7 +137,7 @@ export const withdrawalsService = {
       referenceId: id,
     });
 
-    const withdrawal = withdrawalsService.getByIdInternal(id);
+    const withdrawal = await withdrawalsService.getByIdInternal(id);
 
     // Fire lightweight lifecycle webhook. Signing-specific events are emitted
     // after the batcher creates a PSBT/signing task.
@@ -159,8 +159,7 @@ export const withdrawalsService = {
     return withdrawal;
   },
 
-  _executeInternalTransfer(
-    db: ReturnType<typeof getDb>,
+  async _executeInternalTransfer(
     opts: {
       tenantId: string;
       senderCustomerId: string;
@@ -170,23 +169,26 @@ export const withdrawalsService = {
       toAddress: string;
       idempotencyKey?: string;
     }
-  ): CustomerWithdrawal {
+  ): Promise<CustomerWithdrawal> {
     const { tenantId, senderCustomerId, recipientCustomerId, senderAccount, amountBigInt, toAddress, idempotencyKey } = opts;
 
     if (senderCustomerId === recipientCustomerId) {
       throw new ValidationError('Cannot transfer to your own deposit address');
     }
 
+    const db = getDbClient();
+
     // Verify recipient is active
-    const recipient = db
-      .prepare("SELECT id, status FROM customers WHERE id = ? AND tenant_id = ?")
-      .get(recipientCustomerId, tenantId) as { id: string; status: string } | undefined;
+    const recipient = await db.get<{ id: string; status: string }>(
+      "SELECT id, status FROM customers WHERE id = ? AND tenant_id = ?",
+      [recipientCustomerId, tenantId]
+    );
     if (!recipient || recipient.status !== 'active') {
       throw new UnprocessableEntityError('Recipient customer is not active');
     }
 
     // Verify recipient has a BTC ledger account
-    const recipientAccount = ledgerService.findAccountByCustomerAndAsset(tenantId, recipientCustomerId, 'bitcoin:BTC');
+    const recipientAccount = await ledgerService.findAccountByCustomerAndAsset(tenantId, recipientCustomerId, 'bitcoin:BTC');
     if (!recipientAccount) {
       throw new UnprocessableEntityError('Recipient has no BTC ledger account');
     }
@@ -194,21 +196,21 @@ export const withdrawalsService = {
     const id = `wd_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    const doTransfer = db.transaction(() => {
-      db.prepare(`
+    const deposit = await db.transaction(async (tx) => {
+      await tx.run(`
         INSERT INTO customer_withdrawals
           (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
            status, idempotency_key, withdrawal_type, recipient_customer_id, created_at, updated_at)
         VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, '0', NULL, 'confirmed', ?, 'internal', ?, ?, ?)
-      `).run(
+      `, [
         id, tenantId, senderCustomerId,
         toAddress, amountBigInt.toString(),
         idempotencyKey ?? null,
         recipientCustomerId,
-        now, now
-      );
+        now, now,
+      ]);
 
-      ledgerService.transfer({
+      await ledgerService.transfer({
         fromLedgerAccountId: senderAccount.id,
         toLedgerAccountId: recipientAccount.id,
         assetId: 'bitcoin:BTC',
@@ -217,7 +219,7 @@ export const withdrawalsService = {
         isPending: false,
       });
 
-      return depositsService.upsert({
+      return await depositsService.upsert({
         tenantId,
         customerId: recipientCustomerId,
         chainId: 'bitcoin',
@@ -232,9 +234,7 @@ export const withdrawalsService = {
       });
     });
 
-    const deposit = doTransfer();
-
-    const withdrawal = withdrawalsService.getByIdInternal(id);
+    const withdrawal = await withdrawalsService.getByIdInternal(id);
 
     ticklerService.record({
       tenantId,
@@ -281,12 +281,12 @@ export const withdrawalsService = {
     return withdrawal;
   },
 
-  list(
+  async list(
     tenantId: string,
     customerId: string,
     filters: { status?: string; toAddress?: string; limit?: number; cursor?: string } = {}
-  ): { data: CustomerWithdrawal[]; nextCursor: string | null } {
-    const db = getDb();
+  ): Promise<{ data: CustomerWithdrawal[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM customer_withdrawals WHERE tenant_id = ? AND customer_id = ?';
     const params: unknown[] = [tenantId, customerId];
@@ -297,17 +297,17 @@ export const withdrawalsService = {
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all(query, params) as any[];
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
     return { data: items.map(mapWithdrawal), nextCursor: hasMore ? items[items.length - 1].id : null };
   },
 
-  listForTenant(
+  async listForTenant(
     tenantId: string,
     filters: { status?: string; limit?: number; cursor?: string } = {}
-  ): { data: CustomerWithdrawal[]; nextCursor: string | null } {
-    const db = getDb();
+  ): Promise<{ data: CustomerWithdrawal[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM customer_withdrawals WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
@@ -317,32 +317,32 @@ export const withdrawalsService = {
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all(query, params) as any[];
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
     return { data: items.map(mapWithdrawal), nextCursor: hasMore ? items[items.length - 1].id : null };
   },
 
-  getById(tenantId: string, id: string): CustomerWithdrawal {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM customer_withdrawals WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getById(tenantId: string, id: string): Promise<CustomerWithdrawal> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM customer_withdrawals WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Withdrawal', id);
     return mapWithdrawal(row);
   },
 
-  getByIdInternal(id: string): CustomerWithdrawal {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM customer_withdrawals WHERE id = ?').get(id);
+  async getByIdInternal(id: string): Promise<CustomerWithdrawal> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM customer_withdrawals WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Withdrawal', id);
     return mapWithdrawal(row);
   },
 
-  updateStatus(
+  async updateStatus(
     id: string,
     status: string,
     extra: { signedPsbt?: string; txHash?: string; error?: string } = {}
-  ): CustomerWithdrawal {
-    const db = getDb();
+  ): Promise<CustomerWithdrawal> {
+    const db = getDbClient();
     const now = new Date().toISOString();
     const sets = ['status = ?', 'updated_at = ?'];
     const params: unknown[] = [status, now];
@@ -352,38 +352,41 @@ export const withdrawalsService = {
     if (extra.error !== undefined) { sets.push('error = ?'); params.push(extra.error); }
 
     params.push(id);
-    db.prepare(`UPDATE customer_withdrawals SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    await db.run(`UPDATE customer_withdrawals SET ${sets.join(', ')} WHERE id = ?`, params);
     return withdrawalsService.getByIdInternal(id);
   },
 
-  markBatched(ids: string[]): void {
+  async markBatched(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
     const placeholders = ids.map(() => '?').join(', ');
-    db.prepare(
-      `UPDATE customer_withdrawals SET status = 'batched', updated_at = ? WHERE id IN (${placeholders})`
-    ).run(now, ...ids);
+    await db.run(
+      `UPDATE customer_withdrawals SET status = 'batched', updated_at = ? WHERE id IN (${placeholders})`,
+      [now, ...ids]
+    );
   },
 
-  requeue(ids: string[]): void {
+  async requeue(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
     const placeholders = ids.map(() => '?').join(', ');
-    db.prepare(
-      `UPDATE customer_withdrawals SET status = 'queued', updated_at = ? WHERE id IN (${placeholders}) AND status = 'batched'`
-    ).run(now, ...ids);
+    await db.run(
+      `UPDATE customer_withdrawals SET status = 'queued', updated_at = ? WHERE id IN (${placeholders}) AND status = 'batched'`,
+      [now, ...ids]
+    );
   },
 
-  markBroadcast(ids: string[], txHash: string): void {
+  async markBroadcast(ids: string[], txHash: string): Promise<void> {
     if (ids.length === 0) return;
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
     const placeholders = ids.map(() => '?').join(', ');
-    db.prepare(
-      `UPDATE customer_withdrawals SET status = 'broadcast', tx_hash = ?, updated_at = ? WHERE id IN (${placeholders})`
-    ).run(txHash, now, ...ids);
+    await db.run(
+      `UPDATE customer_withdrawals SET status = 'broadcast', tx_hash = ?, updated_at = ? WHERE id IN (${placeholders})`,
+      [txHash, now, ...ids]
+    );
   },
 
   /**
@@ -395,7 +398,7 @@ export const withdrawalsService = {
     withdrawalId: string,
     signedPsbt: string
   ): Promise<CustomerWithdrawal> {
-    const withdrawal = withdrawalsService.getById(tenantId, withdrawalId);
+    const withdrawal = await withdrawalsService.getById(tenantId, withdrawalId);
 
     if (withdrawal.status !== 'pending_signature') {
       throw new ValidationError(
@@ -412,13 +415,13 @@ export const withdrawalsService = {
       }
       txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
-      withdrawalsService.updateStatus(withdrawalId, 'failed', { error: String(err) });
+      await withdrawalsService.updateStatus(withdrawalId, 'failed', { error: String(err) });
       // Refund the reservation made at create() — broadcast failed, balance is restored
-      const custAccount = ledgerService.findAccountByCustomerAndAsset(
+      const custAccount = await ledgerService.findAccountByCustomerAndAsset(
         tenantId, withdrawal.customer_id, withdrawal.asset_id
       );
       if (custAccount) {
-        ledgerService.addEntry({
+        await ledgerService.addEntry({
           ledgerAccountId: custAccount.id,
           type: 'withdrawal_refund',
           amountRaw: withdrawal.amount_raw,
@@ -429,13 +432,13 @@ export const withdrawalsService = {
       throw new ValidationError(`Failed to broadcast withdrawal: ${err?.message ?? err}`);
     }
 
-    const updated = withdrawalsService.updateStatus(withdrawalId, 'broadcast', { signedPsbt, txHash });
+    const updated = await withdrawalsService.updateStatus(withdrawalId, 'broadcast', { signedPsbt, txHash });
 
     // Debit tenant hot wallet control — funds have left the hot wallet
-    const hotAccount = ledgerService.findAccountByTenantAndType(tenantId, 'tenant_hot_control');
+    const hotAccount = await ledgerService.findAccountByTenantAndType(tenantId, 'tenant_hot_control');
     if (hotAccount) {
       const totalOut = BigInt(withdrawal.amount_raw) + BigInt(withdrawal.fee_raw ?? '0');
-      ledgerService.addEntry({
+      await ledgerService.addEntry({
         ledgerAccountId: hotAccount.id,
         type: 'hot_debit',
         amountRaw: (-totalOut).toString(),
@@ -446,9 +449,9 @@ export const withdrawalsService = {
 
     // Record network fee expense
     if (withdrawal.fee_raw) {
-      const feeAccount = ledgerService.findAccountByTenantAndType(tenantId, 'network_fee_expense');
+      const feeAccount = await ledgerService.findAccountByTenantAndType(tenantId, 'network_fee_expense');
       if (feeAccount) {
-        ledgerService.addEntry({
+        await ledgerService.addEntry({
           ledgerAccountId: feeAccount.id,
           type: 'fee_expense',
           amountRaw: withdrawal.fee_raw,

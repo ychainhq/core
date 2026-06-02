@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ConflictError } from '../../shared/errors/index';
 import { addSatoshi } from '../../shared/money/index';
 import { toUnixTs } from '../../shared/time/index';
@@ -31,7 +31,7 @@ function wildcardToLike(term: string): string {
 }
 
 export const customersService = {
-  create(
+  async create(
     tenantId: string,
     input: {
       reference?: string;
@@ -42,48 +42,50 @@ export const customersService = {
       ownerUserId?: string | null;
       ownerTeamId?: string | null;
     }
-  ): Customer {
-    const db = getDb();
+  ): Promise<Customer> {
+    const db = getDbClient();
     const id = `cust_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
     if (input.reference) {
-      const dup = db
-        .prepare('SELECT id FROM customers WHERE tenant_id = ? AND reference = ?')
-        .get(tenantId, input.reference);
+      const dup = await db.get(
+        'SELECT id FROM customers WHERE tenant_id = ? AND reference = ?',
+        [tenantId, input.reference]
+      );
       if (dup) throw new ConflictError(`Customer with reference '${input.reference}' already exists`);
     }
 
-    db.prepare(`
-      INSERT INTO customers
+    await db.run(
+      `INSERT INTO customers
         (id, tenant_id, reference, party_type, display_name, country_of_origin,
          status, metadata, owner_user_id, owner_team_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      tenantId,
-      input.reference ?? null,
-      input.party_type ?? 'natural_person',
-      input.display_name ?? null,
-      input.country_of_origin ?? null,
-      input.metadata ? JSON.stringify(input.metadata) : null,
-      input.ownerUserId ?? null,
-      input.ownerTeamId ?? null,
-      now,
-      now
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+      [
+        id,
+        tenantId,
+        input.reference ?? null,
+        input.party_type ?? 'natural_person',
+        input.display_name ?? null,
+        input.country_of_origin ?? null,
+        input.metadata ? JSON.stringify(input.metadata) : null,
+        input.ownerUserId ?? null,
+        input.ownerTeamId ?? null,
+        now,
+        now,
+      ]
     );
 
     // Auto-provision per-customer ledger accounts for BTC (MVP: always bitcoin:BTC)
     const chainId = 'bitcoin';
     const assetId = 'bitcoin:BTC';
-    ledgerService.createAccount(tenantId, {
+    await ledgerService.createAccount(tenantId, {
       customerId: id,
       chainId,
       assetId,
       accountType: 'customer_available',
       name: 'Available Balance (BTC)',
     });
-    ledgerService.createAccount(tenantId, {
+    await ledgerService.createAccount(tenantId, {
       customerId: id,
       chainId,
       assetId,
@@ -92,14 +94,14 @@ export const customersService = {
     });
 
     // Auto-provision AML/KYC and Data Governance records with sensible defaults
-    customersAmlKycService.provision(tenantId, id);
-    customersDataGovernanceService.provision(tenantId, id);
+    await customersAmlKycService.provision(tenantId, id);
+    await customersDataGovernanceService.provision(tenantId, id);
 
     // getById without access filter — we just created it, always visible
     return customersService.getById(tenantId, id);
   },
 
-  list(
+  async list(
     tenantId: string,
     filters: {
       limit?: number;
@@ -129,8 +131,8 @@ export const customersService = {
       rel_identifier_value?: string;
     } = {},
     accessFilter?: AccessFilter
-  ): { data: Customer[]; nextCursor: string | null } {
-    const db = getDb();
+  ): Promise<{ data: Customer[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const filter: AccessFilter = accessFilter ?? { type: 'all', tenantId };
     const sq = SecuredQuery.for(filter, 'c');
 
@@ -207,7 +209,7 @@ export const customersService = {
     query += ` ORDER BY ${sortToOrderBy(sort)} LIMIT ?`;
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all<any>(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -224,8 +226,8 @@ export const customersService = {
     };
   },
 
-  getById(tenantId: string, id: string, accessFilter?: AccessFilter): Customer {
-    const db = getDb();
+  async getById(tenantId: string, id: string, accessFilter?: AccessFilter): Promise<Customer> {
+    const db = getDbClient();
 
     // When no access filter supplied (internal calls, sub-resource guards with no actor),
     // fall back to tenant-only filter for backward compatibility.
@@ -235,23 +237,25 @@ export const customersService = {
     // 'deny' → same 404 as "not found" — do not reveal existence
     if (sq.isDenied) throw new NotFoundError('Customer', id);
 
-    const row = db
-      .prepare(`SELECT * FROM customers c WHERE c.id = ? ${sq.fragment.sql}`)
-      .get(id, ...sq.fragment.params);
+    const row = await db.get(
+      `SELECT * FROM customers c WHERE c.id = ? ${sq.fragment.sql}`,
+      [id, ...sq.fragment.params]
+    );
     if (!row) throw new NotFoundError('Customer', id);
     return mapCustomer(row);
   },
 
-  getByReference(tenantId: string, reference: string): Customer {
-    const db = getDb();
-    const row = db
-      .prepare('SELECT * FROM customers WHERE tenant_id = ? AND reference = ?')
-      .get(tenantId, reference);
+  async getByReference(tenantId: string, reference: string): Promise<Customer> {
+    const db = getDbClient();
+    const row = await db.get(
+      'SELECT * FROM customers WHERE tenant_id = ? AND reference = ?',
+      [tenantId, reference]
+    );
     if (!row) throw new NotFoundError('Customer', reference);
     return mapCustomer(row);
   },
 
-  update(
+  async update(
     tenantId: string,
     id: string,
     input: {
@@ -262,22 +266,24 @@ export const customersService = {
       metadata?: Record<string, unknown>;
     },
     accessFilter?: AccessFilter
-  ): Customer {
-    const db = getDb();
+  ): Promise<Customer> {
+    const db = getDbClient();
     const filter: AccessFilter = accessFilter ?? { type: 'all', tenantId };
     const sq = SecuredQuery.for(filter, 'c');
 
     // 404 guard with access filter (deny → 404)
     if (sq.isDenied) throw new NotFoundError('Customer', id);
-    const existing = db
-      .prepare(`SELECT id FROM customers c WHERE c.id = ? ${sq.fragment.sql}`)
-      .get(id, ...sq.fragment.params);
+    const existing = await db.get(
+      `SELECT id FROM customers c WHERE c.id = ? ${sq.fragment.sql}`,
+      [id, ...sq.fragment.params]
+    );
     if (!existing) throw new NotFoundError('Customer', id);
 
     if (input.reference) {
-      const dup = db
-        .prepare('SELECT id FROM customers WHERE tenant_id = ? AND reference = ? AND id != ?')
-        .get(tenantId, input.reference, id);
+      const dup = await db.get(
+        'SELECT id FROM customers WHERE tenant_id = ? AND reference = ? AND id != ?',
+        [tenantId, input.reference, id]
+      );
       if (dup) throw new ConflictError(`Customer with reference '${input.reference}' already exists`);
     }
 
@@ -298,33 +304,34 @@ export const customersService = {
     // Access filter in the UPDATE WHERE — prevents race condition where a separate
     // SELECT check passes but the record ownership changes before UPDATE executes.
     const updateSq = SecuredQuery.for(filter, 'customers');
-    db.prepare(
-      `UPDATE customers SET ${sets.join(', ')} WHERE id = ? ${updateSq.fragment.sql}`
-    ).run(...params, id, ...updateSq.fragment.params);
+    await db.run(
+      `UPDATE customers SET ${sets.join(', ')} WHERE id = ? ${updateSq.fragment.sql}`,
+      [...params, id, ...updateSq.fragment.params]
+    );
 
     return customersService.getById(tenantId, id);
   },
 
-  disable(tenantId: string, id: string, accessFilter?: AccessFilter): Customer {
+  async disable(tenantId: string, id: string, accessFilter?: AccessFilter): Promise<Customer> {
     return customersService.update(tenantId, id, { status: 'disabled' }, accessFilter);
   },
 
-  getBalances(tenantId: string, customerId: string, accessFilter?: AccessFilter): CustomerBalance[] {
-    customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
-    const db = getDb();
+  async getBalances(tenantId: string, customerId: string, accessFilter?: AccessFilter): Promise<CustomerBalance[]> {
+    await customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
+    const db = getDbClient();
 
-    const accounts = db
-      .prepare('SELECT * FROM ledger_accounts WHERE tenant_id = ? AND customer_id = ?')
-      .all(tenantId, customerId) as any[];
+    const accounts = await db.all<any>(
+      'SELECT * FROM ledger_accounts WHERE tenant_id = ? AND customer_id = ?',
+      [tenantId, customerId]
+    );
 
     const byAsset = new Map<string, { pending: string; settled: string }>();
 
     for (const acc of accounts) {
-      const latest = db
-        .prepare(
-          'SELECT balance_pending_raw, balance_settled_raw FROM ledger_entries WHERE ledger_account_id = ? ORDER BY rowid DESC LIMIT 1'
-        )
-        .get(acc.id) as { balance_pending_raw: string; balance_settled_raw: string } | undefined;
+      const latest = await db.get<{ balance_pending_raw: string; balance_settled_raw: string }>(
+        'SELECT balance_pending_raw, balance_settled_raw FROM ledger_entries WHERE ledger_account_id = ? ORDER BY rowid DESC LIMIT 1',
+        [acc.id]
+      );
 
       const pending = latest?.balance_pending_raw ?? '0';
       const settled = latest?.balance_settled_raw ?? '0';
@@ -348,7 +355,7 @@ export const customersService = {
     }));
   },
 
-  getDeposits(
+  async getDeposits(
     tenantId: string,
     customerId: string,
     filters: {
@@ -363,9 +370,9 @@ export const customersService = {
       maxConfirmations?: number;
     } = {},
     accessFilter?: AccessFilter
-  ): { data: any[]; nextCursor: string | null } {
-    customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
-    const db = getDb();
+  ): Promise<{ data: any[]; nextCursor: string | null }> {
+    await customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM deposits WHERE tenant_id = ? AND customer_id = ?';
     const params: unknown[] = [tenantId, customerId];
@@ -381,7 +388,7 @@ export const customersService = {
     query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all<any>(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -391,14 +398,14 @@ export const customersService = {
     };
   },
 
-  getAddresses(
+  async getAddresses(
     tenantId: string,
     customerId: string,
     filters: { limit?: number; cursor?: string } = {},
     accessFilter?: AccessFilter
-  ): { data: any[]; nextCursor: string | null } {
-    customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
-    const db = getDb();
+  ): Promise<{ data: any[]; nextCursor: string | null }> {
+    await customersService.getById(tenantId, customerId, accessFilter); // 404 + access guard
+    const db = getDbClient();
     const limit = Math.min(filters.limit ?? 20, 100);
     let query = 'SELECT * FROM addresses WHERE tenant_id = ? AND customer_id = ?';
     const params: unknown[] = [tenantId, customerId];
@@ -407,7 +414,7 @@ export const customersService = {
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all<any>(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 

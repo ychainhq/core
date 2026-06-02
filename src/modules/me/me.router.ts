@@ -36,10 +36,10 @@ function ctx(req: Request): { tenantId: string; customerId: string } {
 }
 
 // GET /v1/me
-meRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
-    const customer = customersService.getById(tenantId, customerId);
+    const customer = await customersService.getById(tenantId, customerId);
     res.json({ data: customer });
   } catch (err) {
     next(err);
@@ -47,10 +47,10 @@ meRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/me/balances
-meRouter.get('/balances', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/balances', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
-    const balances = customersService.getBalances(tenantId, customerId);
+    const balances = await customersService.getBalances(tenantId, customerId);
     res.json({ data: balances });
   } catch (err) {
     next(err);
@@ -58,11 +58,11 @@ meRouter.get('/balances', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/me/deposits
-meRouter.get('/deposits', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/deposits', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const query = listQuerySchema.parse(req.query);
-    const result = customersService.getDeposits(tenantId, customerId, query);
+    const result = await customersService.getDeposits(tenantId, customerId, query);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -73,11 +73,11 @@ meRouter.get('/deposits', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/me/addresses/resolve?address=<addr>
-meRouter.get('/addresses/resolve', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/addresses/resolve', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId } = ctx(req);
     const { address } = z.object({ address: z.string().min(1) }).parse(req.query);
-    const result = addressesService.resolveCustomerDeposit(tenantId, address);
+    const result = await addressesService.resolveCustomerDeposit(tenantId, address);
     res.json({ data: result });
   } catch (err) {
     next(err);
@@ -85,11 +85,11 @@ meRouter.get('/addresses/resolve', (req: Request, res: Response, next: NextFunct
 });
 
 // GET /v1/me/addresses
-meRouter.get('/addresses', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/addresses', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const query = listQuerySchema.parse(req.query);
-    const result = customersService.getAddresses(tenantId, customerId, query);
+    const result = await customersService.getAddresses(tenantId, customerId, query);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -151,11 +151,11 @@ meRouter.post('/withdrawals', async (req: Request, res: Response, next: NextFunc
 });
 
 // GET /v1/me/withdrawals
-meRouter.get('/withdrawals', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/withdrawals', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const query = listQuerySchema.parse(req.query);
-    const result = withdrawalsService.list(tenantId, customerId, { status: query.status, toAddress: query.toAddress, limit: query.limit, cursor: query.cursor });
+    const result = await withdrawalsService.list(tenantId, customerId, { status: query.status, toAddress: query.toAddress, limit: query.limit, cursor: query.cursor });
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -166,10 +166,10 @@ meRouter.get('/withdrawals', (req: Request, res: Response, next: NextFunction) =
 });
 
 // GET /v1/me/withdrawals/:withdrawalId
-meRouter.get('/withdrawals/:withdrawalId', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/withdrawals/:withdrawalId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId } = ctx(req);
-    const withdrawal = withdrawalsService.getById(tenantId, req.params['withdrawalId']!);
+    const withdrawal = await withdrawalsService.getById(tenantId, req.params['withdrawalId']!);
     res.json({ data: withdrawal });
   } catch (err) {
     next(err);
@@ -177,10 +177,10 @@ meRouter.get('/withdrawals/:withdrawalId', (req: Request, res: Response, next: N
 });
 
 // GET /v1/me/profile
-meRouter.get('/profile', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/profile', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
-    res.json({ data: customersProfileService.get(tenantId, customerId) });
+    res.json({ data: await customersProfileService.get(tenantId, customerId) });
   } catch (err) {
     next(err);
   }
@@ -228,11 +228,11 @@ const legalEntitySchema = z.object({
 const profileSchema = z.discriminatedUnion('partyType', [naturalPersonSchema, legalEntitySchema]);
 
 // PUT /v1/me/profile
-meRouter.put('/profile', (req: Request, res: Response, next: NextFunction) => {
+meRouter.put('/profile', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const body = profileSchema.parse(req.body);
-    const profile = customersProfileService.upsert(tenantId, customerId, body as any);
+    const profile = await customersProfileService.upsert(tenantId, customerId, body as any);
     ticklerService.record({
       tenantId,
       category: 'customer',
@@ -248,10 +248,10 @@ meRouter.put('/profile', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/me/contact
-meRouter.get('/contact', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/contact', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
-    res.json({ data: customersContactService.get(tenantId, customerId) });
+    res.json({ data: await customersContactService.get(tenantId, customerId) });
   } catch (err) {
     next(err);
   }
@@ -278,11 +278,11 @@ const contactSchema = z.object({
 });
 
 // PUT /v1/me/contact
-meRouter.put('/contact', (req: Request, res: Response, next: NextFunction) => {
+meRouter.put('/contact', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const body = contactSchema.parse(req.body);
-    const contact = customersContactService.upsert(tenantId, customerId, body as any);
+    const contact = await customersContactService.upsert(tenantId, customerId, body as any);
     ticklerService.record({
       tenantId,
       category: 'customer',
@@ -298,10 +298,10 @@ meRouter.put('/contact', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/me/kyc-status  — read-only view of own KYC status
-meRouter.get('/kyc-status', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/kyc-status', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
-    const record = customersAmlKycService.get(tenantId, customerId);
+    const record = await customersAmlKycService.get(tenantId, customerId);
     if (!record) { res.json({ data: { kyc_status: 'not_started', cdd_level: 'standard' } }); return; }
     res.json({
       data: {
@@ -330,21 +330,21 @@ const meDocumentSchema = z.object({
 });
 
 // GET /v1/me/documents
-meRouter.get('/documents', (req: Request, res: Response, next: NextFunction) => {
+meRouter.get('/documents', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
-    res.json({ data: customersDocumentsService.list(tenantId, customerId) });
+    res.json({ data: await customersDocumentsService.list(tenantId, customerId) });
   } catch (err) {
     next(err);
   }
 });
 
 // POST /v1/me/documents — customer uploads; verification_status always starts as 'pending'
-meRouter.post('/documents', (req: Request, res: Response, next: NextFunction) => {
+meRouter.post('/documents', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
     const body = meDocumentSchema.parse(req.body);
-    const doc = customersDocumentsService.create(tenantId, customerId, {
+    const doc = await customersDocumentsService.create(tenantId, customerId, {
       ...body,
       verification_status: 'pending',
       uploaded_by: customerId,

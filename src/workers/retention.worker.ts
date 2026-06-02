@@ -1,4 +1,4 @@
-import { getDb } from '../db/sqlite';
+import { getDbClient } from '../db/client';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 
@@ -22,11 +22,11 @@ export class RetentionWorker {
     if (this.interval) return;
     logger.info('RetentionWorker started', { intervalMs: RETENTION_INTERVAL_MS });
 
-    this.interval = setInterval(() => {
+    this.interval = setInterval(async () => {
       if (this.running) return;
       this.running = true;
       try {
-        this.run();
+        await this.run();
       } catch (err) {
         logger.error('RetentionWorker error', { error: String(err) });
       } finally {
@@ -43,19 +43,17 @@ export class RetentionWorker {
     }
   }
 
-  run(): void {
-    const db = getDb();
+  async run(): Promise<void> {
+    const db = getDbClient();
     const cutoff = new Date(
       Date.now() - config.WEBHOOK_DELIVERY_RETENTION_DAYS * 24 * 60 * 60 * 1000
     ).toISOString();
 
-    const result = db
-      .prepare(`
+    const result = await db.run(`
         DELETE FROM webhook_deliveries
         WHERE status IN ('sent', 'failed')
           AND created_at < ?
-      `)
-      .run(cutoff);
+      `, [cutoff]);
 
     if (result.changes > 0) {
       logger.info('RetentionWorker: deleted old webhook deliveries', {

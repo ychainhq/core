@@ -1,6 +1,7 @@
 import { runMigrations } from '../../src/db/migrate';
 import { runSeed } from '../../src/db/seed';
 import { closeDb, getDb } from '../../src/db/sqlite';
+import { resetDbClient } from '../../src/db/client';
 import { adapterRegistry } from '../../src/chain-adapters/registry';
 import { IChainAdapter, Utxo } from '../../src/chain-adapters/types';
 import { BitcoinAdapter } from '../../src/chain-adapters/bitcoin/adapter';
@@ -52,14 +53,15 @@ function utxo(txHash: string, confirmations: number): Utxo {
 
 async function bootstrap() {
   closeDb();
-  runMigrations();
+  resetDbClient();
+  await runMigrations();
   await runSeed();
   adapterRegistry.register(adapter);
   utxos = [];
 
   const db = getDb();
   const now = new Date().toISOString();
-  const customer = customersService.create(TENANT_ID, {
+  const customer = await customersService.create(TENANT_ID, {
     reference: `cust_${Math.random().toString(16).slice(2)}`,
     display_name: 'Deposit Monitor Test Customer',
   });
@@ -82,13 +84,13 @@ async function bootstrap() {
     VALUES (?, ?, ?, 'bitcoin', ?, ?, NULL, '["incoming"]', NULL, 1, NULL, ?, ?)
   `).run(`mon_${Math.random().toString(16).slice(2, 14)}`, TENANT_ID, customer.id, ADDRESS, walletId, now, now);
 
-  webhooksService.create(TENANT_ID, {
+  await webhooksService.create(TENANT_ID, {
     url: 'https://example.com/deposit-monitor',
     events: ['*'],
     secret: 'deposit-monitor-secret',
   });
 
-  const account = ledgerService.findAccountByCustomerAndAsset(TENANT_ID, customer.id, ASSET_ID);
+  const account = await ledgerService.findAccountByCustomerAndAsset(TENANT_ID, customer.id, ASSET_ID);
   if (!account) throw new Error('customer ledger account was not provisioned');
 
   return { customerId: customer.id, walletId, ledgerAccountId: account.id };
@@ -116,11 +118,12 @@ describe('DepositMonitorWorker deposit lifecycle effects', () => {
   afterEach(() => {
     adapterRegistry.register(new BitcoinAdapter());
     closeDb();
+    resetDbClient();
   });
 
   it('settles and emits confirmed effects when a new deposit is first seen as finalized', async () => {
     const ctx = await bootstrap();
-    paymentRequestsService.create(TENANT_ID, {
+    await paymentRequestsService.create(TENANT_ID, {
       chain: 'bitcoin',
       asset: 'BTC',
       address: ADDRESS,
@@ -139,7 +142,7 @@ describe('DepositMonitorWorker deposit lifecycle effects', () => {
     expect(deposit.status).toBe('finalized');
     expect(deposit.confirmations).toBe(10);
 
-    expect(ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
+    expect(await ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
       pending: '0',
       settled: AMOUNT_RAW,
       total: AMOUNT_RAW,
@@ -155,7 +158,7 @@ describe('DepositMonitorWorker deposit lifecycle effects', () => {
 
   it('settles and pays a linked payment request when a detected deposit skips directly to finalized', async () => {
     const ctx = await bootstrap();
-    const paymentRequest = paymentRequestsService.create(TENANT_ID, {
+    const paymentRequest = await paymentRequestsService.create(TENANT_ID, {
       chain: 'bitcoin',
       asset: 'BTC',
       address: ADDRESS,
@@ -168,25 +171,25 @@ describe('DepositMonitorWorker deposit lifecycle effects', () => {
 
     const worker = new DepositMonitorWorker();
     await worker.run();
-    expect(ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
+    expect(await ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
       pending: AMOUNT_RAW,
       settled: '0',
       total: AMOUNT_RAW,
     });
     expect(deliveryCount('deposit.confirmed')).toBe(0);
-    expect(paymentRequestsService.getById(TENANT_ID, paymentRequest.id).status).toBe('detected');
+    expect((await paymentRequestsService.getById(TENANT_ID, paymentRequest.id)).status).toBe('detected');
 
     utxos = [utxo('tx_detected_to_finalized', 10)];
     await worker.run();
     await worker.run();
 
     expect(getOnlyDeposit().status).toBe('finalized');
-    expect(ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
+    expect(await ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
       pending: '0',
       settled: AMOUNT_RAW,
       total: AMOUNT_RAW,
     });
-    expect(paymentRequestsService.getById(TENANT_ID, paymentRequest.id).status).toBe('paid');
+    expect((await paymentRequestsService.getById(TENANT_ID, paymentRequest.id)).status).toBe('paid');
     expect(deliveryCount('deposit.detected')).toBe(1);
     expect(deliveryCount('deposit.confirmed')).toBe(1);
     expect(deliveryCount('payment_request.detected')).toBe(1);
@@ -205,7 +208,7 @@ describe('DepositMonitorWorker deposit lifecycle effects', () => {
     await worker.run();
 
     expect(getOnlyDeposit().status).toBe('confirmed');
-    expect(ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
+    expect(await ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
       pending: '0',
       settled: AMOUNT_RAW,
       total: AMOUNT_RAW,
@@ -232,7 +235,7 @@ describe('DepositMonitorWorker deposit lifecycle effects', () => {
 
     getDb().prepare("DELETE FROM ledger_entries WHERE type = 'deposit_settled'").run();
     getDb().prepare("DELETE FROM webhook_deliveries WHERE event_type = 'deposit.confirmed'").run();
-    expect(ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
+    expect(await ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
       pending: AMOUNT_RAW,
       settled: '0',
       total: AMOUNT_RAW,
@@ -241,7 +244,7 @@ describe('DepositMonitorWorker deposit lifecycle effects', () => {
     await worker.run();
     await worker.run();
 
-    expect(ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
+    expect(await ledgerService.getBalance(ctx.ledgerAccountId)).toEqual({
       pending: '0',
       settled: AMOUNT_RAW,
       total: AMOUNT_RAW,

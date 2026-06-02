@@ -1,4 +1,4 @@
-import { getDb } from '../db/sqlite';
+import { getDbClient } from '../db/client';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
@@ -46,19 +46,17 @@ export class WebhookDeliveryWorker {
   }
 
   async run(): Promise<void> {
-    const db = getDb();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
     // Fetch up to 20 pending deliveries that are due
-    const pending = db
-      .prepare(`
+    const pending = await db.all<any>(`
         SELECT * FROM webhook_deliveries
         WHERE status IN ('pending', 'retrying')
           AND (next_retry_at IS NULL OR next_retry_at <= ?)
         ORDER BY created_at ASC
         LIMIT 20
-      `)
-      .all(now) as any[];
+      `, [now]);
 
     if (pending.length === 0) return;
 
@@ -70,28 +68,28 @@ export class WebhookDeliveryWorker {
   }
 
   private async deliverOne(delivery: any): Promise<void> {
-    const db = getDb();
+    const db = getDbClient();
     const nowIso = new Date().toISOString();
 
     let webhook: any;
     try {
-      webhook = webhooksService.getByIdInternal(delivery.webhook_id);
+      webhook = await webhooksService.getByIdInternal(delivery.webhook_id);
     } catch {
       // Webhook deleted — mark delivery as failed
-      db.prepare(`
+      await db.run(`
         UPDATE webhook_deliveries SET status = 'failed', last_error = 'Webhook not found', updated_at = ? WHERE id = ?
-      `).run(nowIso, delivery.id);
+      `, [nowIso, delivery.id]);
       return;
     }
 
     if (!webhook.is_active) {
-      db.prepare(`
+      await db.run(`
         UPDATE webhook_deliveries SET status = 'failed', last_error = 'Webhook inactive', updated_at = ? WHERE id = ?
-      `).run(nowIso, delivery.id);
+      `, [nowIso, delivery.id]);
       return;
     }
 
-    const secret = webhooksService.getSecretInternal(webhook.id);
+    const secret = await webhooksService.getSecretInternal(webhook.id);
     const timestamp = Date.now();
     const payload = JSON.parse(delivery.payload);
 
@@ -132,23 +130,23 @@ export class WebhookDeliveryWorker {
     const newAttempts = (delivery.attempts ?? 0) + 1;
 
     if (success) {
-      db.prepare(`
+      await db.run(`
         UPDATE webhook_deliveries
         SET status = 'sent', attempts = ?, delivered_at = ?, updated_at = ?
         WHERE id = ?
-      `).run(newAttempts, nowIso, nowIso, delivery.id);
+      `, [newAttempts, nowIso, nowIso, delivery.id]);
       // Successful delivery resets the consecutive failure counter
-      db.prepare(`
+      await db.run(`
         UPDATE webhooks SET consecutive_failures = 0, updated_at = ? WHERE id = ?
-      `).run(nowIso, delivery.webhook_id);
+      `, [nowIso, delivery.webhook_id]);
       logger.debug('Webhook delivered', { deliveryId: delivery.id, eventType: delivery.event_type });
     } else {
       if (newAttempts >= MAX_ATTEMPTS) {
-        db.prepare(`
+        await db.run(`
           UPDATE webhook_deliveries
           SET status = 'failed', attempts = ?, last_error = ?, updated_at = ?
           WHERE id = ?
-        `).run(newAttempts, errorMessage, nowIso, delivery.id);
+        `, [newAttempts, errorMessage, nowIso, delivery.id]);
         logger.warn('Webhook delivery failed permanently', {
           deliveryId: delivery.id,
           attempts: newAttempts,
@@ -156,19 +154,19 @@ export class WebhookDeliveryWorker {
         });
 
         // Increment consecutive_failures; auto-pause webhook if threshold reached
-        const updated = db.prepare(`
+        const updated = await db.get<{ consecutive_failures: number }>(`
           UPDATE webhooks
           SET consecutive_failures = consecutive_failures + 1, updated_at = ?
           WHERE id = ? AND is_active = 1
           RETURNING consecutive_failures
-        `).get(nowIso, delivery.webhook_id) as { consecutive_failures: number } | undefined;
+        `, [nowIso, delivery.webhook_id]);
 
         if (updated && updated.consecutive_failures >= autoPauseThreshold()) {
-          db.prepare(`
+          await db.run(`
             UPDATE webhooks
             SET is_active = 0, auto_paused_at = ?, updated_at = ?
             WHERE id = ?
-          `).run(nowIso, nowIso, delivery.webhook_id);
+          `, [nowIso, nowIso, delivery.webhook_id]);
           logger.warn('Webhook auto-paused due to consecutive failures', {
             webhookId: delivery.webhook_id,
             consecutiveFailures: updated.consecutive_failures,
@@ -179,11 +177,11 @@ export class WebhookDeliveryWorker {
         const backoffSeconds = BACKOFF_BASE_SECONDS * Math.pow(2, newAttempts - 1);
         const nextRetry = new Date(Date.now() + backoffSeconds * 1000).toISOString();
 
-        db.prepare(`
+        await db.run(`
           UPDATE webhook_deliveries
           SET status = 'retrying', attempts = ?, last_error = ?, next_retry_at = ?, updated_at = ?
           WHERE id = ?
-        `).run(newAttempts, errorMessage, nextRetry, nowIso, delivery.id);
+        `, [newAttempts, errorMessage, nextRetry, nowIso, delivery.id]);
         logger.debug('Webhook delivery scheduled for retry', {
           deliveryId: delivery.id,
           attempt: newAttempts,

@@ -3,21 +3,17 @@ import { getDb, closeDb } from './db/sqlite';
 import { runMigrations } from './db/migrate';
 import { createApp } from './app';
 import { startWorkers, stopWorkers } from './workers/index';
-import { reconcileBtcWallets } from './workers/btc-wallet-reconciler';
 import { logger } from './shared/logging/index';
+import { clusterService } from './modules/cluster/cluster.service';
 
 async function main(): Promise<void> {
-  logger.info('Chain API starting...', { version: '0.1.0-beta', env: process.env['NODE_ENV'] || 'development' });
+  logger.info('Chain API starting...', { version: '0.1.0-beta', env: process.env['NODE_ENV'] || 'development', db: config.DB_TYPE });
 
   // Initialize database
-  runMigrations();
+  await runMigrations();
 
-  // Ensure BTC Core wallets exist and watched addresses are imported
-  try {
-    await reconcileBtcWallets();
-  } catch (err) {
-    logger.warn('BTC wallet reconciliation failed (non-fatal)', { error: String(err) });
-  }
+  // Register this engine in the cluster (no-op if CLUSTER_ENABLED=false)
+  await clusterService.register();
 
   // Create Express app
   const app = createApp();
@@ -34,9 +30,10 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     logger.info(`Received ${signal}, shutting down gracefully...`);
 
-    server.close(() => {
+    server.close(async () => {
       logger.info('HTTP server closed');
       stopWorkers();
+      await clusterService.deregister();
       closeDb();
       logger.info('Shutdown complete');
       process.exit(0);

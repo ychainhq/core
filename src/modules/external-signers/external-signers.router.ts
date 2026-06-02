@@ -105,10 +105,10 @@ const enrollSchema = z.object({
   keyProvider: z.enum(['local_file', 'env', 'db_encrypted', 'vault', 'hsm', 'kms']).optional(),
 });
 
-externalSignersRouter.post('/enroll', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.post('/enroll', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = enrollSchema.parse(req.body);
-    const signer = externalSignersService.enroll(tenantId(req), body);
+    const signer = await externalSignersService.enroll(tenantId(req), body);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'external_signer',
@@ -124,9 +124,9 @@ externalSignersRouter.post('/enroll', (req: Request, res: Response, next: NextFu
 });
 
 // GET /v1/external-signers/policies — MUST be before /:signerId
-externalSignersRouter.get('/policies', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.get('/policies', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const policies = signerPolicyService.listPolicies(tenantId(req));
+    const policies = await signerPolicyService.listPolicies(tenantId(req));
     res.json({ data: policies });
   } catch (err) { next(err); }
 });
@@ -146,10 +146,10 @@ const policyItemSchema = z.object({
   contractAllowlist: z.array(z.string()).optional(),
 });
 
-externalSignersRouter.put('/policies', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.put('/policies', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = z.object({ policies: z.array(policyItemSchema) }).parse(req.body);
-    const result = signerPolicyService.upsertPolicies(tenantId(req), body.policies);
+    const result = await signerPolicyService.upsertPolicies(tenantId(req), body.policies);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'external_signer',
@@ -163,18 +163,18 @@ externalSignersRouter.put('/policies', (req: Request, res: Response, next: NextF
 });
 
 // GET /v1/external-signers
-externalSignersRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     checkActorAccess(req, 'external-signer', 'read');
-    const signers = externalSignersService.list(tenantId(req));
+    const signers = await externalSignersService.list(tenantId(req));
     res.json({ data: signers });
   } catch (err) { next(err); }
 });
 
 // GET /v1/external-signers/:signerId
-externalSignersRouter.get('/:signerId', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.get('/:signerId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const signer = externalSignersService.getById(tenantId(req), req.params['signerId']!);
+    const signer = await externalSignersService.getById(tenantId(req), req.params['signerId']!);
     res.json({ data: signer });
   } catch (err) { next(err); }
 });
@@ -185,11 +185,11 @@ const patchSignerSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
-externalSignersRouter.patch('/:signerId', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.patch('/:signerId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = patchSignerSchema.parse(req.body);
-    const prev = externalSignersService.getById(tenantId(req), req.params['signerId']!);
-    const signer = externalSignersService.update(tenantId(req), req.params['signerId']!, body);
+    const prev = await externalSignersService.getById(tenantId(req), req.params['signerId']!);
+    const signer = await externalSignersService.update(tenantId(req), req.params['signerId']!, body);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'external_signer',
@@ -204,9 +204,9 @@ externalSignersRouter.patch('/:signerId', (req: Request, res: Response, next: Ne
 });
 
 // POST /v1/external-signers/:signerId/enable
-externalSignersRouter.post('/:signerId/enable', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.post('/:signerId/enable', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const signer = externalSignersService.enable(tenantId(req), req.params['signerId']!);
+    const signer = await externalSignersService.enable(tenantId(req), req.params['signerId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'external_signer',
@@ -221,9 +221,9 @@ externalSignersRouter.post('/:signerId/enable', (req: Request, res: Response, ne
 });
 
 // POST /v1/external-signers/:signerId/disable
-externalSignersRouter.post('/:signerId/disable', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.post('/:signerId/disable', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const signer = externalSignersService.disable(tenantId(req), req.params['signerId']!);
+    const signer = await externalSignersService.disable(tenantId(req), req.params['signerId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'external_signer',
@@ -238,10 +238,10 @@ externalSignersRouter.post('/:signerId/disable', (req: Request, res: Response, n
 });
 
 // DELETE /v1/external-signers/:signerId (soft delete = revoke)
-externalSignersRouter.delete('/:signerId', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.delete('/:signerId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const prev = externalSignersService.getById(tenantId(req), req.params['signerId']!);
-    externalSignersService.delete(tenantId(req), req.params['signerId']!);
+    const prev = await externalSignersService.getById(tenantId(req), req.params['signerId']!);
+    await externalSignersService.delete(tenantId(req), req.params['signerId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'external_signer',
@@ -266,10 +266,10 @@ const heartbeatSchema = z.object({
   time: z.string().optional(),
 });
 
-externalSignersRouter.post('/:signerId/heartbeat', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.post('/:signerId/heartbeat', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = heartbeatSchema.parse(req.body);
-    const signer = externalSignersService.heartbeat(tenantId(req), req.params['signerId']!, body);
+    const signer = await externalSignersService.heartbeat(tenantId(req), req.params['signerId']!, body);
     res.json({
       data: {
         signerId: signer.id,
@@ -281,10 +281,10 @@ externalSignersRouter.post('/:signerId/heartbeat', (req: Request, res: Response,
 });
 
 // GET /v1/external-signers/:signerId/tasks
-externalSignersRouter.get('/:signerId/tasks', (req: Request, res: Response, next: NextFunction) => {
+externalSignersRouter.get('/:signerId/tasks', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const limit = Math.min(parseInt((req.query['limit'] as string) || '10', 10), 50);
-    const tasks = signingTasksService.listAvailableForSigner(tenantId(req), req.params['signerId']!, limit);
+    const tasks = await signingTasksService.listAvailableForSigner(tenantId(req), req.params['signerId']!, limit);
     res.json({ items: tasks.map(toSignerTask) });
   } catch (err) { next(err); }
 });

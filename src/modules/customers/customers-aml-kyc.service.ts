@@ -1,4 +1,4 @@
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import {
   CustomerAmlKyc,
@@ -51,11 +51,12 @@ function mapAmlKyc(row: any): CustomerAmlKyc {
   };
 }
 
-function guardCustomer(tenantId: string, customerId: string): void {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT id FROM customers WHERE id = ? AND tenant_id = ?')
-    .get(customerId, tenantId);
+async function guardCustomer(tenantId: string, customerId: string): Promise<void> {
+  const db = getDbClient();
+  const row = await db.get(
+    'SELECT id FROM customers WHERE id = ? AND tenant_id = ?',
+    [customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('Customer', customerId);
 }
 
@@ -96,27 +97,31 @@ export interface UpsertAmlKycInput {
 
 export const customersAmlKycService = {
   // Called internally on customer creation to provision defaults.
-  provision(tenantId: string, customerId: string): void {
-    const db = getDb();
+  async provision(tenantId: string, customerId: string): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
-    db.prepare(`
-      INSERT OR IGNORE INTO customer_aml_kyc (customer_id, tenant_id, updated_at)
-      VALUES (?, ?, ?)
-    `).run(customerId, tenantId, now);
+    await db.run(
+      `INSERT OR IGNORE INTO customer_aml_kyc (customer_id, tenant_id, updated_at)
+      VALUES (?, ?, ?)`,
+      [customerId, tenantId, now]
+    );
   },
 
-  upsert(tenantId: string, customerId: string, input: UpsertAmlKycInput): CustomerAmlKyc {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
+  async upsert(tenantId: string, customerId: string, input: UpsertAmlKycInput): Promise<CustomerAmlKyc> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
 
-    const existing = db
-      .prepare('SELECT 1 FROM customer_aml_kyc WHERE customer_id = ?')
-      .get(customerId);
+    const existing = await db.get(
+      'SELECT 1 FROM customer_aml_kyc WHERE customer_id = ?',
+      [customerId]
+    );
     const now = new Date().toISOString();
 
     if (!existing) {
-      db.prepare('INSERT INTO customer_aml_kyc (customer_id, tenant_id, updated_at) VALUES (?, ?, ?)')
-        .run(customerId, tenantId, now);
+      await db.run(
+        'INSERT INTO customer_aml_kyc (customer_id, tenant_id, updated_at) VALUES (?, ?, ?)',
+        [customerId, tenantId, now]
+      );
     }
 
     const sets: string[] = [];
@@ -170,22 +175,24 @@ export const customersAmlKycService = {
     if (sets.length > 0) {
       sets.push('updated_at = ?');
       params.push(now, customerId);
-      db.prepare(
-        `UPDATE customer_aml_kyc SET ${sets.join(', ')} WHERE customer_id = ?`
-      ).run(...params);
+      await db.run(
+        `UPDATE customer_aml_kyc SET ${sets.join(', ')} WHERE customer_id = ?`,
+        params
+      );
     }
 
     return mapAmlKyc(
-      db.prepare('SELECT * FROM customer_aml_kyc WHERE customer_id = ?').get(customerId)
+      await db.get<any>('SELECT * FROM customer_aml_kyc WHERE customer_id = ?', [customerId])
     );
   },
 
-  get(tenantId: string, customerId: string): CustomerAmlKyc | null {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
-    const row = db
-      .prepare('SELECT * FROM customer_aml_kyc WHERE customer_id = ? AND tenant_id = ?')
-      .get(customerId, tenantId) as any;
+  async get(tenantId: string, customerId: string): Promise<CustomerAmlKyc | null> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
+    const row = await db.get<any>(
+      'SELECT * FROM customer_aml_kyc WHERE customer_id = ? AND tenant_id = ?',
+      [customerId, tenantId]
+    );
     if (!row) return null;
     return mapAmlKyc(row);
   },

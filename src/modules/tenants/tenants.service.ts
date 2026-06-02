@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError, ConflictError, ValidationError } from '../../shared/errors/index';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { logger } from '../../shared/logging/index';
@@ -57,11 +57,9 @@ function mapConfig(row: any): TenantConfig {
   };
 }
 
-function withConfig(tenant: Tenant): TenantWithConfig {
-  const db = getDb();
-  const cfgRow = db
-    .prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?')
-    .get(tenant.id);
+async function withConfig(tenant: Tenant): Promise<TenantWithConfig> {
+  const db = getDbClient();
+  const cfgRow = await db.get('SELECT * FROM tenant_configs WHERE tenant_id = ?', [tenant.id]);
   return {
     ...tenant,
     config: cfgRow ? mapConfig(cfgRow) : null,
@@ -90,23 +88,24 @@ interface TreasuryWalletOptions {
   accountName: string;
 }
 
-function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOptions): void {
-  const db = getDb();
+async function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOptions): Promise<void> {
+  const db = getDbClient();
   const chainId = 'bitcoin';
   const assetId = 'bitcoin:BTC';
   const now = new Date().toISOString();
 
-  let wallet = db
-    .prepare('SELECT * FROM wallets WHERE tenant_id = ? AND wallet_role = ?')
-    .get(tenantId, opts.role) as any;
+  let wallet = await db.get(
+    'SELECT * FROM wallets WHERE tenant_id = ? AND wallet_role = ?',
+    [tenantId, opts.role]
+  ) as any;
 
   if (!wallet) {
-    wallet = walletsService.create(tenantId, {
+    wallet = await walletsService.create(tenantId, {
       name: opts.walletName,
       type: 'external_signer',
       walletRole: opts.role,
     });
-    ledgerService.createAccount(tenantId, {
+    await ledgerService.createAccount(tenantId, {
       walletId: wallet.id,
       chainId,
       assetId,
@@ -115,21 +114,22 @@ function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOptions)
     });
   }
 
-  const existingAddr = db
-    .prepare('SELECT id, status FROM addresses WHERE wallet_id = ? AND address = ?')
-    .get(wallet.id, opts.address) as { id: string; status: string } | undefined;
+  const existingAddr = await db.get<{ id: string; status: string }>(
+    'SELECT id, status FROM addresses WHERE wallet_id = ? AND address = ?',
+    [wallet.id, opts.address]
+  );
 
   if (existingAddr) {
     if (existingAddr.status !== 'active') {
-      db.prepare("UPDATE addresses SET status = 'active', updated_at = ? WHERE id = ?")
-        .run(now, existingAddr.id);
+      await db.run("UPDATE addresses SET status = 'active', updated_at = ? WHERE id = ?",
+        [now, existingAddr.id]);
     }
-    db.prepare("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active' AND id != ?")
-      .run(now, wallet.id, existingAddr.id);
+    await db.run("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active' AND id != ?",
+      [now, wallet.id, existingAddr.id]);
   } else {
-    db.prepare("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active'")
-      .run(now, wallet.id);
-    addressesService.addToWallet(tenantId, wallet.id, {
+    await db.run("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active'",
+      [now, wallet.id]);
+    await addressesService.addToWallet(tenantId, wallet.id, {
       chain: 'bitcoin',
       address: opts.address,
       label: opts.role,
@@ -138,28 +138,10 @@ function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOptions)
   }
 }
 
-async function importTreasuryAddress(tenantId: string, opts: TreasuryWalletOptions): Promise<void> {
-  if (!config.BITCOIN_CORE_PROVISIONING_ENABLED) {
-    logger.debug('Skipping Bitcoin Core treasury address import', {
-      tenantId,
-      address: opts.address,
-      role: opts.role,
-    });
-    return;
-  }
-
-  const adapter = new BitcoinAdapter();
-  try {
-    if (opts.pubkeyHex) {
-      await adapter.importSolvableAddressForTenant(opts.pubkeyHex, tenantId, opts.role);
-    } else {
-      await adapter.importAddressForTenant(opts.address, tenantId, opts.role);
-    }
-  } catch (err) {
-    logger.warn('Failed to import treasury address into BTC Core FWallet (non-fatal)', {
-      tenantId, address: opts.address, role: opts.role, err,
-    });
-  }
+// v3: Bitcoin Core is stateless — no FWallet import needed.
+// btc-indexer handles deposit detection by scanning blocks directly.
+async function importTreasuryAddress(_tenantId: string, _opts: TreasuryWalletOptions): Promise<void> {
+  // no-op: FWallet imports removed in v3
 }
 
 export const tenantsService = {
@@ -185,24 +167,12 @@ export const tenantsService = {
   },
 
   /**
-   * Provision the Bitcoin Core watch-only FWallet for a tenant.
-   * Idempotent: loads the existing wallet if it was already created.
-   * Non-fatal: logs a warning if Bitcoin Core is unavailable so that the DB
-   * tenant record is always created. The FWallet will be re-provisioned on
-   * next startup or via the adapter directly.
+   * v3: No-op. Bitcoin Core nodes are stateless — no FWallet management.
+   * btc-indexer handles deposit detection by scanning blocks directly.
+   * Kept for backward compatibility with existing provisioning flow.
    */
-  async provisionBitcoinWallet(tenantId: string): Promise<void> {
-    if (!config.BITCOIN_CORE_PROVISIONING_ENABLED) {
-      logger.debug('Skipping Bitcoin Core FWallet provisioning for tenant', { tenantId });
-      return;
-    }
-
-    const adapter = new BitcoinAdapter();
-    try {
-      await adapter.provisionTenantWallet(tenantId);
-    } catch (err) {
-      logger.warn('Could not provision Bitcoin Core FWallet for tenant (Bitcoin Core may be unavailable)', { tenantId, err });
-    }
+  async provisionBitcoinWallet(_tenantId: string): Promise<void> {
+    // no-op: FWallet provisioning removed in v3
   },
 
   /**
@@ -220,7 +190,7 @@ export const tenantsService = {
       throw new ValidationError(`Invalid bitcoin address: ${opts.address}`);
     }
 
-    upsertTreasuryWalletRows(tenantId, opts);
+    await upsertTreasuryWalletRows(tenantId, opts);
     await importTreasuryAddress(tenantId, opts);
   },
 
@@ -244,12 +214,12 @@ export const tenantsService = {
     const assetId = 'bitcoin:BTC';
 
     // Always create the customer_deposits LWallet (needed for deposit acceptance)
-    const depositsWallet = walletsService.create(tenantId, {
+    const depositsWallet = await walletsService.create(tenantId, {
       name: 'Customer Deposits (BTC)',
       type: 'watch_only',
       walletRole: 'customer_deposits',
     });
-    ledgerService.createAccount(tenantId, {
+    await ledgerService.createAccount(tenantId, {
       walletId: depositsWallet.id,
       chainId,
       assetId,
@@ -280,17 +250,17 @@ export const tenantsService = {
       }
       : null;
 
-    if (hotWalletOpts) upsertTreasuryWalletRows(tenantId, hotWalletOpts);
-    if (coldWalletOpts) upsertTreasuryWalletRows(tenantId, coldWalletOpts);
+    if (hotWalletOpts) await upsertTreasuryWalletRows(tenantId, hotWalletOpts);
+    if (coldWalletOpts) await upsertTreasuryWalletRows(tenantId, coldWalletOpts);
 
     // Tenant-level operational accounts (not linked to specific wallets)
-    ledgerService.createAccount(tenantId, {
+    await ledgerService.createAccount(tenantId, {
       chainId,
       assetId,
       accountType: 'sweep_in_transit',
       name: 'Sweep In Transit (BTC)',
     });
-    ledgerService.createAccount(tenantId, {
+    await ledgerService.createAccount(tenantId, {
       chainId,
       assetId,
       accountType: 'network_fee_expense',
@@ -301,30 +271,30 @@ export const tenantsService = {
     if (coldWalletOpts) await importTreasuryAddress(tenantId, coldWalletOpts);
   },
 
-  create(input: { name: string; metadata?: Record<string, unknown> }): TenantWithConfig {
-    const db = getDb();
+  async create(input: { name: string; metadata?: Record<string, unknown> }): Promise<TenantWithConfig> {
+    const db = getDbClient();
     const id = `tenant_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO tenants (id, name, status, metadata, created_at, updated_at)
       VALUES (?, ?, 'active', ?, ?, ?)
-    `).run(id, input.name, input.metadata ? JSON.stringify(input.metadata) : null, now, now);
+    `, [id, input.name, input.metadata ? JSON.stringify(input.metadata) : null, now, now]);
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO tenant_configs (tenant_id, btc_confirmations_required, btc_finality_confirmations,
         custody_mode, withdrawal_mode, daily_withdrawal_limit_sats, per_tx_limit_sats, updated_at)
       VALUES (?, 1, 6, 'external_signer', 'external_signer', NULL, NULL, ?)
-    `).run(id, now);
+    `, [id, now]);
 
     return tenantsService.getById(id);
   },
 
-  list(input: { limit?: number; cursor?: string; status?: string } = {}): {
+  async list(input: { limit?: number; cursor?: string; status?: string } = {}): Promise<{
     data: TenantWithConfig[];
     nextCursor: string | null;
-  } {
-    const db = getDb();
+  }> {
+    const db = getDbClient();
     const limit = Math.min(input.limit ?? 20, 100);
     let query = 'SELECT * FROM tenants WHERE 1=1';
     const params: unknown[] = [];
@@ -334,29 +304,29 @@ export const tenantsService = {
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params) as any[];
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
     return {
-      data: items.map((r) => withConfig(mapTenant(r))),
-      nextCursor: hasMore ? items[items.length - 1].id : null,
+      data: await Promise.all(items.map((r) => withConfig(mapTenant(r)))),
+      nextCursor: hasMore ? (items[items.length - 1] as any).id : null,
     };
   },
 
-  getById(id: string): TenantWithConfig {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
+  async getById(id: string): Promise<TenantWithConfig> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM tenants WHERE id = ?', [id]);
     if (!row) throw new NotFoundError('Tenant', id);
     return withConfig(mapTenant(row));
   },
 
-  update(
+  async update(
     id: string,
     input: { name?: string; status?: string; metadata?: Record<string, unknown> }
-  ): TenantWithConfig {
-    const db = getDb();
-    tenantsService.getById(id); // 404 guard
+  ): Promise<TenantWithConfig> {
+    const db = getDbClient();
+    await tenantsService.getById(id); // 404 guard
     const now = new Date().toISOString();
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -368,7 +338,7 @@ export const tenantsService = {
 
     sets.push('updated_at = ?');
     params.push(now, id);
-    db.prepare(`UPDATE tenants SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    await db.run(`UPDATE tenants SET ${sets.join(', ')} WHERE id = ?`, params);
     return tenantsService.getById(id);
   },
 
@@ -390,21 +360,22 @@ export const tenantsService = {
       btcColdAddress?: string;
     }
   ): Promise<TenantConfig> {
-    const db = getDb();
-    tenantsService.getById(tenantId); // 404 guard
+    const db = getDbClient();
+    await tenantsService.getById(tenantId); // 404 guard
     const now = new Date().toISOString();
 
-    const existing = db
-      .prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?')
-      .get(tenantId) as TenantConfig | undefined;
+    const existing = await db.get<TenantConfig>(
+      'SELECT * FROM tenant_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
 
     if (!existing) {
-      db.prepare(`
+      await db.run(`
         INSERT INTO tenant_configs (tenant_id, btc_confirmations_required, btc_finality_confirmations,
           custody_mode, withdrawal_mode, daily_withdrawal_limit_sats, per_tx_limit_sats,
           btc_xpub, btc_sweep_threshold_sats, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      `, [
         tenantId,
         input.btcConfirmationsRequired ?? 1,
         input.btcFinalityConfirmations ?? 6,
@@ -414,8 +385,8 @@ export const tenantsService = {
         input.perTxLimitSats ?? null,
         input.btcXpub ?? null,
         input.btcSweepThresholdSats ?? '100000',
-        now
-      );
+        now,
+      ]);
     } else {
       const sets: string[] = [];
       const params: unknown[] = [];
@@ -434,7 +405,7 @@ export const tenantsService = {
       if (sets.length > 0) {
         sets.push('updated_at = ?');
         params.push(now, tenantId);
-        db.prepare(`UPDATE tenant_configs SET ${sets.join(', ')} WHERE tenant_id = ?`).run(...params);
+        await db.run(`UPDATE tenant_configs SET ${sets.join(', ')} WHERE tenant_id = ?`, params);
       }
     }
 
@@ -461,26 +432,26 @@ export const tenantsService = {
       });
     }
 
-    const row = db.prepare('SELECT * FROM tenant_configs WHERE tenant_id = ?').get(tenantId);
+    const row = await db.get('SELECT * FROM tenant_configs WHERE tenant_id = ?', [tenantId]);
     return mapConfig(row);
   },
 
-  generateApiKey(tenantId: string, name: string): { keyId: string; rawKey: string } {
-    const db = getDb();
-    tenantsService.getById(tenantId); // 404 guard
+  async generateApiKey(tenantId: string, name: string): Promise<{ keyId: string; rawKey: string }> {
+    const db = getDbClient();
+    await tenantsService.getById(tenantId); // 404 guard
 
     const rawKey = `cak_${crypto.randomBytes(24).toString('hex')}`;
     const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
     const keyId = `apikey_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    const existing = db.prepare('SELECT id FROM api_keys WHERE key_hash = ?').get(keyHash);
+    const existing = await db.get('SELECT id FROM api_keys WHERE key_hash = ?', [keyHash]);
     if (existing) throw new ConflictError('API key collision — please retry');
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO api_keys (id, tenant_id, key_hash, name, is_active, last_used_at, created_at, expires_at)
       VALUES (?, ?, ?, ?, 1, NULL, ?, NULL)
-    `).run(keyId, tenantId, keyHash, name, now);
+    `, [keyId, tenantId, keyHash, name, now]);
 
     return { keyId, rawKey };
   },

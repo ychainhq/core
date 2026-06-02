@@ -298,13 +298,13 @@ describe('POST /v1/me/withdrawals', () => {
     const { tenantId, auth } = await createTenantWithKey();
     const customer = await createCustomer(auth);
     const token = await issueSession(auth, customer.id);
-    const account = ledgerService.findAccountByCustomerAndAsset(
+    const account = await ledgerService.findAccountByCustomerAndAsset(
       tenantId,
       customer.id,
       'bitcoin:BTC'
     );
     expect(account).toBeTruthy();
-    ledgerService.addEntry({
+    await ledgerService.addEntry({
       ledgerAccountId: account!.id,
       type: 'test_credit',
       amountRaw: '200000',

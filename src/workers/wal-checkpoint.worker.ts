@@ -1,4 +1,4 @@
-import { getDb } from '../db/sqlite';
+import { getDbClient } from '../db/client';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 
@@ -17,9 +17,9 @@ export class WalCheckpointWorker {
     if (this.interval) return;
     logger.info('WalCheckpointWorker started', { intervalMs: config.WAL_CHECKPOINT_INTERVAL_MS });
 
-    this.interval = setInterval(() => {
+    this.interval = setInterval(async () => {
       try {
-        this.run();
+        await this.run();
       } catch (err) {
         logger.error('WalCheckpointWorker error', { error: String(err) });
       }
@@ -34,13 +34,15 @@ export class WalCheckpointWorker {
     }
   }
 
-  run(): void {
-    const db = getDb();
-    const result = db.pragma('wal_checkpoint(PASSIVE)') as Array<{
-      busy: number;
-      log: number;
-      checkpointed: number;
-    }>;
+  async run(): Promise<void> {
+    const db = getDbClient();
+    if (db.isPostgres) {
+      // WAL checkpoint is SQLite-only; no-op on PostgreSQL
+      return;
+    }
+    const result = await db.all<{ busy: number; log: number; checkpointed: number }>(
+      'PRAGMA wal_checkpoint(PASSIVE)'
+    );
     const { busy, log, checkpointed } = result[0] ?? { busy: 0, log: 0, checkpointed: 0 };
     logger.debug('WAL checkpoint completed', { busy, log, checkpointed });
   }

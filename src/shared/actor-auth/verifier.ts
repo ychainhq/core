@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { UnauthorizedError } from '../errors/index';
 
 export interface RawActorClaims {
@@ -26,11 +26,12 @@ function sign(headerDotBody: string, secret: string): string {
   return base64url(crypto.createHmac('sha256', secret).update(headerDotBody).digest());
 }
 
-function getTenantActorSecret(tenantId: string): string {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT actor_token_secret FROM tenant_configs WHERE tenant_id = ?')
-    .get(tenantId) as { actor_token_secret: string | null } | undefined;
+async function getTenantActorSecret(tenantId: string): Promise<string> {
+  const db = getDbClient();
+  const row = await db.get<{ actor_token_secret: string | null }>(
+    'SELECT actor_token_secret FROM tenant_configs WHERE tenant_id = ?',
+    [tenantId]
+  );
 
   if (!row?.actor_token_secret) {
     throw new UnauthorizedError('Actor token signing not configured for this tenant');
@@ -38,13 +39,13 @@ function getTenantActorSecret(tenantId: string): string {
   return row.actor_token_secret;
 }
 
-export function verifyActorToken(token: string, tenantId: string): RawActorClaims {
+export async function verifyActorToken(token: string, tenantId: string): Promise<RawActorClaims> {
   const parts = token.split('.');
   if (parts.length !== 3) throw new UnauthorizedError('Malformed actor token');
 
   const [header, body, sig] = parts as [string, string, string];
 
-  const secret = getTenantActorSecret(tenantId);
+  const secret = await getTenantActorSecret(tenantId);
   const expected = sign(`${header}.${body}`, secret);
 
   const sigBuf = Buffer.from(sig);

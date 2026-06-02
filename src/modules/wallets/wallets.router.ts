@@ -30,11 +30,11 @@ const listQuerySchema = z.object({
   type: z.string().optional(),
 });
 
-walletsRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
+walletsRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
     const body = createSchema.parse(req.body);
-    const wallet = walletsService.create(tenantId, body);
+    const wallet = await walletsService.create(tenantId, body);
     ticklerService.record({
       tenantId,
       category: 'wallet',
@@ -51,12 +51,12 @@ walletsRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-walletsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+walletsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     checkActorAccess(req, 'wallet', 'read');
     const tenantId = (req as any).tenantId as string;
     const query = listQuerySchema.parse(req.query);
-    const result = walletsService.list(tenantId, query);
+    const result = await walletsService.list(tenantId, query);
     res.json({
       data: result.data,
       pagination: {
@@ -70,10 +70,10 @@ walletsRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-walletsRouter.get('/:walletId', (req: Request, res: Response, next: NextFunction) => {
+walletsRouter.get('/:walletId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId as string;
-    const wallet = walletsService.getById(tenantId, req.params['walletId']!);
+    const wallet = await walletsService.getById(tenantId, req.params['walletId']!);
     res.json({ data: wallet });
   } catch (err) {
     next(err);

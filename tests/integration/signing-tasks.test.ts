@@ -65,8 +65,8 @@ function createTestSigningTask(overrides: Partial<Parameters<typeof signingTasks
 describe('Signing Tasks — List', () => {
   let taskId: string;
 
-  beforeAll(() => {
-    const task = createTestSigningTask();
+  beforeAll(async () => {
+    const task = await createTestSigningTask();
     taskId = task.id;
   });
 
@@ -102,8 +102,8 @@ describe('Signing Tasks — List', () => {
 describe('Signing Tasks — Manual Approval Flow', () => {
   let taskId: string;
 
-  beforeAll(() => {
-    const task = createTestSigningTask({ decisionMode: 'manual' });
+  beforeAll(async () => {
+    const task = await createTestSigningTask({ decisionMode: 'manual' });
     taskId = task.id;
   });
 
@@ -130,8 +130,8 @@ describe('Signing Tasks — Manual Approval Flow', () => {
 describe('Signing Tasks — Manual Rejection Flow', () => {
   let taskId: string;
 
-  beforeAll(() => {
-    const task = createTestSigningTask({ decisionMode: 'manual' });
+  beforeAll(async () => {
+    const task = await createTestSigningTask({ decisionMode: 'manual' });
     taskId = task.id;
   });
 
@@ -210,7 +210,7 @@ describe('Signing Tasks — Signer reject reverts withdrawal batch (Bug 3)', () 
     `).run(batchId, withdrawalId);
 
     // Create signing task linked to the batch, assigned to our signer
-    const task = signingTasksService.create({
+    const task = await signingTasksService.create({
       tenantId: TEST_TENANT_ID,
       signerId,
       requestType: 'btc_withdrawal_batch',
@@ -305,20 +305,20 @@ describe('Signing Tasks — Signer reject reverts withdrawal batch (Bug 3)', () 
 });
 
 describe('Signing Tasks — Expiry', () => {
-  test('expireAllOverdue — expires tasks past their TTL', () => {
+  test('expireAllOverdue — expires tasks past their TTL', async () => {
     // Create a task with an already-expired TTL
     const db = getDb();
-    const task = createTestSigningTask();
+    const task = await createTestSigningTask();
 
     // Set expires_at to the past
     db.prepare(
       `UPDATE signing_tasks SET expires_at = '2000-01-01T00:00:00Z' WHERE id = ?`
     ).run(task.id);
 
-    const expired = signingTasksService.expireAllOverdue();
+    const expired = await signingTasksService.expireAllOverdue();
     expect(expired).toBeGreaterThanOrEqual(1);
 
-    const updatedTask = signingTasksService.getByIdInternal(task.id);
+    const updatedTask = await signingTasksService.getByIdInternal(task.id);
     expect(updatedTask.status).toBe('expired');
   });
 });
@@ -326,8 +326,8 @@ describe('Signing Tasks — Expiry', () => {
 // ─── requestType filter ────────────────────────────────────────────────────────
 
 describe('Signing Tasks — requestType filter', () => {
-  beforeAll(() => {
-    createTestSigningTask({ requestType: 'btc_withdrawal_batch' });
+  beforeAll(async () => {
+    await createTestSigningTask({ requestType: 'btc_withdrawal_batch' });
   });
 
   test('GET /v1/signing-tasks?requestType=btc_withdrawal_batch returns matching tasks', async () => {

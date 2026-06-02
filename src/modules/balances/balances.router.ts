@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { adapterRegistry } from '../../chain-adapters/registry';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { satoshiToBtc, addSatoshi } from '../../shared/money/index';
 
@@ -38,9 +38,12 @@ balancesRouter.get('/:asset', async (req: Request, res: Response, next: NextFunc
     const { chain, address, asset } = req.params as { chain: string; address: string; asset: string };
     const adapter = adapterRegistry.get(chain);
 
-    // Verify asset exists
-    const db = getDb();
-    const assetRow = db.prepare('SELECT * FROM assets WHERE id = ? OR symbol = ?').get(`${chain}:${asset}`, asset);
+    // Verify asset exists and belongs to this chain
+    const db = getDbClient();
+    const assetRow = await db.get(
+      'SELECT * FROM assets WHERE chain_id = ? AND (id = ? OR symbol = ?)',
+      [chain, `${chain}:${asset}`, asset]
+    );
     if (!assetRow) throw new NotFoundError('Asset', asset);
 
     const balance = await adapter.getAddressBalance(address, req.tenantId!);
@@ -67,14 +70,14 @@ balancesRouter.get('/:asset', async (req: Request, res: Response, next: NextFunc
 walletBalancesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const walletId = req.params['walletId']!;
-    const db = getDb();
+    const db = getDbClient();
 
-    const wallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(walletId);
+    const wallet = await db.get('SELECT * FROM wallets WHERE id = ?', [walletId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
-    const addresses = db
-      .prepare('SELECT * FROM addresses WHERE wallet_id = ? AND status = ?')
-      .all(walletId, 'active') as { chain_id: string; address: string }[];
+    const addresses = await db.all<{ chain_id: string; address: string }>(
+      'SELECT * FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active']
+    );
 
     // Group by chain
     const chainGroups = new Map<string, string[]>();

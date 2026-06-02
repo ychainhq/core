@@ -39,7 +39,7 @@ function checkActorAccess(req: Request, entity: string, action: 'read' | 'write'
 }
 
 // GET /v1/withdrawal-batches
-withdrawalBatchesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     checkActorAccess(req, 'withdrawal-batch', 'read');
     const limit = parseInt((req.query['limit'] as string) || '20', 10);
@@ -47,7 +47,7 @@ withdrawalBatchesRouter.get('/', (req: Request, res: Response, next: NextFunctio
     const status = req.query['status'] as string | undefined;
     const chainId = req.query['chainId'] as string | undefined;
 
-    const result = withdrawalBatcherService.listBatches(tenantId(req), { status, chainId, limit, cursor });
+    const result = await withdrawalBatcherService.listBatches(tenantId(req), { status, chainId, limit, cursor });
     res.json({
       data: result.data,
       pagination: { limit, cursor: cursor ?? null, nextCursor: result.nextCursor },
@@ -56,9 +56,9 @@ withdrawalBatchesRouter.get('/', (req: Request, res: Response, next: NextFunctio
 });
 
 // GET /v1/withdrawal-batches/:batchId
-withdrawalBatchesRouter.get('/:batchId', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchesRouter.get('/:batchId', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const batch = withdrawalBatcherService.getBatchById(tenantId(req), req.params['batchId']!);
+    const batch = await withdrawalBatcherService.getBatchById(tenantId(req), req.params['batchId']!);
     res.json({ data: batch });
   } catch (err) { next(err); }
 });
@@ -68,11 +68,11 @@ const approveSchema = z.object({
   approvedBy: z.string().optional(),
 });
 
-withdrawalBatchesRouter.post('/:batchId/approve', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchesRouter.post('/:batchId/approve', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = approveSchema.parse(req.body);
     const approvedBy = body.approvedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
-    const batch = withdrawalBatcherService.approveBatch(tenantId(req), req.params['batchId']!, approvedBy);
+    const batch = await withdrawalBatcherService.approveBatch(tenantId(req), req.params['batchId']!, approvedBy);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'withdrawal_batch',
@@ -93,11 +93,11 @@ const rejectSchema = z.object({
   rejectedBy: z.string().optional(),
 });
 
-withdrawalBatchesRouter.post('/:batchId/reject', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchesRouter.post('/:batchId/reject', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = rejectSchema.parse(req.body);
     const rejectedBy = body.rejectedBy ?? ((req as any).actorContext?.actorId ?? 'unknown');
-    const batch = withdrawalBatcherService.rejectBatch(tenantId(req), req.params['batchId']!, rejectedBy, body.reason);
+    const batch = await withdrawalBatcherService.rejectBatch(tenantId(req), req.params['batchId']!, rejectedBy, body.reason);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'withdrawal_batch',
@@ -114,9 +114,9 @@ withdrawalBatchesRouter.post('/:batchId/reject', (req: Request, res: Response, n
 });
 
 // POST /v1/withdrawal-batches/:batchId/retry
-withdrawalBatchesRouter.post('/:batchId/retry', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchesRouter.post('/:batchId/retry', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const batch = withdrawalBatcherService.retryBatch(tenantId(req), req.params['batchId']!);
+    const batch = await withdrawalBatcherService.retryBatch(tenantId(req), req.params['batchId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'withdrawal_batch',
@@ -131,9 +131,9 @@ withdrawalBatchesRouter.post('/:batchId/retry', (req: Request, res: Response, ne
 });
 
 // POST /v1/withdrawal-batches/:batchId/cancel
-withdrawalBatchesRouter.post('/:batchId/cancel', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchesRouter.post('/:batchId/cancel', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const batch = withdrawalBatcherService.cancelBatch(tenantId(req), req.params['batchId']!);
+    const batch = await withdrawalBatcherService.cancelBatch(tenantId(req), req.params['batchId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'withdrawal_batch',
@@ -208,9 +208,9 @@ withdrawalBatchesRouter.post('/:batchId/cpfp', (req: Request, res: Response, nex
 // ---- Tenant batch config ----
 
 // GET /v1/tenant/withdrawal-batch-config
-withdrawalBatchConfigRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchConfigRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const config = withdrawalBatcherService.getBatchConfig(tenantId(req));
+    const config = await withdrawalBatcherService.getBatchConfig(tenantId(req));
     res.json({ data: config });
   } catch (err) { next(err); }
 });
@@ -238,7 +238,7 @@ const configPatchSchema = z.object({
   withdrawalFeeCoverage: z.enum(['tenant_pays', 'sender_pays', 'recipient_pays']).optional(),
 }).strict();
 
-withdrawalBatchConfigRouter.patch('/', (req: Request, res: Response, next: NextFunction) => {
+withdrawalBatchConfigRouter.patch('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = configPatchSchema.parse(req.body);
 
@@ -273,7 +273,7 @@ withdrawalBatchConfigRouter.patch('/', (req: Request, res: Response, next: NextF
       }
     }
 
-    const config = withdrawalBatcherService.upsertBatchConfig(tenantId(req), updates as any);
+    const config = await withdrawalBatcherService.upsertBatchConfig(tenantId(req), updates as any);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'withdrawal_batch',

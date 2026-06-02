@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { toUnixTs } from '../../shared/time/index';
 
@@ -42,31 +42,32 @@ export interface ListWalletsInput {
 }
 
 export const walletsService = {
-  create(tenantId: string, input: CreateWalletInput): Wallet {
-    const db = getDb();
+  async create(tenantId: string, input: CreateWalletInput): Promise<Wallet> {
+    const db = getDbClient();
     const id = generateWalletId();
     const now = new Date().toISOString();
     const walletRole = input.walletRole ?? 'watch_only';
 
-    db.prepare(`
-      INSERT INTO wallets (id, tenant_id, name, type, wallet_role, status, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
-    `).run(
-      id,
-      tenantId,
-      input.name,
-      input.type,
-      walletRole,
-      input.metadata ? JSON.stringify(input.metadata) : null,
-      now,
-      now
+    await db.run(
+      `INSERT INTO wallets (id, tenant_id, name, type, wallet_role, status, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+      [
+        id,
+        tenantId,
+        input.name,
+        input.type,
+        walletRole,
+        input.metadata ? JSON.stringify(input.metadata) : null,
+        now,
+        now,
+      ]
     );
 
     return walletsService.getById(tenantId, id);
   },
 
-  list(tenantId: string, input: ListWalletsInput = {}): { data: Wallet[]; nextCursor: string | null } {
-    const db = getDb();
+  async list(tenantId: string, input: ListWalletsInput = {}): Promise<{ data: Wallet[]; nextCursor: string | null }> {
+    const db = getDbClient();
     const limit = Math.min(input.limit ?? 20, 100);
     const conditions: string[] = ['tenant_id = ?'];
     const params: unknown[] = [tenantId];
@@ -84,7 +85,7 @@ export const walletsService = {
     query += ' ORDER BY id LIMIT ?';
     params.push(limit + 1);
 
-    const rows = db.prepare(query).all(...params);
+    const rows = await db.all(query, params);
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
@@ -94,9 +95,9 @@ export const walletsService = {
     };
   },
 
-  getById(tenantId: string, id: string): Wallet {
-    const db = getDb();
-    const row = db.prepare('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?').get(id, tenantId);
+  async getById(tenantId: string, id: string): Promise<Wallet> {
+    const db = getDbClient();
+    const row = await db.get('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Wallet', id);
     return mapWallet(row);
   },

@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { CustomerIdentifier, IdentifierType } from './customers.types';
 
@@ -24,21 +24,21 @@ function mapIdentifier(row: any): CustomerIdentifier {
   };
 }
 
-function guardCustomer(tenantId: string, customerId: string): void {
-  const db = getDb();
-  const row = db
-    .prepare('SELECT id FROM customers WHERE id = ? AND tenant_id = ?')
-    .get(customerId, tenantId);
+async function guardCustomer(tenantId: string, customerId: string): Promise<void> {
+  const db = getDbClient();
+  const row = await db.get(
+    'SELECT id FROM customers WHERE id = ? AND tenant_id = ?',
+    [customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('Customer', customerId);
 }
 
-function guardIdentifier(tenantId: string, customerId: string, identifierId: string): any {
-  const db = getDb();
-  const row = db
-    .prepare(
-      'SELECT * FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-    )
-    .get(identifierId, customerId, tenantId) as any;
+async function guardIdentifier(tenantId: string, customerId: string, identifierId: string): Promise<any> {
+  const db = getDbClient();
+  const row = await db.get<any>(
+    'SELECT * FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+    [identifierId, customerId, tenantId]
+  );
   if (!row) throw new NotFoundError('CustomerIdentifier', identifierId);
   return row;
 }
@@ -71,58 +71,58 @@ export interface UpdateIdentifierInput {
 }
 
 export const customersIdentifiersService = {
-  create(
+  async create(
     tenantId: string,
     customerId: string,
     input: CreateIdentifierInput
-  ): CustomerIdentifier {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
+  ): Promise<CustomerIdentifier> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
 
     const id = `ident_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
-      INSERT INTO customer_identifiers (
+    await db.run(
+      `INSERT INTO customer_identifiers (
         id, customer_id, tenant_id, type, subtype, value,
         issuing_country, issuing_authority, valid_from, valid_until,
         is_primary, verified, verified_at, verified_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, customerId, tenantId, input.type, input.subtype ?? null, input.value,
-      input.issuing_country ?? null, input.issuing_authority ?? null,
-      input.valid_from ?? null, input.valid_until ?? null,
-      input.is_primary ? 1 : 0,
-      input.verified ? 1 : 0,
-      input.verified_at ?? null,
-      input.verified_by ?? null,
-      now, now
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, customerId, tenantId, input.type, input.subtype ?? null, input.value,
+        input.issuing_country ?? null, input.issuing_authority ?? null,
+        input.valid_from ?? null, input.valid_until ?? null,
+        input.is_primary ? 1 : 0,
+        input.verified ? 1 : 0,
+        input.verified_at ?? null,
+        input.verified_by ?? null,
+        now, now,
+      ]
     );
 
     return mapIdentifier(
-      db.prepare('SELECT * FROM customer_identifiers WHERE id = ?').get(id)
+      await db.get<any>('SELECT * FROM customer_identifiers WHERE id = ?', [id])
     );
   },
 
-  list(tenantId: string, customerId: string): CustomerIdentifier[] {
-    const db = getDb();
-    guardCustomer(tenantId, customerId);
-    const rows = db
-      .prepare(
-        'SELECT * FROM customer_identifiers WHERE customer_id = ? AND tenant_id = ? ORDER BY created_at'
-      )
-      .all(customerId, tenantId) as any[];
+  async list(tenantId: string, customerId: string): Promise<CustomerIdentifier[]> {
+    const db = getDbClient();
+    await guardCustomer(tenantId, customerId);
+    const rows = await db.all<any>(
+      'SELECT * FROM customer_identifiers WHERE customer_id = ? AND tenant_id = ? ORDER BY created_at',
+      [customerId, tenantId]
+    );
     return rows.map(mapIdentifier);
   },
 
-  update(
+  async update(
     tenantId: string,
     customerId: string,
     identifierId: string,
     input: UpdateIdentifierInput
-  ): CustomerIdentifier {
-    const db = getDb();
-    guardIdentifier(tenantId, customerId, identifierId);
+  ): Promise<CustomerIdentifier> {
+    const db = getDbClient();
+    await guardIdentifier(tenantId, customerId, identifierId);
 
     const now = new Date().toISOString();
     const sets: string[] = [];
@@ -140,29 +140,31 @@ export const customersIdentifiersService = {
     if (input.verified_by !== undefined)      { sets.push('verified_by = ?');       params.push(input.verified_by); }
 
     if (sets.length === 0) {
-      return mapIdentifier(guardIdentifier(tenantId, customerId, identifierId));
+      return mapIdentifier(await guardIdentifier(tenantId, customerId, identifierId));
     }
 
     sets.push('updated_at = ?');
     params.push(now, identifierId, customerId, tenantId);
-    db.prepare(
-      `UPDATE customer_identifiers SET ${sets.join(', ')} WHERE id = ? AND customer_id = ? AND tenant_id = ?`
-    ).run(...params);
+    await db.run(
+      `UPDATE customer_identifiers SET ${sets.join(', ')} WHERE id = ? AND customer_id = ? AND tenant_id = ?`,
+      params
+    );
 
     return mapIdentifier(
-      db.prepare('SELECT * FROM customer_identifiers WHERE id = ?').get(identifierId)
+      await db.get<any>('SELECT * FROM customer_identifiers WHERE id = ?', [identifierId])
     );
   },
 
-  getById(tenantId: string, customerId: string, identifierId: string): CustomerIdentifier {
-    return mapIdentifier(guardIdentifier(tenantId, customerId, identifierId));
+  async getById(tenantId: string, customerId: string, identifierId: string): Promise<CustomerIdentifier> {
+    return mapIdentifier(await guardIdentifier(tenantId, customerId, identifierId));
   },
 
-  delete(tenantId: string, customerId: string, identifierId: string): void {
-    const db = getDb();
-    guardIdentifier(tenantId, customerId, identifierId);
-    db.prepare(
-      'DELETE FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?'
-    ).run(identifierId, customerId, tenantId);
+  async delete(tenantId: string, customerId: string, identifierId: string): Promise<void> {
+    const db = getDbClient();
+    await guardIdentifier(tenantId, customerId, identifierId);
+    await db.run(
+      'DELETE FROM customer_identifiers WHERE id = ? AND customer_id = ? AND tenant_id = ?',
+      [identifierId, customerId, tenantId]
+    );
   },
 };

@@ -22,6 +22,9 @@ import { depositsRouter, addressDepositsRouter } from './modules/deposits/deposi
 import { ledgerRouter } from './modules/ledger/ledger.router';
 import { webhooksRouter, webhookDeliveriesRouter } from './modules/webhooks/webhooks.router';
 import { tenantsAdminRouter } from './modules/tenants/tenants.router';
+import { chainNodesAdminRouter } from './modules/chain-nodes/chain-nodes.router';
+import { tenantChainNodesRouter } from './modules/chain-nodes/tenant-chain-nodes.router';
+import { clusterAdminRouter, clusterInternalRouter } from './modules/cluster/cluster.router';
 import { tenantSelfRouter } from './modules/tenants/tenant-self.router';
 import { customersRouter } from './modules/customers/customers.router';
 import { sweepsRouter } from './modules/sweeps/sweeps.router';
@@ -78,6 +81,8 @@ export function createApp(): express.Application {
   // ---- Admin routes (X-Admin-Key auth) ----
   app.use('/admin/v1', adminAuthMiddleware);
   app.use('/admin/v1/tenants', tenantsAdminRouter);
+  app.use('/admin/v1/chain-nodes', chainNodesAdminRouter);
+  app.use('/admin/v1/cluster', clusterAdminRouter);
   app.use('/admin/v1', adminTicklersRouter);
 
   // ---- Customer self-service — must be registered BEFORE the tenant authMiddleware
@@ -92,6 +97,10 @@ export function createApp(): express.Application {
 
   // ---- Tenant self-service ----
   app.use('/v1/tenant', tenantSelfRouter);
+  app.use('/v1/chain-nodes', tenantChainNodesRouter);
+
+  // Internal cluster communication — no auth (must be firewalled at network level)
+  app.use('/internal/cluster', clusterInternalRouter);
 
   // ---- Customers (tenant-scoped) ----
   app.use('/v1/customers', customersRouter);
@@ -101,9 +110,9 @@ export function createApp(): express.Application {
 
   // ---- Chain-specific assets ----
   // GET /v1/chains/:chain/assets/:asset
-  app.get('/v1/chains/:chain/assets/:asset', (req: Request, res: Response, next) => {
+  app.get('/v1/chains/:chain/assets/:asset', async (req: Request, res: Response, next) => {
     try {
-      const asset = assetsService.getByChainAndSymbol(req.params['chain']!, req.params['asset']!);
+      const asset = await assetsService.getByChainAndSymbol(req.params['chain']!, req.params['asset']!);
       res.json({ data: asset });
     } catch (err) {
       next(err);

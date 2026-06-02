@@ -11,7 +11,7 @@
  */
 
 import crypto from 'crypto';
-import { getDb } from '../../db/sqlite';
+import { getDbClient } from '../../db/client';
 import { logger } from '../logging/index';
 
 export interface UtxoLock {
@@ -46,23 +46,22 @@ export const utxoLockService = {
    * Uses SQLite's BEGIN IMMEDIATE transaction to serialize concurrent access.
    * If any UTXO cannot be locked (changes=0), all locks are rolled back.
    */
-  lockUtxosForBatch(
+  async lockUtxosForBatch(
     tenantId: string,
     batchId: string,
     chainId: string,
     minConfirmations: number,
     targetAmountRaw: string,
     feeBufferRaw: string
-  ): UtxoCandidate[] {
-    const db = getDb();
+  ): Promise<UtxoCandidate[]> {
+    const db = getDbClient();
     const targetAmount = BigInt(targetAmountRaw);
     const feeBuffer = BigInt(feeBufferRaw);
     const needed = targetAmount + feeBuffer;
 
-    // Begin exclusive transaction for coin selection + locking
-    const lockUtxos = db.transaction((): UtxoCandidate[] => {
+    return await db.transaction(async (tx): Promise<UtxoCandidate[]> => {
       // Select available UTXOs
-      const candidates = db.prepare(`
+      const candidates = await tx.all<UtxoCandidate>(`
         SELECT tx_hash, vout, amount_raw, chain_id, tenant_id
         FROM cached_utxos
         WHERE tenant_id = ?
@@ -72,7 +71,7 @@ export const utxoLockService = {
           AND is_locked = 0
           AND confirmations >= ?
         ORDER BY CAST(amount_raw AS INTEGER) ASC
-      `).all(tenantId, chainId, minConfirmations) as UtxoCandidate[];
+      `, [tenantId, chainId, minConfirmations]);
 
       if (candidates.length === 0) {
         throw new Error('No available UTXOs for coin selection');
@@ -99,7 +98,7 @@ export const utxoLockService = {
       const expiresAt = new Date(Date.now() + LOCK_TTL_SECONDS * 1000).toISOString();
 
       for (const utxo of selected) {
-        const result = db.prepare(`
+        const result = await tx.run(`
           UPDATE cached_utxos
           SET is_locked = 1
           WHERE tenant_id = ?
@@ -108,7 +107,7 @@ export const utxoLockService = {
             AND vout = ?
             AND is_locked = 0
             AND is_spent = 0
-        `).run(tenantId, chainId, utxo.tx_hash, utxo.vout);
+        `, [tenantId, chainId, utxo.tx_hash, utxo.vout]);
 
         if (result.changes === 0) {
           // UTXO was concurrently locked — abort
@@ -119,7 +118,7 @@ export const utxoLockService = {
 
         // Record the lock in utxo_locks for audit/cleanup
         const lockId = `ulk_${crypto.randomBytes(8).toString('hex')}`;
-        db.prepare(`
+        await tx.run(`
           INSERT INTO utxo_locks (id, tenant_id, batch_id, chain_id, tx_hash, vout, amount_raw,
                                   status, locked_at, expires_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, 'locked', ?, ?)
@@ -129,7 +128,7 @@ export const utxoLockService = {
             locked_at = excluded.locked_at,
             expires_at = excluded.expires_at,
             released_at = NULL
-        `).run(lockId, tenantId, batchId, chainId, utxo.tx_hash, utxo.vout, utxo.amount_raw, now, expiresAt);
+        `, [lockId, tenantId, batchId, chainId, utxo.tx_hash, utxo.vout, utxo.amount_raw, now, expiresAt]);
       }
 
       logger.debug('UTXOs locked for batch', {
@@ -138,76 +137,74 @@ export const utxoLockService = {
 
       return selected;
     });
-
-    return lockUtxos();
   },
 
   /**
    * Release all UTXO locks for a batch.
    * Called when batch is cancelled, failed, or replaced.
    */
-  releaseLocksForBatch(tenantId: string, batchId: string): void {
-    const db = getDb();
+  async releaseLocksForBatch(tenantId: string, batchId: string): Promise<void> {
+    const db = getDbClient();
 
-    db.transaction(() => {
+    await db.transaction(async (tx) => {
       // Get locked UTXOs for this batch
-      const locks = db.prepare(`
+      const locks = await tx.all<{ chain_id: string; tx_hash: string; vout: number }>(`
         SELECT chain_id, tx_hash, vout
         FROM utxo_locks
         WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
-      `).all(tenantId, batchId) as Array<{ chain_id: string; tx_hash: string; vout: number }>;
+      `, [tenantId, batchId]);
 
       const now = new Date().toISOString();
 
       for (const lock of locks) {
         // Release the cached_utxos lock flag
-        db.prepare(`
+        await tx.run(`
           UPDATE cached_utxos
           SET is_locked = 0
           WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
-        `).run(tenantId, lock.chain_id, lock.tx_hash, lock.vout);
+        `, [tenantId, lock.chain_id, lock.tx_hash, lock.vout]);
 
         // Mark lock record as released
-        db.prepare(`
+        await tx.run(`
           UPDATE utxo_locks
           SET status = 'released', released_at = ?
           WHERE tenant_id = ? AND batch_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
-        `).run(now, tenantId, batchId, lock.chain_id, lock.tx_hash, lock.vout);
+        `, [now, tenantId, batchId, lock.chain_id, lock.tx_hash, lock.vout]);
       }
 
       logger.debug('UTXO locks released for batch', { tenantId, batchId, count: locks.length });
-    })();
+    });
   },
 
   /**
    * Mark UTXOs as spent when a batch is broadcast.
    */
-  markSpentForBatch(tenantId: string, batchId: string): void {
-    const db = getDb();
+  async markSpentForBatch(tenantId: string, batchId: string): Promise<void> {
+    const db = getDbClient();
 
-    db.transaction(() => {
-      const locks = db.prepare(`
+    await db.transaction(async (tx) => {
+      const locks = await tx.all<{ chain_id: string; tx_hash: string; vout: number }>(`
         SELECT chain_id, tx_hash, vout
         FROM utxo_locks
         WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
-      `).all(tenantId, batchId) as Array<{ chain_id: string; tx_hash: string; vout: number }>;
+      `, [tenantId, batchId]);
 
       for (const lock of locks) {
-        db.prepare(`
+        await tx.run(`
           UPDATE cached_utxos
           SET is_locked = 0, is_spent = 1
           WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
-        `).run(tenantId, lock.chain_id, lock.tx_hash, lock.vout);
+        `, [tenantId, lock.chain_id, lock.tx_hash, lock.vout]);
 
-        db.prepare(`
+        await tx.run(`
           UPDATE utxo_locks
           SET status = 'spent'
           WHERE tenant_id = ? AND batch_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
-        `).run(tenantId, batchId, lock.chain_id, lock.tx_hash, lock.vout);
+        `, [tenantId, batchId, lock.chain_id, lock.tx_hash, lock.vout]);
       }
 
       logger.debug('UTXOs marked as spent for batch', { tenantId, batchId, count: locks.length });
-    })();
+    });
   },
 
   /**
@@ -216,24 +213,24 @@ export const utxoLockService = {
    * Returns the generated lock ID.
    * Throws if the UTXO is already locked.
    */
-  lockSingleUtxo(
+  async lockSingleUtxo(
     tenantId: string,
     batchId: string,
     chainId: string,
     utxo: { tx_hash: string; vout: number; amount_raw: string },
     ttlMs = LOCK_TTL_SECONDS * 1000
-  ): string {
-    const db = getDb();
+  ): Promise<string> {
+    const db = getDbClient();
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + ttlMs).toISOString();
 
-    return db.transaction(() => {
-      const result = db.prepare(`
+    return await db.transaction(async (tx) => {
+      const result = await tx.run(`
         UPDATE cached_utxos
         SET is_locked = 1
         WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
           AND is_locked = 0 AND is_spent = 0
-      `).run(tenantId, chainId, utxo.tx_hash, utxo.vout);
+      `, [tenantId, chainId, utxo.tx_hash, utxo.vout]);
 
       if (result.changes === 0) {
         throw new Error(
@@ -242,62 +239,62 @@ export const utxoLockService = {
       }
 
       const lockId = `ulk_${crypto.randomBytes(8).toString('hex')}`;
-      db.prepare(`
+      await tx.run(`
         INSERT INTO utxo_locks (id, tenant_id, batch_id, chain_id, tx_hash, vout, amount_raw, status, locked_at, expires_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'locked', ?, ?)
-      `).run(lockId, tenantId, batchId, chainId, utxo.tx_hash, utxo.vout, utxo.amount_raw, now, expiresAt);
+      `, [lockId, tenantId, batchId, chainId, utxo.tx_hash, utxo.vout, utxo.amount_raw, now, expiresAt]);
 
       logger.debug('Single UTXO locked', { tenantId, batchId, txHash: utxo.tx_hash, vout: utxo.vout });
       return lockId;
-    })();
+    });
   },
 
   /**
    * Release a single UTXO lock by lock ID.
    * Used by CPFP rollback path.
    */
-  releaseSingleUtxo(
+  async releaseSingleUtxo(
     tenantId: string,
     chainId: string,
     lockId: string,
     utxo: { tx_hash: string; vout: number }
-  ): void {
-    const db = getDb();
+  ): Promise<void> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.transaction(() => {
-      db.prepare(`
+    await db.transaction(async (tx) => {
+      await tx.run(`
         UPDATE cached_utxos SET is_locked = 0
         WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
-      `).run(tenantId, chainId, utxo.tx_hash, utxo.vout);
+      `, [tenantId, chainId, utxo.tx_hash, utxo.vout]);
 
-      db.prepare(`
+      await tx.run(`
         UPDATE utxo_locks SET status = 'released', released_at = ? WHERE id = ?
-      `).run(now, lockId);
-    })();
+      `, [now, lockId]);
+    });
   },
 
   /**
    * Reassign existing locked UTXOs from one batch to another.
    * Used by RBF to transfer lock ownership to the replacement batch.
    */
-  reassignLocks(
+  async reassignLocks(
     tenantId: string,
     fromBatchId: string,
     toBatchId: string,
     newExpiresAt?: string
-  ): void {
-    const db = getDb();
+  ): Promise<void> {
+    const db = getDbClient();
     if (newExpiresAt !== undefined) {
-      db.prepare(`
+      await db.run(`
         UPDATE utxo_locks SET batch_id = ?, expires_at = ?
         WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
-      `).run(toBatchId, newExpiresAt, tenantId, fromBatchId);
+      `, [toBatchId, newExpiresAt, tenantId, fromBatchId]);
     } else {
-      db.prepare(`
+      await db.run(`
         UPDATE utxo_locks SET batch_id = ?
         WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
-      `).run(toBatchId, tenantId, fromBatchId);
+      `, [toBatchId, tenantId, fromBatchId]);
     }
   },
 
@@ -305,35 +302,35 @@ export const utxoLockService = {
    * Cleanup expired UTXO locks.
    * Called by the signing task expiry worker.
    */
-  cleanupExpiredLocks(): number {
-    const db = getDb();
+  async cleanupExpiredLocks(): Promise<number> {
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    const result = db.transaction(() => {
+    const result = await db.transaction(async (tx) => {
       // Find expired locks
-      const expired = db.prepare(`
+      const expired = await tx.all<{ tenant_id: string; batch_id: string; chain_id: string; tx_hash: string; vout: number }>(`
         SELECT tenant_id, batch_id, chain_id, tx_hash, vout
         FROM utxo_locks
         WHERE status = 'locked' AND expires_at < ?
-      `).all(now) as Array<{ tenant_id: string; batch_id: string; chain_id: string; tx_hash: string; vout: number }>;
+      `, [now]);
 
       for (const lock of expired) {
-        db.prepare(`
+        await tx.run(`
           UPDATE cached_utxos
           SET is_locked = 0
           WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
-        `).run(lock.tenant_id, lock.chain_id, lock.tx_hash, lock.vout);
+        `, [lock.tenant_id, lock.chain_id, lock.tx_hash, lock.vout]);
 
-        db.prepare(`
+        await tx.run(`
           UPDATE utxo_locks
           SET status = 'released', released_at = ?
           WHERE tenant_id = ? AND chain_id = ? AND tx_hash = ? AND vout = ?
             AND status = 'locked'
-        `).run(now, lock.tenant_id, lock.chain_id, lock.tx_hash, lock.vout);
+        `, [now, lock.tenant_id, lock.chain_id, lock.tx_hash, lock.vout]);
       }
 
       return expired.length;
-    })();
+    });
 
     if (result > 0) {
       logger.info('Expired UTXO locks cleaned up', { count: result });

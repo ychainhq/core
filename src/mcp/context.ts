@@ -27,7 +27,7 @@ export function assertAllowedOrigin(req: Request): void {
   }
 }
 
-export function resolveMcpContext(req: Request, kind: McpServerKind): McpAuthContext {
+export async function resolveMcpContext(req: Request, kind: McpServerKind): Promise<McpAuthContext> {
   if (kind === 'admin') {
     if (!config.MCP_ADMIN_ENABLED) {
       throw new UnauthorizedError('Admin MCP is disabled');
@@ -35,7 +35,7 @@ export function resolveMcpContext(req: Request, kind: McpServerKind): McpAuthCon
     const adminKey =
       (req.headers['x-admin-key'] as string | undefined) ??
       (req.headers.authorization?.startsWith('Bearer aak_') ? req.headers.authorization.slice(7) : undefined);
-    return { kind: 'admin', ...resolveAdminKey(adminKey) };
+    return { kind: 'admin', ...await resolveAdminKey(adminKey) };
   }
 
   const authHeader = req.headers.authorization;
@@ -45,10 +45,10 @@ export function resolveMcpContext(req: Request, kind: McpServerKind): McpAuthCon
 
   const token = authHeader.slice(7).trim();
   if (kind === 'customer') {
-    return { kind: 'customer', ...resolveCustomerSessionToken(token) };
+    return { kind: 'customer', ...await resolveCustomerSessionToken(token) };
   }
 
-  const auth = resolveTenantApiKey(token);
+  const auth = await resolveTenantApiKey(token);
   if (!auth.tenantId) {
     throw new UnauthorizedError('Tenant API key required');
   }

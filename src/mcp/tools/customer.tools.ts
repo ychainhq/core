@@ -44,31 +44,31 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
     description: 'Get the authenticated customer profile.',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: customersService.getById(tenantId, customerId) })));
+  }, async () => safeTool(async () => ({ data: await customersService.getById(tenantId, customerId) })));
 
   server.registerTool('chainapi_me_get_balances', {
     description: 'Get the authenticated customer ledger balances.',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: customersService.getBalances(tenantId, customerId) })));
+  }, async () => safeTool(async () => ({ data: await customersService.getBalances(tenantId, customerId) })));
 
   server.registerTool('chainapi_me_list_deposits', {
     description: 'List deposits for the authenticated customer.',
     inputSchema: { ...paging, ...depositFilters },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(customersService.getDeposits(tenantId, customerId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await customersService.getDeposits(tenantId, customerId, input), input)));
 
   server.registerTool('chainapi_me_list_addresses', {
     description: 'List deposit addresses for the authenticated customer.',
     inputSchema: { ...paging },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(customersService.getAddresses(tenantId, customerId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await customersService.getAddresses(tenantId, customerId, input), input)));
 
   server.registerTool('chainapi_me_resolve_address', {
     description: 'Check if an address is a registered internal deposit address for this tenant (customer self-service). Returns isInternal=true and customerId if the address belongs to another customer on this tenant. Use before initiating a withdrawal to detect on-platform transfers.',
     inputSchema: { address: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ address }: any) => safeTool(() => ({ data: addressesService.resolveCustomerDeposit(tenantId, address) })));
+  }, async ({ address }: any) => safeTool(async () => ({ data: await addressesService.resolveCustomerDeposit(tenantId, address) })));
 
   server.registerTool('chainapi_me_create_deposit_address', {
     description: 'Generate a new BTC deposit address for the authenticated customer.',
@@ -91,14 +91,14 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
     description: 'List withdrawals for the authenticated customer.',
     inputSchema: { ...paging, status: z.string().optional() },
     annotations: readOnly,
-  }, async (input: any) => safeTool(() => page(withdrawalsService.list(tenantId, customerId, input), input)));
+  }, async (input: any) => safeTool(async () => page(await withdrawalsService.list(tenantId, customerId, input), input)));
 
   server.registerTool('chainapi_me_get_withdrawal', {
     description: 'Get a withdrawal for the authenticated customer.',
     inputSchema: { withdrawalId: z.string().min(1) },
     annotations: readOnly,
-  }, async ({ withdrawalId }: any) => safeTool(() => {
-    const withdrawal = withdrawalsService.getById(tenantId, withdrawalId);
+  }, async ({ withdrawalId }: any) => safeTool(async () => {
+    const withdrawal = await withdrawalsService.getById(tenantId, withdrawalId);
     if (withdrawal.customer_id !== customerId) {
       throw new NotFoundError('Withdrawal', withdrawalId);
     }
@@ -111,7 +111,7 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
     description: 'Get the KYC profile of the authenticated customer (natural person or legal entity data).',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: customersProfileService.get(tenantId, customerId) })));
+  }, async () => safeTool(async () => ({ data: await customersProfileService.get(tenantId, customerId) })));
 
   server.registerTool('chainapi_me_upsert_kyc_profile', {
     description: 'Create or update the KYC profile of the authenticated customer. partyType must match the customer account type.',
@@ -144,13 +144,13 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
       regulated: z.boolean().nullable().optional(),
     },
     annotations: write,
-  }, async (input: any) => safeTool(() => ({ data: customersProfileService.upsert(tenantId, customerId, input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await customersProfileService.upsert(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_me_get_contact', {
     description: 'Get the contact details of the authenticated customer.',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: customersContactService.get(tenantId, customerId) })));
+  }, async () => safeTool(async () => ({ data: await customersContactService.get(tenantId, customerId) })));
 
   server.registerTool('chainapi_me_upsert_contact', {
     description: 'Create or update the contact details of the authenticated customer.',
@@ -171,14 +171,14 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
       })).nullable().optional(),
     },
     annotations: write,
-  }, async (input: any) => safeTool(() => ({ data: customersContactService.upsert(tenantId, customerId, input) })));
+  }, async (input: any) => safeTool(async () => ({ data: await customersContactService.upsert(tenantId, customerId, input) })));
 
   server.registerTool('chainapi_me_get_kyc_status', {
     description: 'Get the KYC status of the authenticated customer (read-only view of compliance decisions).',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => {
-    const record = customersAmlKycService.get(tenantId, customerId);
+  }, async () => safeTool(async () => {
+    const record = await customersAmlKycService.get(tenantId, customerId);
     if (!record) return { data: { kyc_status: 'not_started', cdd_level: 'standard' } };
     return {
       data: {
@@ -194,7 +194,7 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
     description: 'List KYC documents uploaded by the authenticated customer.',
     inputSchema: {},
     annotations: readOnly,
-  }, async () => safeTool(() => ({ data: customersDocumentsService.list(tenantId, customerId) })));
+  }, async () => safeTool(async () => ({ data: await customersDocumentsService.list(tenantId, customerId) })));
 
   server.registerTool('chainapi_me_upload_document', {
     description: 'Upload a KYC document for the authenticated customer. Verification is performed by the tenant compliance team.',
@@ -211,8 +211,8 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
       file_hash: z.string().nullable().optional(),
     },
     annotations: write,
-  }, async (input: any) => safeTool(() => ({
-    data: customersDocumentsService.create(tenantId, customerId, {
+  }, async (input: any) => safeTool(async () => ({
+    data: await customersDocumentsService.create(tenantId, customerId, {
       ...input,
       verification_status: 'pending',
       uploaded_by: customerId,

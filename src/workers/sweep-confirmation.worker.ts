@@ -1,4 +1,4 @@
-import { getDb } from '../db/sqlite';
+import { getDbClient } from '../db/client';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
 import { ledgerService } from '../modules/ledger/ledger.service';
@@ -49,7 +49,7 @@ export class SweepConfirmationWorker {
   }
 
   async run(): Promise<void> {
-    const sweeps = sweepsService.getBroadcastWithTxHash();
+    const sweeps = await sweepsService.getBroadcastWithTxHash();
     if (sweeps.length === 0) return;
 
     logger.debug('SweepConfirmationWorker checking sweeps', { count: sweeps.length });
@@ -86,26 +86,26 @@ export class SweepConfirmationWorker {
     if (!txStatus.confirmed) return;
 
     // Check per-tenant finality threshold
-    const db = getDb();
-    const cfgRow = db
-      .prepare('SELECT btc_finality_confirmations FROM tenant_configs WHERE tenant_id = ?')
-      .get(tenantId) as { btc_finality_confirmations: number } | undefined;
+    const db = getDbClient();
+    const cfgRow = await db.get<{ btc_finality_confirmations: number }>(
+      'SELECT btc_finality_confirmations FROM tenant_configs WHERE tenant_id = ?', [tenantId]
+    );
     const required = cfgRow?.btc_finality_confirmations ?? config.BTC_FINALITY_CONFIRMATIONS;
 
     if ((txStatus.confirmations ?? 0) < required) return;
 
     logger.info('SweepConfirmationWorker: sweep confirmed', { sweepId, tenantId, txHash, confirmations: txStatus.confirmations });
 
-    sweepsService.updateStatus(sweepId, 'confirmed', { txHash });
+    await sweepsService.updateStatus(sweepId, 'confirmed', { txHash });
 
     const fee = BigInt(feeRaw ?? '0');
     const total = BigInt(amountRaw);
     const netToHot = total - fee;
 
     // Debit sweep_in_transit
-    const sitAccount = ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
+    const sitAccount = await ledgerService.findAccountByTenantAndType(tenantId, 'sweep_in_transit');
     if (sitAccount) {
-      ledgerService.addEntry({
+      await ledgerService.addEntry({
         ledgerAccountId: sitAccount.id,
         type: 'sweep_confirmed',
         amountRaw: (-total).toString(),
@@ -115,9 +115,9 @@ export class SweepConfirmationWorker {
     }
 
     // Credit tenant_hot_control (net of fee)
-    const hcAccount = ledgerService.findAccountByTenantAndType(tenantId, 'tenant_hot_control');
+    const hcAccount = await ledgerService.findAccountByTenantAndType(tenantId, 'tenant_hot_control');
     if (hcAccount) {
-      ledgerService.addEntry({
+      await ledgerService.addEntry({
         ledgerAccountId: hcAccount.id,
         type: 'sweep_confirmed',
         amountRaw: netToHot.toString(),
@@ -128,9 +128,9 @@ export class SweepConfirmationWorker {
 
     // Record network fee
     if (fee > BigInt(0)) {
-      const nfeAccount = ledgerService.findAccountByTenantAndType(tenantId, 'network_fee_expense');
+      const nfeAccount = await ledgerService.findAccountByTenantAndType(tenantId, 'network_fee_expense');
       if (nfeAccount) {
-        ledgerService.addEntry({
+        await ledgerService.addEntry({
           ledgerAccountId: nfeAccount.id,
           type: 'fee_expense',
           amountRaw: fee.toString(),

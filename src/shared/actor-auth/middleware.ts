@@ -30,11 +30,12 @@ export function actorTokenMiddleware(req: Request, _res: Response, next: NextFun
     return next(new UnauthorizedError('Cannot verify actor token: tenant not identified'));
   }
 
-  try {
-    const claims = verifyActorToken(token!, req.tenantId);
-    req.actorContext = resolveActorContext(claims);
-    next();
-  } catch (err) {
-    next(err);
-  }
+  verifyActorToken(token!, req.tenantId)
+    .then((claims) => {
+      req.actorContext = resolveActorContext(claims);
+      next();
+    })
+    .catch((err) => {
+      next(err);
+    });
 }

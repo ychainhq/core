@@ -116,14 +116,14 @@ const updateSchema = z.object({
 });
 
 // POST /v1/customers
-customersRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     // Require write permission to create
     getAccessFilter(req, 'write'); // throws 403 if no permission
 
     const body = createSchema.parse(req.body);
     const ctx = req.actorContext;
-    const customer = customersService.create(tenantId(req), {
+    const customer = await customersService.create(tenantId(req), {
       ...body,
       ownerUserId: ctx?.actorId ?? null,
       ownerTeamId: ctx?.teams[0] ?? null,
@@ -143,11 +143,11 @@ customersRouter.post('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/customers
-customersRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
     const query = listQuerySchema.parse(req.query);
-    const result = customersService.list(tenantId(req), query, filter);
+    const result = await customersService.list(tenantId(req), query, filter);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -156,21 +156,21 @@ customersRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // GET /v1/customers/:customerId
-customersRouter.get('/:customerId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    const customer = customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const customer = await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     res.json({ data: customer });
   } catch (err) { next(err); }
 });
 
 // PATCH /v1/customers/:customerId
-customersRouter.patch('/:customerId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.patch('/:customerId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
     const body = updateSchema.parse(req.body);
-    const prev = customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const customer = customersService.update(tenantId(req), req.params['customerId']!, body, filter);
+    const prev = await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const customer = await customersService.update(tenantId(req), req.params['customerId']!, body, filter);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -187,11 +187,11 @@ customersRouter.patch('/:customerId', (req: Request, res: Response, next: NextFu
 });
 
 // POST /v1/customers/:customerId/disable
-customersRouter.post('/:customerId/disable', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.post('/:customerId/disable', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    const prev = customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const customer = customersService.disable(tenantId(req), req.params['customerId']!, filter);
+    const prev = await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const customer = await customersService.disable(tenantId(req), req.params['customerId']!, filter);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -206,20 +206,20 @@ customersRouter.post('/:customerId/disable', (req: Request, res: Response, next:
 });
 
 // GET /v1/customers/:customerId/balances
-customersRouter.get('/:customerId/balances', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/balances', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    const balances = customersService.getBalances(tenantId(req), req.params['customerId']!, filter);
+    const balances = await customersService.getBalances(tenantId(req), req.params['customerId']!, filter);
     res.json({ data: balances });
   } catch (err) { next(err); }
 });
 
 // GET /v1/customers/:customerId/deposits
-customersRouter.get('/:customerId/deposits', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/deposits', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
     const query = depositsQuerySchema.parse(req.query);
-    const result = customersService.getDeposits(tenantId(req), req.params['customerId']!, query, filter);
+    const result = await customersService.getDeposits(tenantId(req), req.params['customerId']!, query, filter);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -228,11 +228,11 @@ customersRouter.get('/:customerId/deposits', (req: Request, res: Response, next:
 });
 
 // GET /v1/customers/:customerId/addresses
-customersRouter.get('/:customerId/addresses', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/addresses', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
     const query = paginationQuery.parse(req.query);
-    const result = customersService.getAddresses(tenantId(req), req.params['customerId']!, query, filter);
+    const result = await customersService.getAddresses(tenantId(req), req.params['customerId']!, query, filter);
     res.json({
       data: result.data,
       pagination: { limit: query.limit ?? 20, cursor: query.cursor ?? null, nextCursor: result.nextCursor },
@@ -244,7 +244,7 @@ customersRouter.get('/:customerId/addresses', (req: Request, res: Response, next
 customersRouter.post('/:customerId/deposit-address', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const result = await depositAddressService.generateForCustomer(
       tenantId(req),
       req.params['customerId']!
@@ -254,18 +254,18 @@ customersRouter.post('/:customerId/deposit-address', async (req: Request, res: R
 });
 
 // POST /v1/customers/:customerId/sessions
-customersRouter.post('/:customerId/sessions', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.post('/:customerId/sessions', async (req: Request, res: Response, next: NextFunction) => {
   try {
     // Sessions are read-scoped — actor needs read access to this customer
     const filter = getAccessFilter(req, 'read');
-    const customer = customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const customer = await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     if (customer.status !== 'active') {
       res.status(403).json({
         error: { code: 'FORBIDDEN', message: `Customer account is ${customer.status}` },
       });
       return;
     }
-    const tenantWithConfig = tenantsService.getById(tenantId(req));
+    const tenantWithConfig = await tenantsService.getById(tenantId(req));
     const ttl = tenantWithConfig.config?.customer_session_ttl_seconds ?? undefined;
     const { accessToken, expiresAt } = issueCustomerToken(tenantId(req), customer.id, ttl);
     res.status(201).json({ data: { accessToken, expiresAt, customerId: customer.id } });
@@ -321,13 +321,13 @@ const upsertProfileSchema = z.discriminatedUnion('partyType', [
 ]);
 
 // PUT /v1/customers/:customerId/profile
-customersRouter.put('/:customerId/profile', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.put('/:customerId/profile', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter); // access guard
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter); // access guard
     const body = upsertProfileSchema.parse(req.body);
-    const prevProfile = customersProfileService.get(tenantId(req), req.params['customerId']!);
-    const profile = customersProfileService.upsert(tenantId(req), req.params['customerId']!, body as any);
+    const prevProfile = await customersProfileService.get(tenantId(req), req.params['customerId']!);
+    const profile = await customersProfileService.upsert(tenantId(req), req.params['customerId']!, body as any);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -343,11 +343,11 @@ customersRouter.put('/:customerId/profile', (req: Request, res: Response, next: 
 });
 
 // GET /v1/customers/:customerId/profile
-customersRouter.get('/:customerId/profile', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/profile', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter); // access guard
-    const profile = customersProfileService.get(tenantId(req), req.params['customerId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter); // access guard
+    const profile = await customersProfileService.get(tenantId(req), req.params['customerId']!);
     if (!profile) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Profile not set yet. Use PUT to create it.' } });
       return;
@@ -383,12 +383,12 @@ const createIdentifierSchema = z.object({
 const updateIdentifierSchema = createIdentifierSchema.omit({ type: true }).partial();
 
 // POST /v1/customers/:customerId/identifiers
-customersRouter.post('/:customerId/identifiers', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.post('/:customerId/identifiers', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createIdentifierSchema.parse(req.body);
-    const identifier = customersIdentifiersService.create(tenantId(req), req.params['customerId']!, body);
+    const identifier = await customersIdentifiersService.create(tenantId(req), req.params['customerId']!, body);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -405,23 +405,23 @@ customersRouter.post('/:customerId/identifiers', (req: Request, res: Response, n
 });
 
 // GET /v1/customers/:customerId/identifiers
-customersRouter.get('/:customerId/identifiers', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/identifiers', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const identifiers = customersIdentifiersService.list(tenantId(req), req.params['customerId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const identifiers = await customersIdentifiersService.list(tenantId(req), req.params['customerId']!);
     res.json({ data: identifiers });
   } catch (err) { next(err); }
 });
 
 // PATCH /v1/customers/:customerId/identifiers/:identifierId
-customersRouter.patch('/:customerId/identifiers/:identifierId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.patch('/:customerId/identifiers/:identifierId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateIdentifierSchema.parse(req.body);
-    const prev = customersIdentifiersService.getById(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
-    const identifier = customersIdentifiersService.update(
+    const prev = await customersIdentifiersService.getById(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
+    const identifier = await customersIdentifiersService.update(
       tenantId(req), req.params['customerId']!, req.params['identifierId']!, body
     );
     ticklerService.record({
@@ -440,12 +440,12 @@ customersRouter.patch('/:customerId/identifiers/:identifierId', (req: Request, r
 });
 
 // DELETE /v1/customers/:customerId/identifiers/:identifierId
-customersRouter.delete('/:customerId/identifiers/:identifierId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.delete('/:customerId/identifiers/:identifierId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const prev = customersIdentifiersService.getById(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
-    customersIdentifiersService.delete(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const prev = await customersIdentifiersService.getById(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
+    await customersIdentifiersService.delete(tenantId(req), req.params['customerId']!, req.params['identifierId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -500,12 +500,12 @@ const updateRelationshipSchema = createRelationshipSchema
   .partial();
 
 // POST /v1/customers/:customerId/relationships
-customersRouter.post('/:customerId/relationships', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.post('/:customerId/relationships', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createRelationshipSchema.parse(req.body);
-    const relationship = customersRelationshipsService.create(tenantId(req), req.params['customerId']!, body as any);
+    const relationship = await customersRelationshipsService.create(tenantId(req), req.params['customerId']!, body as any);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -521,23 +521,23 @@ customersRouter.post('/:customerId/relationships', (req: Request, res: Response,
 });
 
 // GET /v1/customers/:customerId/relationships
-customersRouter.get('/:customerId/relationships', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/relationships', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const relationships = customersRelationshipsService.list(tenantId(req), req.params['customerId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const relationships = await customersRelationshipsService.list(tenantId(req), req.params['customerId']!);
     res.json({ data: relationships });
   } catch (err) { next(err); }
 });
 
 // PATCH /v1/customers/:customerId/relationships/:relationshipId
-customersRouter.patch('/:customerId/relationships/:relationshipId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.patch('/:customerId/relationships/:relationshipId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateRelationshipSchema.parse(req.body);
-    const prev = customersRelationshipsService.getById(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
-    const relationship = customersRelationshipsService.update(
+    const prev = await customersRelationshipsService.getById(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
+    const relationship = await customersRelationshipsService.update(
       tenantId(req), req.params['customerId']!, req.params['relationshipId']!, body as any
     );
     ticklerService.record({
@@ -556,12 +556,12 @@ customersRouter.patch('/:customerId/relationships/:relationshipId', (req: Reques
 });
 
 // DELETE /v1/customers/:customerId/relationships/:relationshipId
-customersRouter.delete('/:customerId/relationships/:relationshipId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.delete('/:customerId/relationships/:relationshipId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const prev = customersRelationshipsService.getById(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
-    customersRelationshipsService.delete(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const prev = await customersRelationshipsService.getById(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
+    await customersRelationshipsService.delete(tenantId(req), req.params['customerId']!, req.params['relationshipId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -621,13 +621,13 @@ const upsertAmlKycSchema = z.object({
 });
 
 // PUT /v1/customers/:customerId/aml-kyc
-customersRouter.put('/:customerId/aml-kyc', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.put('/:customerId/aml-kyc', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertAmlKycSchema.parse(req.body);
-    const prevAmlKyc = customersAmlKycService.get(tenantId(req), req.params['customerId']!);
-    const amlKyc = customersAmlKycService.upsert(tenantId(req), req.params['customerId']!, body);
+    const prevAmlKyc = await customersAmlKycService.get(tenantId(req), req.params['customerId']!);
+    const amlKyc = await customersAmlKycService.upsert(tenantId(req), req.params['customerId']!, body);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -642,11 +642,11 @@ customersRouter.put('/:customerId/aml-kyc', (req: Request, res: Response, next: 
 });
 
 // GET /v1/customers/:customerId/aml-kyc
-customersRouter.get('/:customerId/aml-kyc', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/aml-kyc', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const amlKyc = customersAmlKycService.get(tenantId(req), req.params['customerId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const amlKyc = await customersAmlKycService.get(tenantId(req), req.params['customerId']!);
     if (!amlKyc) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'AML/KYC profile not found' } });
       return;
@@ -685,13 +685,13 @@ const upsertDataGovernanceSchema = z.object({
 });
 
 // PUT /v1/customers/:customerId/data-governance
-customersRouter.put('/:customerId/data-governance', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.put('/:customerId/data-governance', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertDataGovernanceSchema.parse(req.body);
-    const prevDg = customersDataGovernanceService.get(tenantId(req), req.params['customerId']!);
-    const dg = customersDataGovernanceService.upsert(tenantId(req), req.params['customerId']!, body);
+    const prevDg = await customersDataGovernanceService.get(tenantId(req), req.params['customerId']!);
+    const dg = await customersDataGovernanceService.upsert(tenantId(req), req.params['customerId']!, body);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -706,11 +706,11 @@ customersRouter.put('/:customerId/data-governance', (req: Request, res: Response
 });
 
 // GET /v1/customers/:customerId/data-governance
-customersRouter.get('/:customerId/data-governance', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/data-governance', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const dg = customersDataGovernanceService.get(tenantId(req), req.params['customerId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const dg = await customersDataGovernanceService.get(tenantId(req), req.params['customerId']!);
     if (!dg) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Data governance profile not found' } });
       return;
@@ -746,13 +746,13 @@ const upsertContactSchema = z.object({
 });
 
 // PUT /v1/customers/:customerId/contact
-customersRouter.put('/:customerId/contact', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.put('/:customerId/contact', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = upsertContactSchema.parse(req.body);
-    const prevContact = customersContactService.get(tenantId(req), req.params['customerId']!);
-    const contact = customersContactService.upsert(tenantId(req), req.params['customerId']!, body as any);
+    const prevContact = await customersContactService.get(tenantId(req), req.params['customerId']!);
+    const contact = await customersContactService.upsert(tenantId(req), req.params['customerId']!, body as any);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -767,11 +767,11 @@ customersRouter.put('/:customerId/contact', (req: Request, res: Response, next: 
 });
 
 // GET /v1/customers/:customerId/contact
-customersRouter.get('/:customerId/contact', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/contact', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const contact = customersContactService.get(tenantId(req), req.params['customerId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const contact = await customersContactService.get(tenantId(req), req.params['customerId']!);
     if (!contact) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Contact not set yet. Use PUT to create it.' } });
       return;
@@ -827,12 +827,12 @@ const updateDocumentSchema = z.object({
 });
 
 // POST /v1/customers/:customerId/documents
-customersRouter.post('/:customerId/documents', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.post('/:customerId/documents', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = createDocumentSchema.parse(req.body);
-    const doc = customersDocumentsService.create(tenantId(req), req.params['customerId']!, body as any);
+    const doc = await customersDocumentsService.create(tenantId(req), req.params['customerId']!, body as any);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',
@@ -848,23 +848,23 @@ customersRouter.post('/:customerId/documents', (req: Request, res: Response, nex
 });
 
 // GET /v1/customers/:customerId/documents
-customersRouter.get('/:customerId/documents', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.get('/:customerId/documents', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'read');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const docs = customersDocumentsService.list(tenantId(req), req.params['customerId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const docs = await customersDocumentsService.list(tenantId(req), req.params['customerId']!);
     res.json({ data: docs });
   } catch (err) { next(err); }
 });
 
 // PATCH /v1/customers/:customerId/documents/:documentId
-customersRouter.patch('/:customerId/documents/:documentId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.patch('/:customerId/documents/:documentId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
     const body = updateDocumentSchema.parse(req.body);
-    const prevDoc = customersDocumentsService.getById(tenantId(req), req.params['customerId']!, req.params['documentId']!);
-    const doc = customersDocumentsService.update(
+    const prevDoc = await customersDocumentsService.getById(tenantId(req), req.params['customerId']!, req.params['documentId']!);
+    const doc = await customersDocumentsService.update(
       tenantId(req), req.params['customerId']!, req.params['documentId']!, body as any
     );
     ticklerService.record({
@@ -883,12 +883,12 @@ customersRouter.patch('/:customerId/documents/:documentId', (req: Request, res: 
 });
 
 // DELETE /v1/customers/:customerId/documents/:documentId
-customersRouter.delete('/:customerId/documents/:documentId', (req: Request, res: Response, next: NextFunction) => {
+customersRouter.delete('/:customerId/documents/:documentId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
-    customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const prevDoc = customersDocumentsService.getById(tenantId(req), req.params['customerId']!, req.params['documentId']!);
-    customersDocumentsService.delete(tenantId(req), req.params['customerId']!, req.params['documentId']!);
+    await customersService.getById(tenantId(req), req.params['customerId']!, filter);
+    const prevDoc = await customersDocumentsService.getById(tenantId(req), req.params['customerId']!, req.params['documentId']!);
+    await customersDocumentsService.delete(tenantId(req), req.params['customerId']!, req.params['documentId']!);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'customer',

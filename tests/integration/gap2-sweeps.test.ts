@@ -186,7 +186,7 @@ describe('Tenant config — sweep threshold', () => {
 
 const TEST_TENANT_ID = 'tenant_default';
 
-function makeSweep() {
+async function makeSweep() {
   return sweepsService.create(TEST_TENANT_ID, {
     chainId: 'bitcoin',
     assetId: 'bitcoin:BTC',
@@ -198,7 +198,7 @@ function makeSweep() {
   });
 }
 
-function makeSigningTask(sweepId: string, signerId: string | null = null) {
+async function makeSigningTask(sweepId: string, signerId: string | null = null) {
   return signingTasksService.create({
     tenantId: TEST_TENANT_ID,
     signerId,
@@ -216,21 +216,21 @@ function makeSigningTask(sweepId: string, signerId: string | null = null) {
 }
 
 describe('Sweep — signing_task_id field', () => {
-  it('linkSigningTask sets signing_task_id on sweep', () => {
-    const sweep = makeSweep();
+  it('linkSigningTask sets signing_task_id on sweep', async () => {
+    const sweep = await makeSweep();
     expect(sweep.signing_task_id).toBeNull();
 
-    const task = makeSigningTask(sweep.id);
-    sweepsService.linkSigningTask(sweep.id, task.id);
+    const task = await makeSigningTask(sweep.id);
+    await sweepsService.linkSigningTask(sweep.id, task.id);
 
-    const updated = sweepsService.getByIdInternal(sweep.id);
+    const updated = await sweepsService.getByIdInternal(sweep.id);
     expect(updated.signing_task_id).toBe(task.id);
   });
 
   it('GET /v1/sweeps/:sweepId returns signing_task_id', async () => {
-    const sweep = makeSweep();
-    const task = makeSigningTask(sweep.id);
-    sweepsService.linkSigningTask(sweep.id, task.id);
+    const sweep = await makeSweep();
+    const task = await makeSigningTask(sweep.id);
+    await sweepsService.linkSigningTask(sweep.id, task.id);
 
     const res = await request(app).get(`/v1/sweeps/${sweep.id}`).set(AUTH);
     expect(res.status).toBe(200);
@@ -239,23 +239,23 @@ describe('Sweep — signing_task_id field', () => {
 });
 
 describe('Sweep — signing task visible to signer', () => {
-  it('listAvailableForSigner includes btc_sweep task', () => {
-    const sweep = makeSweep();
-    const task = makeSigningTask(sweep.id);
-    sweepsService.linkSigningTask(sweep.id, task.id);
+  it('listAvailableForSigner includes btc_sweep task', async () => {
+    const sweep = await makeSweep();
+    const task = await makeSigningTask(sweep.id);
+    await sweepsService.linkSigningTask(sweep.id, task.id);
 
-    const tasks = signingTasksService.listAvailableForSigner(TEST_TENANT_ID, 'any-signer-id', 10);
+    const tasks = await signingTasksService.listAvailableForSigner(TEST_TENANT_ID, 'any-signer-id', 10);
     const found = tasks.find((t) => t.id === task.id);
     expect(found).toBeDefined();
     expect(found!.request_type).toBe('btc_sweep');
     expect(found!.sweep_id).toBe(sweep.id);
   });
 
-  it('listAvailableForSigner returns sweep task with signer_id=null (open to any signer)', () => {
-    const sweep = makeSweep();
-    const task = makeSigningTask(sweep.id, null);
+  it('listAvailableForSigner returns sweep task with signer_id=null (open to any signer)', async () => {
+    const sweep = await makeSweep();
+    const task = await makeSigningTask(sweep.id, null);
 
-    const tasks = signingTasksService.listAvailableForSigner(TEST_TENANT_ID, 'signer_xyz', 10);
+    const tasks = await signingTasksService.listAvailableForSigner(TEST_TENANT_ID, 'signer_xyz', 10);
     expect(tasks.some((t) => t.id === task.id)).toBe(true);
   });
 });
@@ -287,8 +287,8 @@ describe('Sweep — signer can claim sweep task via HTTP', () => {
 
   it('signer sees btc_sweep task in task list', async () => {
     const signerId = await enrollSigner('sweep-signer-list', `fp:sweep:list:${Date.now()}`);
-    const sweep = makeSweep();
-    makeSigningTask(sweep.id, signerId);
+    const sweep = await makeSweep();
+    await makeSigningTask(sweep.id, signerId);
 
     const res = await request(app)
       .get(`/v1/external-signers/${signerId}/tasks`)
@@ -302,8 +302,8 @@ describe('Sweep — signer can claim sweep task via HTTP', () => {
 
   it('signer can claim sweep task', async () => {
     const signerId = await enrollSigner('sweep-signer-claim', `fp:sweep:claim:${Date.now()}`);
-    const sweep = makeSweep();
-    const task = makeSigningTask(sweep.id, signerId);
+    const sweep = await makeSweep();
+    const task = await makeSigningTask(sweep.id, signerId);
 
     const res = await request(app)
       .post(`/v1/external-signers/${signerId}/tasks/${task.id}/claim`)
@@ -316,8 +316,8 @@ describe('Sweep — signer can claim sweep task via HTTP', () => {
 
 describe('Sweep — finalizeSweepFromSigningTask rejects wrong status', () => {
   it('throws ValidationError when sweep is not pending_signature', async () => {
-    const sweep = makeSweep();
-    sweepsService.updateStatus(sweep.id, 'broadcast', { txHash: 'txhash_fake' });
+    const sweep = await makeSweep();
+    await sweepsService.updateStatus(sweep.id, 'broadcast', { txHash: 'txhash_fake' });
 
     await expect(
       sweepsService.finalizeSweepFromSigningTask(TEST_TENANT_ID, sweep.id, 'signedpsbt==')
@@ -331,9 +331,9 @@ describe('Sweep — submitSignedTask auto-finalize passes input.signedPayload (B
   // otherwise finalizeSweepFromSigningTask receives null and Bitcoin Core
   // throws "JSON value of type null is not of expected type string".
   it('calls finalizeSweepFromSigningTask with input.signedPayload, not null', async () => {
-    const sweep = makeSweep();
-    const task = makeSigningTask(sweep.id, null);
-    sweepsService.linkSigningTask(sweep.id, task.id);
+    const sweep = await makeSweep();
+    const task = await makeSigningTask(sweep.id, null);
+    await sweepsService.linkSigningTask(sweep.id, task.id);
 
     // Claim the task (required before submit)
     await signingTasksService.claimTask(TEST_TENANT_ID, task.id, 'test-signer-regression');

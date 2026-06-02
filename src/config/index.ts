@@ -5,7 +5,12 @@ dotenv.config();
 
 const configSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
+  // Database: SQLite (dev/MVP) or PostgreSQL (enterprise)
+  DB_TYPE: z.enum(['sqlite', 'postgres']).default('sqlite'),
   SQLITE_DB_PATH: z.string().default('./data/crypto-api.sqlite'),
+  DATABASE_URL: z.string().optional(),  // postgres://user:pass@host:5432/dbname
+  DB_POOL_MAX: z.coerce.number().int().positive().default(20),
+  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   BITCOIN_RPC_URL: z.string().url().default('http://127.0.0.1:8332'),
   BITCOIN_RPC_USER: z.string().default('bitcoin'),
   BITCOIN_RPC_PASSWORD: z.string().default('changeme'),
@@ -42,6 +47,16 @@ const configSchema = z.object({
     .default('false'),
   MCP_ALLOWED_ORIGINS: z.string().default('http://127.0.0.1,http://localhost'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  NODE_HEALTH_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  // Ethereum chain adapter (optional — enable when ETH node is available)
+  ETH_NODE_URL: z.string().url().optional(),
+  ETH_NODE_AUTH: z.string().optional(),  // 'user:password' for basic auth
+  // Engine cluster (FAZA 4)
+  CLUSTER_ENABLED: z.string().transform(v => v === 'true').default('false'),
+  CLUSTER_PEER_URLS: z.string().optional(),  // comma-separated peer engine URLs
+  CLUSTER_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
+  CLUSTER_LEADER_TTL_MS: z.coerce.number().int().positive().default(30000),
+  ENGINE_URL: z.string().url().optional(),  // this engine's public URL (for cluster)
 });
 
 const parsed = configSchema.safeParse(process.env);

@@ -31,9 +31,9 @@ const updateConfigSchema = z.object({
 });
 
 // GET /v1/tenant
-tenantSelfRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+tenantSelfRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = tenantsService.getById(tenantId(req));
+    const tenant = await tenantsService.getById(tenantId(req));
     res.json({ data: tenant });
   } catch (err) {
     next(err);
@@ -41,11 +41,11 @@ tenantSelfRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // PATCH /v1/tenant
-tenantSelfRouter.patch('/', (req: Request, res: Response, next: NextFunction) => {
+tenantSelfRouter.patch('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = updateProfileSchema.parse(req.body);
-    const prev = tenantsService.getById(tenantId(req));
-    const tenant = tenantsService.update(tenantId(req), body);
+    const prev = await tenantsService.getById(tenantId(req));
+    const tenant = await tenantsService.update(tenantId(req), body);
     ticklerService.record({
       tenantId: tenantId(req),
       category: 'tenant',
@@ -62,9 +62,9 @@ tenantSelfRouter.patch('/', (req: Request, res: Response, next: NextFunction) =>
 });
 
 // GET /v1/tenant/config
-tenantSelfRouter.get('/config', (req: Request, res: Response, next: NextFunction) => {
+tenantSelfRouter.get('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenant = tenantsService.getById(tenantId(req));
+    const tenant = await tenantsService.getById(tenantId(req));
     res.json({ data: tenant.config });
   } catch (err) {
     next(err);
@@ -75,7 +75,7 @@ tenantSelfRouter.get('/config', (req: Request, res: Response, next: NextFunction
 tenantSelfRouter.patch('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = updateConfigSchema.parse(req.body);
-    const prev = tenantsService.getById(tenantId(req));
+    const prev = await tenantsService.getById(tenantId(req));
     const cfg = await tenantsService.updateConfig(tenantId(req), body);
     ticklerService.record({
       tenantId: tenantId(req),
