@@ -6,6 +6,7 @@ import { satoshiToBtc, addSatoshi } from '../../shared/money/index';
 import { validateRawTransaction, validatePsbt } from '../../shared/validation/bitcoin';
 import { transactionsService } from '../transactions/transactions.service';
 import { webhooksService } from '../webhooks/webhooks.service';
+import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
 
 const INPUT_SIZE = 68;
 const OUTPUT_SIZE = 31;
@@ -290,18 +291,17 @@ export const bitcoinTransactionsService = {
   },
 
   async getAddressBalance(tenantId: string, chain: string, address: string, asset?: string): Promise<Record<string, unknown>> {
-    const adapter = adapterRegistry.get(chain);
-    const balance = await adapter.getAddressBalance(address, tenantId);
+    const bal = await utxoLockService.getAddressBalance(tenantId, chain, address);
     return {
       address,
       chain,
       asset: asset ?? `${chain}:${chain === 'bitcoin' ? 'BTC' : 'ETH'}`,
-      confirmed: balance.confirmed,
-      confirmed_display: satoshiToBtc(balance.confirmed),
-      unconfirmed: balance.unconfirmed,
-      unconfirmed_display: satoshiToBtc(balance.unconfirmed),
-      total: balance.total,
-      total_display: satoshiToBtc(balance.total),
+      confirmed:           bal.confirmed,
+      confirmed_display:   satoshiToBtc(bal.confirmed),
+      unconfirmed:         bal.unconfirmed,
+      unconfirmed_display: satoshiToBtc(bal.unconfirmed),
+      total:               bal.total,
+      total_display:       satoshiToBtc(bal.total),
     };
   },
 
@@ -310,40 +310,27 @@ export const bitcoinTransactionsService = {
     const wallet = await db.get('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?', [walletId, tenantId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
-    const addresses = await db.all<{ chain_id: string; address: string }>(
-      'SELECT * FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active']
-    );
+    const chainBalances = await utxoLockService.getWalletBalances(walletId);
 
-    const chainGroups = new Map<string, string[]>();
-    for (const addr of addresses) {
-      if (!chainGroups.has(addr.chain_id)) chainGroups.set(addr.chain_id, []);
-      chainGroups.get(addr.chain_id)!.push(addr.address);
+    // Include chains with addresses but zero UTXOs
+    const chainIds = await db.all<{ chain_id: string }>(
+      'SELECT DISTINCT chain_id FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active']
+    );
+    for (const { chain_id } of chainIds) {
+      if (!chainBalances[chain_id]) {
+        chainBalances[chain_id] = { confirmed: '0', unconfirmed: '0', total: '0' };
+      }
     }
 
     const balances: Record<string, Record<string, string>> = {};
-    for (const [chain, addrs] of chainGroups.entries()) {
-      const adapter = adapterRegistry.get(chain);
-      let totalConfirmed = '0';
-      let totalUnconfirmed = '0';
-
-      for (const addr of addrs) {
-        try {
-          const bal = await adapter.getAddressBalance(addr, tenantId);
-          totalConfirmed = addSatoshi(totalConfirmed, bal.confirmed);
-          totalUnconfirmed = addSatoshi(totalUnconfirmed, bal.unconfirmed);
-        } catch {
-          // Skip failed addresses.
-        }
-      }
-
-      const total = addSatoshi(totalConfirmed, totalUnconfirmed);
+    for (const [chain, b] of Object.entries(chainBalances)) {
       balances[chain] = {
-        confirmed: totalConfirmed,
-        unconfirmed: totalUnconfirmed,
-        total,
-        confirmed_display: satoshiToBtc(totalConfirmed),
-        unconfirmed_display: satoshiToBtc(totalUnconfirmed),
-        total_display: satoshiToBtc(total),
+        confirmed:           b.confirmed,
+        unconfirmed:         b.unconfirmed,
+        total:               b.total,
+        confirmed_display:   satoshiToBtc(b.confirmed),
+        unconfirmed_display: satoshiToBtc(b.unconfirmed),
+        total_display:       satoshiToBtc(b.total),
       };
     }
 

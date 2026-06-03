@@ -52,28 +52,31 @@ describe('GET /v1/chains/bitcoin/fees', () => {
 });
 
 describe('GET /v1/chains/bitcoin/addresses/:address/balances', () => {
-  it('returns error with correct shape when Bitcoin Core is unavailable', async () => {
+  it('returns 200 with zero balance when no UTXOs exist (v3: reads cached_utxos, not Bitcoin Core)', async () => {
+    // v3: balance endpoint reads from cached_utxos — does not call Bitcoin Core.
+    // Fresh test DB has no UTXOs → 200 with zero balance, not a 4xx/5xx.
     const res = await request(app)
       .get(`/v1/chains/bitcoin/addresses/${ADDR_1}/balances`)
       .set(AUTH);
 
-    // Must be an error response (Bitcoin Core not available in test env)
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.body.error).toBeDefined();
-    expect(res.body.error.code).toBeDefined();
-    expect(res.body.error.message).toBeDefined();
-    // Must NOT be an auth error
-    expect(res.body.error.code).not.toBe('UNAUTHORIZED');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toBeDefined();
+    expect(res.body.data.confirmed).toBe('0');
+    expect(res.body.data.unconfirmed).toBe('0');
+    expect(res.body.data.total).toBe('0');
+    expect(res.body.data.address).toBe(ADDR_1);
+    expect(res.body.data.chain).toBe('bitcoin');
   });
 });
 
 describe('GET /v1/chains/bitcoin/addresses/:address/balances/:asset', () => {
-  it('returns correct error shape for BTC balance when Core unavailable', async () => {
+  it('returns 200 with zero balance for BTC (v3: reads cached_utxos, not Bitcoin Core)', async () => {
     const res = await request(app)
       .get(`/v1/chains/bitcoin/addresses/${ADDR_1}/balances/BTC`)
       .set(AUTH);
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.body.error.code).not.toBe('UNAUTHORIZED');
+    expect(res.status).toBe(200);
+    expect(res.body.data.confirmed).toBe('0');
+    expect(res.body.data.total).toBe('0');
   });
 
   it('returns 404 for unknown asset symbol', async () => {

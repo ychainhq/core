@@ -19,6 +19,8 @@ interface ChainEvent {
   event_type: string;
   tx_hash: string;
   vout_index: number | null;
+  spent_tx_hash: string | null;  // utxo_spent: original tx being spent
+  spent_vout: number | null;     // utxo_spent: original output index being spent
   address: string | null;
   amount_raw: string | null;
   block_height: number | null;
@@ -83,13 +85,11 @@ export class DepositEventProcessorWorker {
   async run(): Promise<void> {
     const db = getDbClient();
 
-    // Claim unprocessed utxo_created events in batches
-    // SQLite doesn't support FOR UPDATE SKIP LOCKED, but since we have a single
-    // active engine (worker lease / active-passive), we mark processed=1 atomically.
+    // Process both utxo_created and utxo_spent events
     const events = await db.all<ChainEvent>(`
       SELECT * FROM chain_events
       WHERE processed = 0
-        AND event_type = 'utxo_created'
+        AND event_type IN ('utxo_created', 'utxo_spent')
       ORDER BY created_at ASC
       LIMIT ?
     `, [BATCH_SIZE]);
@@ -97,7 +97,6 @@ export class DepositEventProcessorWorker {
     if (events.length === 0) return;
 
     // Mark as processed immediately to prevent double-processing
-    // (safe: deposits upsert is idempotent via UNIQUE(chain_id, tx_hash, vout))
     const ids = events.map(e => e.id);
     await db.run(`
       UPDATE chain_events
@@ -107,7 +106,11 @@ export class DepositEventProcessorWorker {
 
     for (const event of events) {
       try {
-        await this.processEvent(event);
+        if (event.event_type === 'utxo_created') {
+          await this.processEvent(event);
+        } else if (event.event_type === 'utxo_spent') {
+          await this.processSpentEvent(event);
+        }
       } catch (err) {
         logger.warn('Failed to process chain event', { eventId: event.id, error: String(err) });
       }
@@ -331,5 +334,29 @@ export class DepositEventProcessorWorker {
     } catch (err) {
       logger.warn('Failed to create settled ledger entry', { depositId: input.depositId, error: String(err) });
     }
+  }
+
+  /**
+   * Mark a spent UTXO in cached_utxos.
+   * Called for utxo_spent chain_events — the btc-indexer emits these when it sees
+   * a known UTXO used as an input in a confirmed block (e.g. sweep tx inputs).
+   */
+  private async processSpentEvent(event: ChainEvent): Promise<void> {
+    if (!event.spent_tx_hash && event.vout_index === null) return;
+    const db = getDbClient();
+
+    // The spent UTXO is identified by spent_tx_hash + spent_vout
+    // (tx_hash here is the spending transaction, not the original deposit tx)
+    const { spent_tx_hash: spentTxHash, spent_vout: spentVout } = event;
+    if (!spentTxHash || spentVout === null) return;
+
+    await db.run(
+      'UPDATE cached_utxos SET is_spent = 1, is_locked = 0, updated_at = ? WHERE chain_id = ? AND tx_hash = ? AND vout = ?',
+      [new Date().toISOString(), event.chain_id, spentTxHash, spentVout]
+    );
+
+    logger.debug('UTXO marked as spent via chain_event', {
+      spentTxHash, spentVout, spendingTxHash: event.tx_hash, chainId: event.chain_id,
+    });
   }
 }

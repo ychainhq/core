@@ -285,7 +285,7 @@ export const sweepsService = {
 
     const utxoRow = await db.get<{ total_sats: number; addrs_with_bal: number; utxo_count: number }>(`
       SELECT
-        COALESCE(SUM(CAST(amount_raw AS INTEGER)), 0) AS total_sats,
+        COALESCE(SUM(CAST(amount_raw AS BIGINT)), 0) AS total_sats,
         COUNT(DISTINCT address)                        AS addrs_with_bal,
         COUNT(*)                                       AS utxo_count
       FROM cached_utxos

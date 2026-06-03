@@ -70,7 +70,7 @@ export const utxoLockService = {
           AND is_spent = 0
           AND is_locked = 0
           AND confirmations >= ?
-        ORDER BY CAST(amount_raw AS INTEGER) ASC
+        ORDER BY CAST(amount_raw AS BIGINT) ASC
       `, [tenantId, chainId, minConfirmations]);
 
       if (candidates.length === 0) {
@@ -336,6 +336,59 @@ export const utxoLockService = {
       logger.info('Expired UTXO locks cleaned up', { count: result });
     }
 
+    return result;
+  },
+
+  /**
+   * Return confirmed / unconfirmed balance for a single address from cached_utxos.
+   * v3: replaces adapter.getAddressBalance() / getReceivedByAddress FWallet calls.
+   */
+  async getAddressBalance(
+    tenantId: string,
+    chainId: string,
+    address: string
+  ): Promise<{ confirmed: string; unconfirmed: string; total: string }> {
+    const db = getDbClient();
+    const row = await db.get<{ confirmed_sats: string; unconfirmed_sats: string }>(`
+      SELECT
+        COALESCE(SUM(CASE WHEN confirmations >= 1 THEN CAST(amount_raw AS BIGINT) ELSE 0 END), 0) AS confirmed_sats,
+        COALESCE(SUM(CASE WHEN confirmations  = 0 THEN CAST(amount_raw AS BIGINT) ELSE 0 END), 0) AS unconfirmed_sats
+      FROM cached_utxos
+      WHERE tenant_id = ? AND chain_id = ? AND address = ? AND is_spent = 0
+    `, [tenantId, chainId, address]);
+    const confirmed   = String(row?.confirmed_sats  ?? '0');
+    const unconfirmed = String(row?.unconfirmed_sats ?? '0');
+    const total = (BigInt(confirmed) + BigInt(unconfirmed)).toString();
+    return { confirmed, unconfirmed, total };
+  },
+
+  /**
+   * Return confirmed / unconfirmed balances per chain for a wallet from cached_utxos.
+   * v3: replaces per-address adapter.getAddressBalance() loops.
+   */
+  async getWalletBalances(
+    walletId: string
+  ): Promise<Record<string, { confirmed: string; unconfirmed: string; total: string }>> {
+    const db = getDbClient();
+    const rows = await db.all<{ chain_id: string; confirmed_sats: string; unconfirmed_sats: string }>(`
+      SELECT
+        chain_id,
+        COALESCE(SUM(CASE WHEN confirmations >= 1 THEN CAST(amount_raw AS BIGINT) ELSE 0 END), 0) AS confirmed_sats,
+        COALESCE(SUM(CASE WHEN confirmations  = 0 THEN CAST(amount_raw AS BIGINT) ELSE 0 END), 0) AS unconfirmed_sats
+      FROM cached_utxos
+      WHERE wallet_id = ? AND is_spent = 0
+      GROUP BY chain_id
+    `, [walletId]);
+    const result: Record<string, { confirmed: string; unconfirmed: string; total: string }> = {};
+    for (const row of rows) {
+      const confirmed   = String(row.confirmed_sats);
+      const unconfirmed = String(row.unconfirmed_sats);
+      result[row.chain_id] = {
+        confirmed,
+        unconfirmed,
+        total: (BigInt(confirmed) + BigInt(unconfirmed)).toString(),
+      };
+    }
     return result;
   },
 };

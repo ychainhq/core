@@ -76,7 +76,10 @@ export class NodeHealthCheckerWorker {
       const info = data.result;
       blockHeight = info.blocks ?? null;
 
-      if (info.initialblockdownload) {
+      if (info.initialblockdownload && info.chain !== 'regtest') {
+        // In regtest, IBD=true simply means no block was mined in the last 24h
+        // (nMaxTipAge threshold). This is normal in dev environments where blocks
+        // are mined on demand — not a real sync issue.
         status = 'degraded';
         error = 'Initial block download in progress';
       } else {

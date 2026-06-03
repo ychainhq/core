@@ -1,8 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { adapterRegistry } from '../../chain-adapters/registry';
 import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
 import { satoshiToBtc, addSatoshi } from '../../shared/money/index';
+import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
 
 export const balancesRouter = Router({ mergeParams: true });
 export const walletBalancesRouter = Router({ mergeParams: true });
@@ -11,19 +11,16 @@ export const walletBalancesRouter = Router({ mergeParams: true });
 balancesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { chain, address } = req.params as { chain: string; address: string };
-    const adapter = adapterRegistry.get(chain);
-    const balance = await adapter.getAddressBalance(address, req.tenantId!);
-
+    const bal = await utxoLockService.getAddressBalance(req.tenantId!, chain, address);
     res.json({
       data: {
-        address,
-        chain,
-        confirmed: balance.confirmed,
-        confirmed_display: satoshiToBtc(balance.confirmed),
-        unconfirmed: balance.unconfirmed,
-        unconfirmed_display: satoshiToBtc(balance.unconfirmed),
-        total: balance.total,
-        total_display: satoshiToBtc(balance.total),
+        address, chain,
+        confirmed:           bal.confirmed,
+        confirmed_display:   satoshiToBtc(bal.confirmed),
+        unconfirmed:         bal.unconfirmed,
+        unconfirmed_display: satoshiToBtc(bal.unconfirmed),
+        total:               bal.total,
+        total_display:       satoshiToBtc(bal.total),
         asset: `${chain}:${chain === 'bitcoin' ? 'BTC' : 'ETH'}`,
       },
     });
@@ -36,9 +33,6 @@ balancesRouter.get('/', async (req: Request, res: Response, next: NextFunction) 
 balancesRouter.get('/:asset', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { chain, address, asset } = req.params as { chain: string; address: string; asset: string };
-    const adapter = adapterRegistry.get(chain);
-
-    // Verify asset exists and belongs to this chain
     const db = getDbClient();
     const assetRow = await db.get(
       'SELECT * FROM assets WHERE chain_id = ? AND (id = ? OR symbol = ?)',
@@ -46,19 +40,16 @@ balancesRouter.get('/:asset', async (req: Request, res: Response, next: NextFunc
     );
     if (!assetRow) throw new NotFoundError('Asset', asset);
 
-    const balance = await adapter.getAddressBalance(address, req.tenantId!);
-
+    const bal = await utxoLockService.getAddressBalance(req.tenantId!, chain, address);
     res.json({
       data: {
-        address,
-        chain,
-        asset,
-        confirmed: balance.confirmed,
-        confirmed_display: satoshiToBtc(balance.confirmed),
-        unconfirmed: balance.unconfirmed,
-        unconfirmed_display: satoshiToBtc(balance.unconfirmed),
-        total: balance.total,
-        total_display: satoshiToBtc(balance.total),
+        address, chain, asset,
+        confirmed:           bal.confirmed,
+        confirmed_display:   satoshiToBtc(bal.confirmed),
+        unconfirmed:         bal.unconfirmed,
+        unconfirmed_display: satoshiToBtc(bal.unconfirmed),
+        total:               bal.total,
+        total_display:       satoshiToBtc(bal.total),
       },
     });
   } catch (err) {
@@ -75,49 +66,27 @@ walletBalancesRouter.get('/', async (req: Request, res: Response, next: NextFunc
     const wallet = await db.get('SELECT * FROM wallets WHERE id = ?', [walletId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
-    const addresses = await db.all<{ chain_id: string; address: string }>(
-      'SELECT * FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active']
-    );
+    const chainBalances = await utxoLockService.getWalletBalances(walletId);
 
-    // Group by chain
-    const chainGroups = new Map<string, string[]>();
-    for (const addr of addresses) {
-      if (!chainGroups.has(addr.chain_id)) chainGroups.set(addr.chain_id, []);
-      chainGroups.get(addr.chain_id)!.push(addr.address);
+    // Ensure chains with addresses but no UTXOs appear in the response
+    const chainIds = await db.all<{ chain_id: string }>(
+      'SELECT DISTINCT chain_id FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active']
+    );
+    for (const { chain_id } of chainIds) {
+      if (!chainBalances[chain_id]) {
+        chainBalances[chain_id] = { confirmed: '0', unconfirmed: '0', total: '0' };
+      }
     }
 
-    const balances: Record<string, {
-      confirmed: string;
-      unconfirmed: string;
-      total: string;
-      confirmed_display: string;
-      unconfirmed_display: string;
-      total_display: string;
-    }> = {};
-
-    for (const [chain, addrs] of chainGroups.entries()) {
-      const adapter = adapterRegistry.get(chain);
-      let totalConfirmed = '0';
-      let totalUnconfirmed = '0';
-
-      for (const addr of addrs) {
-        try {
-          const bal = await adapter.getAddressBalance(addr, req.tenantId!);
-          totalConfirmed = addSatoshi(totalConfirmed, bal.confirmed);
-          totalUnconfirmed = addSatoshi(totalUnconfirmed, bal.unconfirmed);
-        } catch {
-          // Skip failed addresses
-        }
-      }
-
-      const total = addSatoshi(totalConfirmed, totalUnconfirmed);
+    const balances: Record<string, object> = {};
+    for (const [chain, b] of Object.entries(chainBalances)) {
       balances[chain] = {
-        confirmed: totalConfirmed,
-        unconfirmed: totalUnconfirmed,
-        total,
-        confirmed_display: satoshiToBtc(totalConfirmed),
-        unconfirmed_display: satoshiToBtc(totalUnconfirmed),
-        total_display: satoshiToBtc(total),
+        confirmed:           b.confirmed,
+        confirmed_display:   satoshiToBtc(b.confirmed),
+        unconfirmed:         b.unconfirmed,
+        unconfirmed_display: satoshiToBtc(b.unconfirmed),
+        total:               b.total,
+        total_display:       satoshiToBtc(b.total),
       };
     }
 

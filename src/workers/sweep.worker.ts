@@ -136,8 +136,12 @@ export class SweepWorker {
     // If there's already a pending sweep that has a signing_task, nothing to do.
     // If the pending sweep has no signing_task_id (created before migration 020 or before this fix),
     // we must create a signing task for it so the signer daemon can pick it up.
+    // Block on any active sweep — pending_signature OR broadcast.
+    // Without this check: after signing+broadcast the UTXOs are still is_spent=0 in cached_utxos
+    // (until the indexer processes the utxo_spent event), so SweepWorker would repeatedly create
+    // new duplicate sweeps for the same UTXOs every interval.
     const existingPending = await db.get<{ id: string; psbt: string | null; amount_raw: string; fee_raw: string | null; signing_task_id: string | null }>(
-      "SELECT id, psbt, amount_raw, fee_raw, signing_task_id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1",
+      "SELECT id, psbt, amount_raw, fee_raw, signing_task_id FROM sweeps WHERE tenant_id = ? AND status IN ('pending_signature', 'broadcast') LIMIT 1",
       [tenantId]
     );
 
@@ -288,7 +292,7 @@ export class SweepWorker {
     }
 
     let psbtBase64: string;
-    const inputAddresses = sweepableUtxos.map((u) => u.address);
+    const inputAddresses = [...new Set(sweepableUtxos.map((u) => u.address))];
     try {
       const inputs = sweepableUtxos.map((u) => ({ txid: u.txHash, vout: u.vout }));
       const outputBtc = parseFloat((Number(outputSats) / 1e8).toFixed(8));
@@ -311,7 +315,7 @@ export class SweepWorker {
     const sweep = await sweepsService.create(tenantId, {
       chainId: 'bitcoin',
       assetId: 'bitcoin:BTC',
-      fromAddresses: sweepableUtxos.map((u) => u.address),
+      fromAddresses: [...new Set(sweepableUtxos.map((u) => u.address))],
       toAddress: hotAddr.address,
       amountRaw: totalSats.toString(),
       feeRaw: feeSats.toString(),
