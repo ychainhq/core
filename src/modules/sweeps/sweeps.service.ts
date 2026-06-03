@@ -155,6 +155,12 @@ export const sweepsService = {
     await db.run('UPDATE sweeps SET signing_task_id = ?, updated_at = ? WHERE id = ?', [taskId, now, sweepId]);
   },
 
+  async clearSigningTask(sweepId: string): Promise<void> {
+    const db = getDbClient();
+    const now = new Date().toISOString();
+    await db.run('UPDATE sweeps SET signing_task_id = NULL, updated_at = ? WHERE id = ?', [now, sweepId]);
+  },
+
   async finalizeSweepFromSigningTask(
     tenantId: string,
     sweepId: string,

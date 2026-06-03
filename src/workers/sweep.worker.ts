@@ -143,7 +143,24 @@ export class SweepWorker {
 
     if (existingPending) {
       if (existingPending.signing_task_id) {
-        return; // Already has a signing task — signer will handle it
+        // Check whether the existing signing task is still actionable.
+        // If it has expired, been rejected, or failed, clear it so the recovery
+        // path below can create a fresh signing task.
+        const existingTask = await db.get<{ status: string }>(
+          'SELECT status FROM signing_tasks WHERE id = ?',
+          [existingPending.signing_task_id]
+        );
+        const isActive = existingTask &&
+          !['expired', 'rejected', 'failed'].includes(existingTask.status);
+        if (isActive) {
+          return; // Task is still pending/claimed — signer will handle it
+        }
+        logger.warn('SweepWorker: signing task expired/failed — recreating', {
+          sweepId: existingPending.id, taskId: existingPending.signing_task_id,
+          taskStatus: existingTask?.status, tenantId,
+        });
+        await sweepsService.clearSigningTask(existingPending.id);
+        existingPending.signing_task_id = null;
       }
 
       // Recover: create missing signing task for the orphaned pending sweep
