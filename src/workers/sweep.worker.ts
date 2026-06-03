@@ -173,22 +173,16 @@ export class SweepWorker {
           sweepId: existingPending.id, tenantId,
         });
 
-        // Enrich orphaned PSBT with bip32Derivation if possible
-        // We need input addresses — look them up from the sweep's from_addresses field
+        // Enrich orphaned PSBT with bip32Derivation — address derived from witnessUtxo.script
+        // which is embedded in the stored PSBT binary (filled by utxoupdatepsbt at creation time)
         let recoveryPsbt = existingPending.psbt;
         try {
-          const sweepRow = await db.get<{ from_addresses: string }>(
-            'SELECT from_addresses FROM sweeps WHERE id = ?', [existingPending.id]
+          recoveryPsbt = await enrichSweepPsbt(
+            existingPending.psbt, tenantId, accountXpub, btcNetwork
           );
-          if (sweepRow?.from_addresses) {
-            const inputAddresses: string[] = JSON.parse(sweepRow.from_addresses);
-            recoveryPsbt = await enrichSweepPsbt(
-              existingPending.psbt, inputAddresses, tenantId, accountXpub, btcNetwork
-            );
-            logger.info('SweepWorker: orphaned PSBT enriched with bip32Derivation', {
-              sweepId: existingPending.id, inputs: inputAddresses.length,
-            });
-          }
+          logger.info('SweepWorker: orphaned PSBT enriched with bip32Derivation', {
+            sweepId: existingPending.id,
+          });
         } catch (enrichErr) {
           logger.warn('SweepWorker: PSBT enrichment failed during recovery, using plain PSBT', {
             sweepId: existingPending.id, error: String(enrichErr),
@@ -292,7 +286,7 @@ export class SweepWorker {
     }
 
     let psbtBase64: string;
-    const inputAddresses = [...new Set(sweepableUtxos.map((u) => u.address))];
+    const fromAddresses = [...new Set(sweepableUtxos.map((u) => u.address))];
     try {
       const inputs = sweepableUtxos.map((u) => ({ txid: u.txHash, vout: u.vout }));
       const outputBtc = parseFloat((Number(outputSats) / 1e8).toFixed(8));
@@ -302,9 +296,10 @@ export class SweepWorker {
       return;
     }
 
-    // Enrich PSBT with bip32Derivation per input — public-key only, no private key in engine
+    // Enrich PSBT with bip32Derivation per input — address derived from witnessUtxo.script,
+    // no private key in engine
     try {
-      psbtBase64 = await enrichSweepPsbt(psbtBase64, inputAddresses, tenantId, accountXpub, btcNetwork);
+      psbtBase64 = await enrichSweepPsbt(psbtBase64, tenantId, accountXpub, btcNetwork);
     } catch (err) {
       logger.warn('SweepWorker: PSBT enrichment failed (non-fatal, signer may reject)', {
         tenantId, err: String(err),
@@ -315,7 +310,7 @@ export class SweepWorker {
     const sweep = await sweepsService.create(tenantId, {
       chainId: 'bitcoin',
       assetId: 'bitcoin:BTC',
-      fromAddresses: [...new Set(sweepableUtxos.map((u) => u.address))],
+      fromAddresses,
       toAddress: hotAddr.address,
       amountRaw: totalSats.toString(),
       feeRaw: feeSats.toString(),

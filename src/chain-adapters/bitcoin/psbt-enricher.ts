@@ -1,13 +1,15 @@
 /**
  * PSBT Enricher — adds bip32Derivation hints to sweep PSBT inputs.
  *
- * After createUnsignedPsbt() builds the raw unsigned PSBT, this module enriches
- * each input with the BIP-32 derivation path and compressed public key so that
- * an external signer daemon can derive the correct child private key per input.
+ * After createUnsignedPsbt() builds the raw unsigned PSBT (createpsbt + utxoupdatepsbt),
+ * this module enriches each input with the BIP-32 derivation path and compressed public
+ * key so that an external signer daemon can derive the correct child private key per input.
+ *
+ * The source address for each input is derived directly from input.witnessUtxo.script
+ * (embedded by utxoupdatepsbt), so the caller does not need to supply an address list.
+ * This eliminates the deduplication bug that occurred when multiple UTXOs shared an address.
  *
  * Uses only public-key operations — no private key material is ever present in engine.
- *
- * PSBT input order MUST match inputAddresses order (preserved by createpsbt).
  */
 
 import * as bitcoin from 'bitcoinjs-lib';
@@ -21,18 +23,11 @@ const bip32 = BIP32Factory(ecc);
 
 export async function enrichSweepPsbt(
   psbtBase64: string,
-  inputAddresses: string[],   // ordered 1:1 with PSBT inputs
   tenantId: string,
   accountXpub: string,        // account-level xpub from tenant_configs.btc_xpub
   network: bitcoin.networks.Network
 ): Promise<string> {
   const psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network });
-
-  if (psbt.data.inputs.length !== inputAddresses.length) {
-    throw new Error(
-      `PSBT input count (${psbt.data.inputs.length}) ≠ inputAddresses count (${inputAddresses.length})`
-    );
-  }
 
   const accountNode = bip32.fromBase58(accountXpub, network);
   // fingerprint = first 4 bytes of hash160(accountNode.publicKey) — identifies this key to the signer
@@ -40,8 +35,16 @@ export async function enrichSweepPsbt(
 
   const db = getDbClient();
 
-  for (let i = 0; i < inputAddresses.length; i++) {
-    const address = inputAddresses[i];
+  for (let i = 0; i < psbt.data.inputs.length; i++) {
+    const input = psbt.data.inputs[i];
+
+    if (!input.witnessUtxo?.script) {
+      throw new Error(
+        `Cannot enrich PSBT input ${i}: witnessUtxo.script is missing — run utxoupdatepsbt first`
+      );
+    }
+
+    const address = bitcoin.address.fromOutputScript(input.witnessUtxo.script, network);
 
     const row = await db.get<{ metadata: string | null }>(
       'SELECT metadata FROM addresses WHERE tenant_id = ? AND address = ? LIMIT 1',
