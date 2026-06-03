@@ -214,21 +214,25 @@ export class SweepWorker {
       return;
     }
 
-    // Collect UTXOs across all deposit addresses (minConfirmations = 1 for finality)
+    // v3: read UTXOs from cached_utxos (populated by DepositEventProcessorWorker via
+    // btc-indexer chain_events). Do NOT call listunspent — Bitcoin Core is stateless in v3.
+    const utxoRows = await db.all<{ address: string; tx_hash: string; vout: number; amount_raw: string }>(`
+      SELECT address, tx_hash, vout, amount_raw
+      FROM cached_utxos
+      WHERE tenant_id = ?
+        AND chain_id = 'bitcoin'
+        AND is_spent = 0
+        AND is_locked = 0
+        AND confirmations >= 1
+        AND wallet_role = 'customer_deposits'
+    `, [tenantId]);
+
     const sweepableUtxos: Array<{ address: string; txHash: string; vout: number; amount: string }> = [];
     let totalSats = BigInt(0);
 
-    for (const { address } of depositAddresses) {
-      let utxos: any[];
-      try {
-        utxos = await adapter.getUtxosForAddress(address, 1, tenantId);
-      } catch {
-        continue;
-      }
-      for (const u of utxos) {
-        sweepableUtxos.push({ address, txHash: u.txHash, vout: u.vout, amount: u.amount });
-        totalSats += BigInt(u.amount);
-      }
+    for (const u of utxoRows) {
+      sweepableUtxos.push({ address: u.address, txHash: u.tx_hash, vout: u.vout, amount: u.amount_raw });
+      totalSats += BigInt(u.amount_raw);
     }
 
     const threshold = BigInt(sweepThresholdSats);

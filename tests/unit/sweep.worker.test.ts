@@ -10,6 +10,9 @@
  * - Deduplication (existing pending_signature sweep → skip)
  * - Sweep record written with correct amounts
  * - Idempotency (second run skips because sweep is pending_signature)
+ *
+ * v3: UTXOs come from cached_utxos table (populated by DepositEventProcessorWorker),
+ *     NOT from Bitcoin Core listunspent / getUtxosForAddress.
  */
 
 import { runMigrations } from '../../src/db/migrate';
@@ -23,7 +26,6 @@ import { SweepWorker } from '../../src/workers/sweep.worker';
 jest.mock('../../src/chain-adapters/bitcoin/adapter');
 
 const TENANT_ID = 'tenant_default';
-// A stable regtest address used as the deposit address in tests
 const DEPOSIT_ADDRESS = 'bcrt1q0000000000000000000000000000000000000qk6ng7';
 const FAKE_PSBT = 'cHNidP8BAAoAAAAA==';
 
@@ -32,7 +34,6 @@ const VBYTES_3_INPUTS = 42 + 68 * 3;  // 246
 
 type MockAdapter = {
   chain: string;
-  getUtxosForAddress: jest.Mock;
   estimateSmartFee: jest.Mock;
   createUnsignedPsbt: jest.Mock;
   walletCreateFundedPsbt: jest.Mock;
@@ -43,15 +44,16 @@ type MockAdapter = {
   getBlockCount: jest.Mock;
   getAddressBalance: jest.Mock;
   getWalletUtxos: jest.Mock;
+  getUtxosForAddress: jest.Mock; // kept for mock type completeness; NOT called in v3
   [key: string]: any;
 };
 
 let mockAdapter: MockAdapter;
+let depositWalletId: string; // set by bootstrap(), used by insertUtxo()
 
 beforeAll(() => {
   mockAdapter = {
     chain: 'bitcoin',
-    getUtxosForAddress: jest.fn().mockResolvedValue([]),
     estimateSmartFee: jest.fn().mockResolvedValue({ feeRate: 5, targetBlocks: 6, mode: 'conservative' }),
     createUnsignedPsbt: jest.fn().mockResolvedValue(FAKE_PSBT),
     walletCreateFundedPsbt: jest.fn(),
@@ -62,6 +64,7 @@ beforeAll(() => {
     getBlockCount: jest.fn().mockResolvedValue(1000),
     getAddressBalance: jest.fn().mockResolvedValue({ confirmed: '0', unconfirmed: '0', total: '0' }),
     getWalletUtxos: jest.fn().mockResolvedValue([]),
+    getUtxosForAddress: jest.fn().mockResolvedValue([]), // should NOT be called in v3
   };
   (BitcoinAdapter as jest.MockedClass<typeof BitcoinAdapter>).mockImplementation(() => mockAdapter as any);
 });
@@ -70,30 +73,32 @@ afterEach(() => { closeDb(); resetDbClient(); });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeUtxo(txHash: string, vout = 0, amountSats = 500_000, confirmations = 2) {
-  return {
-    txHash, vout,
-    address: DEPOSIT_ADDRESS,
-    amount: String(amountSats),
-    scriptPubKey: '0014' + '00'.repeat(20),
-    confirmations,
-    height: confirmations > 0 ? 900 : null,
-  };
-}
+let _utxoSeq = 0;
 
 /**
- * Sets up a fresh in-memory DB:
- *   1. runSeed creates tenant_default with a hot wallet (derived from xpub)
- *      and a customer_deposits wallet.
- *   2. We add a deposit address into the seed's customer_deposits wallet
- *      so the sweep worker can find UTXOs to sweep.
- *   3. We set btc_sweep_threshold_sats.
+ * Insert a row into cached_utxos (v3 UTXO source).
+ * Replaces adapter.getUtxosForAddress mock — SweepWorker now reads from DB.
  */
+function insertUtxo(txHash: string, vout = 0, amountSats = 500_000, confirmations = 2) {
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT OR IGNORE INTO cached_utxos
+      (id, tenant_id, customer_id, wallet_id, wallet_role, chain_id,
+       address, tx_hash, vout, amount_raw, confirmations, is_spent, is_locked, created_at, updated_at)
+    VALUES (?, ?, NULL, ?, 'customer_deposits', 'bitcoin', ?, ?, ?, ?, ?, 0, 0, ?, ?)
+  `).run(
+    `utxo_test_${++_utxoSeq}`,
+    TENANT_ID, depositWalletId, DEPOSIT_ADDRESS,
+    txHash, vout, String(amountSats), confirmations, now, now
+  );
+}
+
 async function bootstrap({ thresholdSats = '100000' }: { thresholdSats?: string } = {}) {
   closeDb();
   resetDbClient();
+  _utxoSeq = 0;
   await runMigrations();
-  // Register before runSeed — seed calls adapterRegistry.get('bitcoin') during provisioning
   adapterRegistry.register(mockAdapter as any);
   await runSeed();
 
@@ -103,28 +108,26 @@ async function bootstrap({ thresholdSats = '100000' }: { thresholdSats?: string 
   db.prepare('UPDATE tenant_configs SET btc_sweep_threshold_sats = ? WHERE tenant_id = ?')
     .run(thresholdSats, TENANT_ID);
 
-  // Add a deposit address into the customer_deposits wallet created by seed
   const depositWallet = db.prepare(
     "SELECT id FROM wallets WHERE tenant_id = ? AND wallet_role = 'customer_deposits' LIMIT 1"
   ).get(TENANT_ID) as { id: string } | undefined;
-
   if (!depositWallet) throw new Error('seed did not create a customer_deposits wallet for tenant_default');
+
+  depositWalletId = depositWallet.id;
 
   db.prepare(`
     INSERT INTO addresses
       (id, tenant_id, customer_id, wallet_id, chain_id, address, label,
        address_type, status, address_role, metadata, created_at, updated_at)
     VALUES (?, ?, NULL, ?, 'bitcoin', ?, NULL, 'p2wpkh', 'active', 'customer_deposit', NULL, ?, ?)
-  `).run('addr_dep_sw_test', TENANT_ID, depositWallet.id, DEPOSIT_ADDRESS, now, now);
+  `).run('addr_dep_sw_test', TENANT_ID, depositWalletId, DEPOSIT_ADDRESS, now, now);
 
-  // Reset only the mocks that vary per-test; keep isValidAddress etc. on their defaults
-  mockAdapter.getUtxosForAddress.mockReset().mockResolvedValue([]);
   mockAdapter.estimateSmartFee.mockReset().mockResolvedValue({ feeRate: 5, targetBlocks: 6, mode: 'conservative' });
   mockAdapter.createUnsignedPsbt.mockReset().mockResolvedValue(FAKE_PSBT);
   mockAdapter.walletCreateFundedPsbt.mockReset();
+  mockAdapter.getUtxosForAddress.mockReset().mockResolvedValue([]);
 }
 
-/** Returns the hot wallet address provisioned by the seed (derived from xpub). */
 function getHotAddress(): string {
   const row = getDb().prepare(`
     SELECT a.address FROM addresses a
@@ -145,18 +148,41 @@ function getOnlySweep(): any {
   return getDb().prepare('SELECT * FROM sweeps LIMIT 1').get();
 }
 
-/** Output btc value for the first (and only) output in the createUnsignedPsbt call. */
 function capturedOutputBtc(): number {
   const [, outputs] = mockAdapter.createUnsignedPsbt.mock.calls[0];
   return Object.values(outputs[0])[0] as number;
 }
+
+// ── v3 compliance ─────────────────────────────────────────────────────────────
+
+describe('v3: UTXOs come from cached_utxos, not from Bitcoin Core', () => {
+  it('does NOT call getUtxosForAddress (listunspent) — uses cached_utxos instead', async () => {
+    await bootstrap();
+    insertUtxo('tx_v3_check');
+
+    await new SweepWorker().run();
+
+    expect(mockAdapter.getUtxosForAddress).not.toHaveBeenCalled();
+    expect(sweepCount()).toBe(1);
+  });
+
+  it('skips when cached_utxos is empty even though deposit addresses exist', async () => {
+    await bootstrap();
+    // No insertUtxo call — DB has deposit address but no cached UTXOs
+
+    await new SweepWorker().run();
+
+    expect(mockAdapter.createUnsignedPsbt).not.toHaveBeenCalled();
+    expect(sweepCount()).toBe(0);
+  });
+});
 
 // ── PSBT creation method ──────────────────────────────────────────────────────
 
 describe('PSBT creation uses createUnsignedPsbt, not walletCreateFundedPsbt', () => {
   it('calls createUnsignedPsbt (regression: addr() descriptors are not solvable for walletCreateFundedPsbt)', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_rg01')]);
+    insertUtxo('tx_rg01');
 
     await new SweepWorker().run();
 
@@ -166,7 +192,7 @@ describe('PSBT creation uses createUnsignedPsbt, not walletCreateFundedPsbt', ()
 
   it('passes correct inputs array { txid, vout } to createUnsignedPsbt', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('deadbeef', 2)]);
+    insertUtxo('deadbeef', 2);
 
     await new SweepWorker().run();
 
@@ -176,7 +202,7 @@ describe('PSBT creation uses createUnsignedPsbt, not walletCreateFundedPsbt', ()
 
   it('passes hot-address as the sole output key to createUnsignedPsbt', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_out01', 0, 500_000)]);
+    insertUtxo('tx_out01', 0, 500_000);
     mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 0, targetBlocks: 6, mode: 'conservative' });
 
     await new SweepWorker().run();
@@ -192,10 +218,8 @@ describe('PSBT creation uses createUnsignedPsbt, not walletCreateFundedPsbt', ()
 describe('Fee calculation', () => {
   it('uses feeRate from estimateSmartFee directly (regression: old code multiplied by 100000)', async () => {
     await bootstrap();
-    // Old bug: feeRate=10 → fee=10×100000×110=110 000 000 > totalSats → dust guard skips sweep
-    // Fixed:   feeRate=10 → fee=10×110=1100 → output=498 900 → sweep IS created
     mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 10, targetBlocks: 6, mode: 'conservative' });
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_reg_fee01', 0, 500_000)]);
+    insertUtxo('tx_reg_fee01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -205,7 +229,7 @@ describe('Fee calculation', () => {
   it('deducts feeRate × (42 + 68 × 1) sats for a single P2WPKH input', async () => {
     await bootstrap();
     mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 10, targetBlocks: 6, mode: 'conservative' });
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_fee1in', 0, 500_000)]);
+    insertUtxo('tx_fee1in', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -216,11 +240,9 @@ describe('Fee calculation', () => {
   it('scales fee with number of inputs: 3 inputs → fee = feeRate × (42 + 68 × 3)', async () => {
     await bootstrap({ thresholdSats: '10000' });
     mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 2, targetBlocks: 6, mode: 'conservative' });
-    mockAdapter.getUtxosForAddress.mockResolvedValue([
-      makeUtxo('tx_3in_a', 0, 50_000),
-      makeUtxo('tx_3in_b', 1, 50_000),
-      makeUtxo('tx_3in_c', 2, 50_000),
-    ]);
+    insertUtxo('tx_3in_a', 0, 50_000);
+    insertUtxo('tx_3in_b', 1, 50_000);
+    insertUtxo('tx_3in_c', 2, 50_000);
 
     await new SweepWorker().run();
 
@@ -231,7 +253,7 @@ describe('Fee calculation', () => {
   it('stores fee_raw = feeRate × vbytes in the sweep record', async () => {
     await bootstrap();
     mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 10, targetBlocks: 6, mode: 'conservative' });
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_feerec01', 0, 500_000)]);
+    insertUtxo('tx_feerec01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -241,7 +263,7 @@ describe('Fee calculation', () => {
   it('falls back to 5 sat/vB when estimateSmartFee throws', async () => {
     await bootstrap();
     mockAdapter.estimateSmartFee.mockRejectedValue(new Error('estimatesmartfee not available'));
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_fallback01', 0, 500_000)]);
+    insertUtxo('tx_fallback01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -255,9 +277,8 @@ describe('Fee calculation', () => {
 describe('Dust threshold guard (output ≤ 546 sats)', () => {
   it('skips when fee consumes enough that output ≤ 546 sats', async () => {
     await bootstrap({ thresholdSats: '100' });
-    // feeRate=5, 1 input → fee = 5×110 = 550; output = 1000 − 550 = 450 ≤ 546
     mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 5, targetBlocks: 6, mode: 'conservative' });
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_dust01', 0, 1_000)]);
+    insertUtxo('tx_dust01', 0, 1_000);
 
     await new SweepWorker().run();
 
@@ -267,9 +288,8 @@ describe('Dust threshold guard (output ≤ 546 sats)', () => {
 
   it('proceeds when output after fee is above 546 sats', async () => {
     await bootstrap({ thresholdSats: '100' });
-    // feeRate=1, 1 input → fee = 110; output = 1000 − 110 = 890 > 546
     mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 1, targetBlocks: 6, mode: 'conservative' });
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_nodust01', 0, 1_000)]);
+    insertUtxo('tx_nodust01', 0, 1_000);
 
     await new SweepWorker().run();
 
@@ -282,7 +302,7 @@ describe('Dust threshold guard (output ≤ 546 sats)', () => {
 describe('Pre-condition checks', () => {
   it('skips when totalSats < threshold', async () => {
     await bootstrap({ thresholdSats: '500000' });
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_below01', 0, 100_000)]);
+    insertUtxo('tx_below01', 0, 100_000);
 
     await new SweepWorker().run();
 
@@ -290,9 +310,9 @@ describe('Pre-condition checks', () => {
     expect(sweepCount()).toBe(0);
   });
 
-  it('skips when there are no deposit UTXOs', async () => {
+  it('skips when there are no deposit UTXOs in cached_utxos', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([]);
+    // No insertUtxo — cached_utxos is empty
 
     await new SweepWorker().run();
 
@@ -313,7 +333,7 @@ describe('Pre-condition checks', () => {
               '[]', ?, '500000', '550', 'fake==', ?, ?)
     `).run(TENANT_ID, hotAddress, now, now);
 
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_dup01', 0, 500_000)]);
+    insertUtxo('tx_dup01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -341,7 +361,7 @@ describe('Pre-condition checks', () => {
 describe('Sweep record creation', () => {
   it('creates a sweep with status pending_signature', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_record01', 0, 500_000)]);
+    insertUtxo('tx_record01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -354,7 +374,7 @@ describe('Sweep record creation', () => {
 
   it('stores to_address = the tenant hot wallet address', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_toaddr01', 0, 500_000)]);
+    insertUtxo('tx_toaddr01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -363,7 +383,7 @@ describe('Sweep record creation', () => {
 
   it('stores the PSBT returned by createUnsignedPsbt', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_psbt01', 0, 500_000)]);
+    insertUtxo('tx_psbt01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -372,7 +392,7 @@ describe('Sweep record creation', () => {
 
   it('stores amount_raw = total UTXO input sats (before fee deduction)', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_amt01', 0, 500_000)]);
+    insertUtxo('tx_amt01', 0, 500_000);
 
     await new SweepWorker().run();
 
@@ -381,7 +401,7 @@ describe('Sweep record creation', () => {
 
   it('is idempotent: second run skips because sweep is already pending_signature', async () => {
     await bootstrap();
-    mockAdapter.getUtxosForAddress.mockResolvedValue([makeUtxo('tx_idem01', 0, 500_000)]);
+    insertUtxo('tx_idem01', 0, 500_000);
 
     const worker = new SweepWorker();
     await worker.run();

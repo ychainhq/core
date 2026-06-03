@@ -52,7 +52,9 @@ function runMigrationsSqlite(): void {
     }
 
     logger.info('Applying migration', { version });
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+    const rawSql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+    // Strip PG_ONLY lines — they contain PostgreSQL-specific statements not valid in SQLite
+    const sql = rawSql.replace(/^-- PG_ONLY:.*$/gm, '').trim();
 
     try {
       db.exec(sql);
@@ -93,6 +95,9 @@ function runMigrationsSqlite(): void {
  */
 function translateSqliteToPostgres(sql: string): string {
   let result = sql;
+
+  // 0. Unwrap PG_ONLY: lines — PostgreSQL executes them, SQLite strips them.
+  result = result.replace(/^-- PG_ONLY: /gm, '');
 
   // 1. datetime('now') → NOW()
   result = result.replace(/datetime\('now'\)/gi, 'NOW()');

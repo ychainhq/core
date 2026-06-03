@@ -1,0 +1,7 @@
+-- Migration 027: Fix ticklers.occurred_at overflow on PostgreSQL
+--
+-- occurred_at INTEGER stores Unix ms timestamps (~1.78×10¹² in 2026).
+-- PostgreSQL INTEGER is 32-bit (max 2,147,483,647) — value out of range.
+-- SQLite INTEGER is flexible up to 8 bytes — no issue.
+--
+-- PG_ONLY: ALTER TABLE ticklers ALTER COLUMN occurred_at TYPE BIGINT;

@@ -1,5 +1,10 @@
 import crypto from 'crypto';
 import { getDbClient } from '../../db/client';
+
+// Monotonically increasing counter used as ledger entry ID prefix.
+// Starts at current millisecond × 1000 so IDs sort correctly relative to
+// entries created before/after a process restart (assuming wall clock advances).
+let _ledgerSeq = Date.now() * 1000;
 import { NotFoundError } from '../../shared/errors/index';
 import { addSatoshi } from '../../shared/money/index';
 import { toUnixTs } from '../../shared/time/index';
@@ -137,7 +142,7 @@ export const ledgerService = {
   async getBalance(accountId: string): Promise<LedgerBalance> {
     const db = getDbClient();
     const latestEntry = await db.get<LedgerEntry>(
-      'SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1',
+      'SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY id DESC LIMIT 1',
       [accountId]
     );
 
@@ -165,7 +170,7 @@ export const ledgerService = {
       query += ' AND id < ?';
       params.push(opts.cursor);
     }
-    query += ' ORDER BY created_at DESC, id DESC LIMIT ?';
+    query += ' ORDER BY id DESC LIMIT ?';
     params.push(limit + 1);
 
     const rows = await db.all(query, params);
@@ -216,7 +221,9 @@ export const ledgerService = {
       }
     }
 
-    const id = `lent_${crypto.randomBytes(8).toString('hex')}`;
+    // Monotonically increasing ID — ORDER BY id DESC gives strict insertion order
+    // in both SQLite and PostgreSQL, even for entries created in the same millisecond.
+    const id = `lent_${(++_ledgerSeq).toString(16).padStart(16, '0')}`;
     const now = new Date().toISOString();
 
     await db.run(
