@@ -1,0 +1,28 @@
+-- Migration 028: ledger_entries.created_at TEXT -> INTEGER (SQLite) / BIGINT (PostgreSQL)
+--
+-- Problem: storing large ms counters in a TEXT column causes SQLite to use scientific
+-- notation ("1.780...e+15"), making consecutive values identical strings and causing
+-- ORDER BY created_at DESC to return a random (wrong) entry => incorrect running balances.
+--
+-- Fix: INTEGER (SQLite 8-byte exact) / BIGINT (PostgreSQL) stores the counter
+-- precisely and sorts numerically. ORDER BY created_at DESC is correct in both engines.
+--
+-- Lines marked [SQLITE] run only on SQLite; [PG] run only on PostgreSQL.
+
+-- [SQLITE] Disable FK checks during table recreation
+-- SQLITE_ONLY: PRAGMA foreign_keys = OFF;
+-- SQLITE_ONLY: DROP TABLE IF EXISTS ledger_entries_new;
+-- SQLITE_ONLY: CREATE TABLE ledger_entries_new (id TEXT PRIMARY KEY, ledger_account_id TEXT NOT NULL REFERENCES ledger_accounts(id), tenant_id TEXT REFERENCES tenants(id), type TEXT NOT NULL, amount_raw TEXT NOT NULL, reference_type TEXT, reference_id TEXT, balance_pending_raw TEXT NOT NULL, balance_settled_raw TEXT NOT NULL, metadata TEXT, created_at INTEGER NOT NULL);
+-- SQLITE_ONLY: INSERT OR IGNORE INTO ledger_entries_new SELECT id, ledger_account_id, tenant_id, type, amount_raw, reference_type, reference_id, balance_pending_raw, balance_settled_raw, metadata, CAST(CAST(strftime('%s', created_at) AS INTEGER) * 1000 AS INTEGER) FROM ledger_entries;
+-- SQLITE_ONLY: DROP TABLE ledger_entries;
+-- SQLITE_ONLY: ALTER TABLE ledger_entries_new RENAME TO ledger_entries;
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_ledger_entries_account ON ledger_entries(ledger_account_id, created_at DESC);
+-- SQLITE_ONLY: PRAGMA foreign_keys = ON;
+
+-- [PG] In-place column type change
+-- PG_ONLY: ALTER TABLE ledger_entries ADD COLUMN created_at_ms BIGINT;
+-- PG_ONLY: UPDATE ledger_entries SET created_at_ms = EXTRACT(EPOCH FROM created_at::TIMESTAMPTZ)::BIGINT * 1000;
+-- PG_ONLY: ALTER TABLE ledger_entries DROP COLUMN created_at;
+-- PG_ONLY: ALTER TABLE ledger_entries RENAME COLUMN created_at_ms TO created_at;
+-- PG_ONLY: ALTER TABLE ledger_entries ALTER COLUMN created_at SET NOT NULL;
+-- PG_ONLY: CREATE INDEX IF NOT EXISTS idx_ledger_entries_account ON ledger_entries(ledger_account_id, created_at DESC);

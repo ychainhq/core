@@ -1,14 +1,16 @@
 import crypto from 'crypto';
 import { getDbClient } from '../../db/client';
-
-// Monotonically increasing counter used as ledger entry ID prefix.
-// Starts at current millisecond × 1000 so IDs sort correctly relative to
-// entries created before/after a process restart (assuming wall clock advances).
-let _ledgerSeq = Date.now() * 1000;
 import { NotFoundError } from '../../shared/errors/index';
 import { addSatoshi } from '../../shared/money/index';
 import { toUnixTs } from '../../shared/time/index';
 import { ticklerService } from '../../shared/tickler/tickler.service';
+
+// Monotonically increasing counter for ledger entry created_at (ms precision).
+// Using a counter instead of Date.now() alone guarantees uniqueness even when
+// two entries are created within the same millisecond (common in tests).
+// Starts at Date.now() * 1000 (μs from epoch) so values sort correctly across
+// process restarts as long as the system clock advances.
+let _ledgerSeq = Date.now() * 1000;
 
 export interface LedgerAccount {
   id: string;
@@ -142,7 +144,7 @@ export const ledgerService = {
   async getBalance(accountId: string): Promise<LedgerBalance> {
     const db = getDbClient();
     const latestEntry = await db.get<LedgerEntry>(
-      'SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY id DESC LIMIT 1',
+      'SELECT * FROM ledger_entries WHERE ledger_account_id = ? ORDER BY created_at DESC LIMIT 1',
       [accountId]
     );
 
@@ -167,10 +169,10 @@ export const ledgerService = {
     const params: unknown[] = [accountId];
 
     if (opts.cursor) {
-      query += ' AND id < ?';
-      params.push(opts.cursor);
+      query += ' AND created_at < ?';
+      params.push(Number(opts.cursor));
     }
-    query += ' ORDER BY id DESC LIMIT ?';
+    query += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit + 1);
 
     const rows = await db.all(query, params);
@@ -179,7 +181,7 @@ export const ledgerService = {
 
     return {
       data: items.map(mapEntry),
-      nextCursor: hasMore ? (items[items.length - 1] as any).id : null,
+      nextCursor: hasMore ? String((items[items.length - 1] as any).created_at) : null,
     };
   },
 
@@ -221,10 +223,9 @@ export const ledgerService = {
       }
     }
 
-    // Monotonically increasing ID — ORDER BY id DESC gives strict insertion order
-    // in both SQLite and PostgreSQL, even for entries created in the same millisecond.
-    const id = `lent_${(++_ledgerSeq).toString(16).padStart(16, '0')}`;
-    const now = new Date().toISOString();
+    const id = `lent_${crypto.randomBytes(8).toString('hex')}`;
+    // Monotonic ms counter — ORDER BY created_at DESC is stable even for same-millisecond entries.
+    const now = ++_ledgerSeq;
 
     await db.run(
       `INSERT INTO ledger_entries

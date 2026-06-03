@@ -329,7 +329,7 @@ export const customersService = {
 
     for (const acc of accounts) {
       const latest = await db.get<{ balance_pending_raw: string; balance_settled_raw: string }>(
-        'SELECT balance_pending_raw, balance_settled_raw FROM ledger_entries WHERE ledger_account_id = ? ORDER BY id DESC LIMIT 1',
+        'SELECT balance_pending_raw, balance_settled_raw FROM ledger_entries WHERE ledger_account_id = ? ORDER BY created_at DESC LIMIT 1',
         [acc.id]
       );
 
