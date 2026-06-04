@@ -1563,10 +1563,15 @@ Bitcoin Core node
        │ getblock(height, verbosity=2)
        ▼
 BtcIndexer (pętla co 5s)
-  ├── BlockScanner    — dla każdego bloku: match tx.vout.address IN addresses
-  ├── MempoolScanner  — dla nowych txów w mempoolu: to samo matching
-  └── AddressRegistry — in-memory Set adresów z SQLite, reload co 60s
-       │ INSERT chain_events ON CONFLICT DO NOTHING
+  ├── BlockScanner    — dla każdego bloku:
+  │     1. zbierz unikalne adresy outputów + pary (txid,vout) inputów
+  │     2. jeden bulk query: WHERE address = ANY(candidates) → watched set
+  │     3. jeden bulk query: WHERE (tx_hash,vout) IN inputs → utxo set
+  │     → brak cache, zawsze świeże dane z DB
+  └── MempoolScanner  — dla nowych txów w mempoolu:
+        1. pobierz wszystkie nowe TXy równolegle
+        2. jeden bulk query dla wszystkich adresów z batcha
+       │ INSERT chain_events ON CONFLICT DO UPDATE
        ▼
 chain_events tabela (SQLite/PostgreSQL)
        │ SELECT WHERE processed=0
