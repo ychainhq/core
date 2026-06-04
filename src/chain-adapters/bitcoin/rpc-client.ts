@@ -137,38 +137,6 @@ export class BitcoinRpcClient {
     return this.call<string[]>('getrawmempool');
   }
 
-  // ---- Wallet management ----
-
-  /**
-   * Create a watch-only wallet for a tenant.
-   * disablePrivateKeys=true means no private keys are stored in this wallet.
-   */
-  async createWatchOnlyWallet(walletName: string): Promise<void> {
-    await this.call('createwallet', [
-      walletName,
-      true,  // disablePrivateKeys
-      false, // blank
-      '',    // passphrase
-      false, // avoidReuse
-      true,  // descriptors — required for importdescriptors + timestamp support
-      false, // loadOnStartup (managed manually)
-    ]);
-  }
-
-  /**
-   * Load an existing wallet by name.
-   */
-  async loadWallet(walletName: string): Promise<void> {
-    await this.call('loadwallet', [walletName]);
-  }
-
-  /**
-   * List currently loaded wallets.
-   */
-  async listWallets(): Promise<string[]> {
-    return this.call<string[]>('listwallets');
-  }
-
   // ---- Address/wallet operations ----
 
   async scanTxOutSet(descriptor: string): Promise<any> {
@@ -186,10 +154,6 @@ export class BitcoinRpcClient {
     walletName?: string,
   ): Promise<any[]> {
     return this.call<any[]>('listunspent', [minConf, maxConf, addresses], walletName);
-  }
-
-  async importAddress(address: string, label = '', rescan = false, walletName?: string): Promise<void> {
-    await this.call('importaddress', [address, label, rescan], walletName);
   }
 
   async getDescriptorInfo(desc: string): Promise<{ descriptor: string; checksum: string }> {

@@ -138,47 +138,26 @@ async function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOp
   }
 }
 
-// v3: Bitcoin Core is stateless — no FWallet import needed.
-// btc-indexer handles deposit detection by scanning blocks directly.
-async function importTreasuryAddress(_tenantId: string, _opts: TreasuryWalletOptions): Promise<void> {
-  // no-op: FWallet imports removed in v3
-}
-
 export const tenantsService = {
   /**
-   * Provision FWallet + LWallets for all enabled assets.
+   * Provision LWallets for all enabled assets.
    * Call after create() completes. Idempotent per-step.
-   * BTC is always provisioned in MVP regardless of the assets array.
+   * BTC is always provisioned regardless of the assets array.
    */
   async provision(tenantId: string, assets: AssetConfig[]): Promise<void> {
     const btcAsset = assets.find((a): a is BtcAssetConfig => a.chain === 'bitcoin');
     if (!btcAsset) throw new ValidationError('BTC asset config with hotAddress is required');
 
-    // BTC: provision FWallet first (addresses are imported into it below)
-    await tenantsService.provisionBitcoinWallet(tenantId);
     await tenantsService.provisionBtcLWallets(tenantId, btcAsset);
 
-    // Store xpub in config if provided at onboarding time
     if (btcAsset.xpub) {
       await tenantsService.updateConfig(tenantId, { btcXpub: btcAsset.xpub });
     }
-
-    // Future: for ETH — no FWallet, only LWallets
   },
 
   /**
-   * v3: No-op. Bitcoin Core nodes are stateless — no FWallet management.
-   * btc-indexer handles deposit detection by scanning blocks directly.
-   * Kept for backward compatibility with existing provisioning flow.
-   */
-  async provisionBitcoinWallet(_tenantId: string): Promise<void> {
-    // no-op: FWallet provisioning removed in v3
-  },
-
-  /**
-   * Find-or-create a treasury wallet (tenant_hot or tenant_cold), set the given address
-   * as the active address, and import it into the Bitcoin Core FWallet.
-   * Idempotent: re-activates the address if it is already in the wallet.
+   * Find-or-create a treasury wallet (tenant_hot or tenant_cold) and set the given address
+   * as the active address. Idempotent: re-activates the address if already present.
    * Supersedes any previously active addresses in the wallet (status → 'replaced').
    */
   async upsertTreasuryWallet(
@@ -191,13 +170,12 @@ export const tenantsService = {
     }
 
     await upsertTreasuryWalletRows(tenantId, opts);
-    await importTreasuryAddress(tenantId, opts);
   },
 
   /**
    * Provision LWallets in the chain-api DB for the BTC chain.
    * Always creates customer_deposits. Creates tenant_hot / tenant_cold when
-   * the respective address is provided, and imports them into the FWallet.
+   * the respective address is provided.
    */
   async provisionBtcLWallets(tenantId: string, asset: BtcAssetConfig): Promise<void> {
     const adapter = new BitcoinAdapter();
@@ -253,7 +231,7 @@ export const tenantsService = {
     if (hotWalletOpts) await upsertTreasuryWalletRows(tenantId, hotWalletOpts);
     if (coldWalletOpts) await upsertTreasuryWalletRows(tenantId, coldWalletOpts);
 
-    // Tenant-level operational accounts (not linked to specific wallets)
+    // Tenant-level operational accounts
     await ledgerService.createAccount(tenantId, {
       chainId,
       assetId,
@@ -267,8 +245,6 @@ export const tenantsService = {
       name: 'Network Fee Expense (BTC)',
     });
 
-    if (hotWalletOpts) await importTreasuryAddress(tenantId, hotWalletOpts);
-    if (coldWalletOpts) await importTreasuryAddress(tenantId, coldWalletOpts);
   },
 
   async create(input: { name: string; metadata?: Record<string, unknown> }): Promise<TenantWithConfig> {

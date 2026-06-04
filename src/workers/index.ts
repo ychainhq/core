@@ -1,4 +1,3 @@
-import { DepositMonitorWorker } from './deposit-monitor.worker';
 import { DepositEventProcessorWorker } from './deposit-event-processor.worker';
 import { TxStatusWorker } from './tx-status.worker';
 import { WebhookDeliveryWorker } from './webhook-delivery.worker';
@@ -6,14 +5,12 @@ import { SweepWorker } from './sweep.worker';
 import { SweepConfirmationWorker } from './sweep-confirmation.worker';
 import { WithdrawalBatcherWorker } from './withdrawal-batcher.worker';
 import { SigningTaskExpiryWorker } from './signing-task-expiry.worker';
-import { WalCheckpointWorker } from './wal-checkpoint.worker';
 import { RetentionWorker } from './retention.worker';
 import { NodeHealthCheckerWorker } from './node-health-checker.worker';
 import { ClusterHeartbeatWorker } from './cluster-heartbeat.worker';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 
-const depositMonitor = new DepositMonitorWorker();
 const depositEventProcessor = new DepositEventProcessorWorker();
 const txStatus = new TxStatusWorker();
 const webhookDelivery = new WebhookDeliveryWorker();
@@ -21,7 +18,6 @@ const sweepWorker = new SweepWorker();
 const sweepConfirmation = new SweepConfirmationWorker();
 const withdrawalBatcher = new WithdrawalBatcherWorker();
 const signingTaskExpiry = new SigningTaskExpiryWorker();
-const walCheckpoint = new WalCheckpointWorker();
 const retention = new RetentionWorker();
 const nodeHealthChecker = new NodeHealthCheckerWorker();
 const clusterHeartbeat = new ClusterHeartbeatWorker();
@@ -33,25 +29,13 @@ export function startWorkers(): void {
   }
 
   logger.info('Starting background workers...');
-
-  // DepositMonitorWorker: legacy FWallet-based polling (SQLite/single-node mode).
-  // Disabled when LEGACY_DEPOSIT_MONITOR_ENABLED=false (v3 PostgreSQL mode)
-  // because btc-indexer writes to chain_events and DepositEventProcessor handles them.
-  if (config.LEGACY_DEPOSIT_MONITOR_ENABLED) {
-    depositMonitor.start();
-    logger.info('DepositMonitorWorker started (legacy FWallet mode)');
-  } else {
-    logger.info('DepositMonitorWorker skipped (v3 mode — using btc-indexer + DepositEventProcessor)');
-  }
   depositEventProcessor.start();
-
   txStatus.start();
   webhookDelivery.start();
   sweepWorker.start();
   sweepConfirmation.start();
   withdrawalBatcher.start();
   signingTaskExpiry.start();
-  walCheckpoint.start();
   retention.start();
   nodeHealthChecker.start();
   clusterHeartbeat.start();
@@ -60,7 +44,6 @@ export function startWorkers(): void {
 
 export function stopWorkers(): void {
   logger.info('Stopping background workers...');
-  depositMonitor.stop();
   depositEventProcessor.stop();
   txStatus.stop();
   webhookDelivery.stop();
@@ -68,7 +51,6 @@ export function stopWorkers(): void {
   sweepConfirmation.stop();
   withdrawalBatcher.stop();
   signingTaskExpiry.stop();
-  walCheckpoint.stop();
   retention.stop();
   nodeHealthChecker.stop();
   clusterHeartbeat.stop();

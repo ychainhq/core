@@ -8,7 +8,6 @@ import {
   Utxo,
   FeeEstimate,
   MempoolAcceptResult,
-  BatchImportEntry,
 } from '../types';
 import { validateBitcoinAddress } from '../../shared/validation/bitcoin';
 import { config } from '../../config/index';
@@ -35,34 +34,6 @@ export class BitcoinAdapter implements IChainAdapter {
   constructor() {
     this.rpc = new BitcoinRpcClient();
     this.network = config.BITCOIN_NETWORK;
-  }
-
-  /**
-   * Provision a watch-only Bitcoin Core wallet for a tenant.
-   * Called once when a tenant is created. Idempotent: loads existing wallet if already present.
-   */
-  async provisionTenantWallet(tenantId: string): Promise<void> {
-    const walletName = btcWalletName(tenantId);
-    try {
-      await this.rpc.createWatchOnlyWallet(walletName);
-      logger.info('Bitcoin Core watch-only wallet created', { tenantId, walletName });
-    } catch (err: any) {
-      // -4 = wallet already exists on disk; load it instead
-      if (err?.message?.includes('-4') || err?.message?.includes('already exists')) {
-        try {
-          await this.rpc.loadWallet(walletName);
-          logger.info('Bitcoin Core wallet loaded (already existed)', { tenantId, walletName });
-        } catch (loadErr: any) {
-          // -35 = wallet already loaded — that's fine
-          if (!loadErr?.message?.includes('-35') && !loadErr?.message?.includes('already loaded')) {
-            throw loadErr;
-          }
-          logger.debug('Bitcoin Core wallet already loaded', { tenantId, walletName });
-        }
-      } else {
-        throw err;
-      }
-    }
   }
 
   async getBlockchainInfo(): Promise<BlockchainInfo> {
@@ -194,39 +165,6 @@ export class BitcoinAdapter implements IChainAdapter {
   }
 
   /**
-   * Get all UTXOs known to a tenant's watch-only wallet.
-   * This is the high-throughput path for workers: one RPC per tenant instead
-   * of one RPC per watched address.
-   */
-  async getWalletUtxos(tenantId: string, minConfirmations = 0): Promise<Utxo[]> {
-    const walletName = btcWalletName(tenantId);
-    const unspent = await this.rpc.listUnspent(minConfirmations, 9999999, [], walletName);
-    return unspent.map((u: any) => ({
-      txHash: u.txid,
-      vout: u.vout,
-      address: u.address,
-      amount: btcFloatToSatoshi(u.amount),
-      scriptPubKey: u.scriptPubKey,
-      confirmations: u.confirmations,
-      height: u.height ?? null,
-    }));
-  }
-
-  /**
-   * Import a new address into the tenant's watch-only wallet.
-   * timestamp='now' means no historical rescan — BTC Core tracks from current block forward.
-   * Use this when the address is freshly derived and cannot have prior history.
-   */
-  async importAddressForTenant(address: string, tenantId: string, label = ''): Promise<void> {
-    const walletName = btcWalletName(tenantId);
-    await this.rpc.importDescriptors(
-      [{ desc: `addr(${address})`, timestamp: 'now', label }],
-      walletName
-    );
-    logger.info('Address imported into tenant wallet', { tenantId, walletName, address });
-  }
-
-  /**
    * Import a P2WPKH treasury address using wpkh(<pubkey>) descriptor so that
    * Bitcoin Core marks it as solvable. Required for walletcreatefundedpsbt with
    * pre-selected inputs (used by the withdrawal batcher).
@@ -238,43 +176,6 @@ export class BitcoinAdapter implements IChainAdapter {
       walletName
     );
     logger.info('Solvable address imported into tenant wallet', { tenantId, walletName, label });
-  }
-
-  /**
-   * Import an existing address with a specific scan start timestamp (Unix seconds).
-   * BTC Core rescans blocks from that time forward — used on startup reconciliation
-   * to recover addresses after a wallet reset.
-   */
-  async importAddressWithTimestamp(address: string, tenantId: string, label: string, timestampSec: number): Promise<void> {
-    const walletName = btcWalletName(tenantId);
-    await this.rpc.importDescriptors(
-      [{ desc: `addr(${address})`, timestamp: timestampSec, label }],
-      walletName
-    );
-    logger.info('Address reimported with timestamp', { tenantId, walletName, address, timestampSec });
-  }
-
-  /**
-   * Batch-import up to `chunkSize` addresses per importDescriptors call.
-   * Reduces round-trips to Bitcoin Core compared to one-by-one import.
-   */
-  async batchImportAddresses(entries: BatchImportEntry[], tenantId: string, chunkSize = 100): Promise<void> {
-    const walletName = btcWalletName(tenantId);
-    for (let i = 0; i < entries.length; i += chunkSize) {
-      const chunk = entries.slice(i, i + chunkSize);
-      const descriptors = chunk.map((e) => ({
-        desc: `addr(${e.address})`,
-        timestamp: e.timestampSec,
-        label: e.label,
-      }));
-      await this.rpc.importDescriptors(descriptors, walletName);
-      logger.info('Batch imported addresses into tenant wallet', {
-        tenantId,
-        walletName,
-        count: chunk.length,
-        offset: i,
-      });
-    }
   }
 
   async estimateSmartFee(targetBlocks: number): Promise<FeeEstimate> {

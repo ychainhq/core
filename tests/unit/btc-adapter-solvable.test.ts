@@ -78,38 +78,3 @@ describe('BitcoinAdapter.importSolvableAddressForTenant — wpkh descriptor', ()
   });
 });
 
-describe('BitcoinAdapter.importAddressForTenant — still uses addr() for non-treasury', () => {
-  let adapter: BitcoinAdapter;
-  let mockImportDescriptors: jest.Mock;
-
-  beforeEach(() => {
-    mockImportDescriptors = jest.fn().mockResolvedValue(undefined);
-
-    MockedRpcClient.mockImplementation(() => ({
-      importDescriptors: mockImportDescriptors,
-      getDescriptorInfo: jest.fn().mockImplementation(async (desc: string) => ({
-        descriptor: `${desc}#fakechecksum`,
-        checksum: 'fakechecksum',
-      })),
-      loadOrCreateWallet: jest.fn().mockResolvedValue(undefined),
-      call: jest.fn().mockResolvedValue(undefined),
-    } as any));
-
-    adapter = new BitcoinAdapter();
-  });
-
-  afterEach(() => {
-    jest.clearAllMocks();
-  });
-
-  test('importAddressForTenant uses addr() descriptor (for customer deposit addresses)', async () => {
-    await adapter.importAddressForTenant(
-      'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq',
-      'tenant_default',
-      'customer_deposit'
-    );
-
-    const [descriptors] = mockImportDescriptors.mock.calls[0] as [Array<{ desc: string }>];
-    expect(descriptors[0]!.desc).toMatch(/^addr\(/);
-  });
-});

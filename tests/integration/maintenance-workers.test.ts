@@ -8,7 +8,6 @@ import request from 'supertest';
 import { bootstrapApp, AUTH, teardownDb } from './helpers';
 import { getDb } from '../../src/db/sqlite';
 import { WebhookDeliveryWorker } from '../../src/workers/webhook-delivery.worker';
-import { WalCheckpointWorker } from '../../src/workers/wal-checkpoint.worker';
 import { RetentionWorker } from '../../src/workers/retention.worker';
 
 const app = bootstrapApp();
@@ -151,30 +150,6 @@ describe('WebhookDeliveryWorker auto-pause', () => {
     };
     expect(wh.consecutive_failures).toBe(0);
     expect(wh.auto_paused_at).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// WAL checkpoint worker
-// ---------------------------------------------------------------------------
-
-describe('WalCheckpointWorker', () => {
-  it('runs PRAGMA wal_checkpoint without throwing', () => {
-    const worker = new WalCheckpointWorker();
-    expect(() => worker.run()).not.toThrow();
-  });
-
-  it('starts and stops without error', () => {
-    const worker = new WalCheckpointWorker();
-    expect(() => worker.start()).not.toThrow();
-    expect(() => worker.stop()).not.toThrow();
-  });
-
-  it('is idempotent — double start does not create two intervals', () => {
-    const worker = new WalCheckpointWorker();
-    worker.start();
-    worker.start(); // should be a no-op
-    worker.stop();
   });
 });
 

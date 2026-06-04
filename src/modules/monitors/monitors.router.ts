@@ -1,8 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { monitorsService } from './monitors.service';
-import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
-import { logger } from '../../shared/logging/index';
 import { ticklerService } from '../../shared/tickler/tickler.service';
 import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
@@ -35,16 +33,6 @@ monitorsRouter.post('/addresses', async (req: Request, res: Response, next: Next
     const tenantId = (req as any).tenantId as string;
     const body = addSchema.parse(req.body);
     const monitor = await monitorsService.add(tenantId, body);
-
-    // Import into tenant's Bitcoin Core watch-only wallet so listunspent can detect UTXOs
-    if (body.chain === 'bitcoin') {
-      try {
-        const adapter = new BitcoinAdapter();
-        await adapter.importAddressForTenant(body.address, tenantId, body.label ?? '');
-      } catch (err) {
-        logger.warn('Failed to import address into Bitcoin Core wallet', { tenantId, address: body.address, err });
-      }
-    }
 
     ticklerService.record({
       tenantId,

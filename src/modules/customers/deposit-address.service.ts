@@ -3,7 +3,6 @@ import * as ecc from 'tiny-secp256k1';
 import BIP32Factory from 'bip32';
 import { getDbClient } from '../../db/client';
 import { ValidationError, NotFoundError } from '../../shared/errors/index';
-import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
 import { config } from '../../config/index';
 import { logger } from '../../shared/logging/index';
 
@@ -46,8 +45,7 @@ export const depositAddressService = {
   /**
    * Derive the next deposit address for a customer using the tenant's xpub.
    * Atomically increments the derivation index in tenant_configs.
-   * Registers the address in the customer_deposits LWallet and imports it
-   * into Bitcoin Core FWallet (non-fatal on failure).
+   * Registers the address in the customer_deposits LWallet and watched_addresses.
    *
    * Derivation path: m/0/{index} (external chain of account-level xpub)
    */
@@ -156,14 +154,6 @@ export const depositAddressService = {
       );
     } catch (err) {
       logger.warn('Failed to add address to watched_addresses (non-fatal)', { address, tenantId, err });
-    }
-
-    // Import into Bitcoin Core FWallet (non-fatal)
-    try {
-      const adapter = new BitcoinAdapter();
-      await adapter.importAddressForTenant(address, tenantId, 'customer_deposit');
-    } catch (err) {
-      logger.warn('Failed to import deposit address into BTC Core FWallet (non-fatal)', { address, tenantId, err });
     }
 
     return {
