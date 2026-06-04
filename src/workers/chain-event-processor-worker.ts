@@ -90,7 +90,7 @@ export class ChainEventProcessorWorker {
 
     const ctx = await this.resolveAddressContext(event.address, event.chain_id);
     if (!ctx) {
-      logger.debug('chain_event: address not found in engine DB, skipping', {
+      logger.warn('chain_event: address not found in engine DB, skipping', {
         address: event.address, txHash: event.tx_hash,
       });
       return;
