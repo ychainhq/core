@@ -1,5 +1,5 @@
 /**
- * DepositEventProcessorWorker unit tests.
+ * ChainEventProcessorWorker unit tests.
  *
  * Deposit lifecycle: detected (conf < N) → confirmed (conf ≥ N, exactly once).
  * N = tenant_configs.btc_confirmations_required (per-tenant).
@@ -53,7 +53,7 @@ jest.mock('../../src/modules/tenants/tenants.service', () => ({
   tenantsService: { getConfirmationsRequired: jest.fn() },
 }));
 
-import { DepositEventProcessorWorker } from '../../src/workers/deposit-event-processor.worker';
+import { ChainEventProcessorWorker } from '../../src/workers/deposit-event-processor.worker';
 import { chainEventsService } from '../../src/modules/chain-events/chain-events.service';
 import { depositsService } from '../../src/modules/deposits/deposits.service';
 import { addressesService } from '../../src/modules/addresses/addresses.service';
@@ -136,11 +136,11 @@ beforeEach(() => {
 
 // ─── Confirmation lifecycle ───────────────────────────────────────────────────
 
-describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
+describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
 
   test('conf=0 → upsert with status=detected', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ confirmations: 0, status: 'detected' })
@@ -149,7 +149,7 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
 
   test('conf=1 (≥ required=1) → upsert with status=confirmed', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ confirmations: 1, status: 'confirmed' })
@@ -158,7 +158,7 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
 
   test('conf=100 → upsert with status=confirmed (no finalized state)', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(100)]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'confirmed' })
@@ -167,14 +167,14 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
 
   test('marks chain_events as processed', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(chainEventsService.markProcessed).toHaveBeenCalledWith(['cevt_test']);
   });
 
   test('calls upsertFromDeposit on utxo-lock service', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(utxoLockService.upsertFromDeposit).toHaveBeenCalledWith(
       expect.objectContaining({ txHash: 'abc123', vout: 0, confirmations: 0 })
@@ -183,7 +183,7 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
 
   test('creates pending ledger entry for new deposit (conf=0)', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
       expect.objectContaining({ entryType: 'deposit_pending' })
@@ -196,7 +196,7 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
       expect.objectContaining({ entryType: 'deposit_settled' })
@@ -205,7 +205,7 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
 
   test('does nothing when no unprocessed events exist', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).not.toHaveBeenCalled();
   });
@@ -214,7 +214,7 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([
       makeChainEvent(0, { address: null, amount_raw: null }),
     ]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).not.toHaveBeenCalled();
   });
@@ -223,7 +223,7 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([
       makeChainEvent(1, { event_type: 'utxo_spent', spent_tx_hash: 'abc123', spent_vout: 0, address: null, amount_raw: null }),
     ]);
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(utxoLockService.markSpentByUtxo).toHaveBeenCalledWith('bitcoin', 'abc123', 0);
     expect(depositsService.upsert).not.toHaveBeenCalled();
@@ -232,13 +232,13 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
 
 // ─── isNew tickler semantics ──────────────────────────────────────────────────
 
-describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
+describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
 
   test('new deposit (isNew=true, conf=0) fires detected tickler', async () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
 
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     const detected = (ticklerService.record as jest.Mock).mock.calls.filter(
       (c: unknown[]) => (c[0] as any).subcategory === 'detected'
@@ -252,7 +252,7 @@ describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     const detected = (ticklerService.record as jest.Mock).mock.calls.filter(
       (c: unknown[]) => (c[0] as any).subcategory === 'detected'
@@ -264,7 +264,7 @@ describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
     (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
 
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     const subcategories = (ticklerService.record as jest.Mock).mock.calls.map(
       (c: unknown[]) => (c[0] as any).subcategory
@@ -279,7 +279,7 @@ describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: true, previousStatus: null });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     const subcategories = (ticklerService.record as jest.Mock).mock.calls.map(
       (c: unknown[]) => (c[0] as any).subcategory
@@ -294,7 +294,7 @@ describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'confirmed' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     expect(ticklerService.record).not.toHaveBeenCalled();
   });
@@ -305,7 +305,7 @@ describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
-    await new DepositEventProcessorWorker().run();
+    await new ChainEventProcessorWorker().run();
 
     const subcategories = (ticklerService.record as jest.Mock).mock.calls.map(
       (c: unknown[]) => (c[0] as any).subcategory

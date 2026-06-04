@@ -229,7 +229,7 @@ export class SweepWorker {
       return;
     }
 
-    // v3: read UTXOs from cached_utxos (populated by DepositEventProcessorWorker via
+    // v3: read UTXOs from cached_utxos (populated by ChainEventProcessorWorker via
     // btc-indexer chain_events). Do NOT call listunspent — Bitcoin Core is stateless in v3.
     const utxoRows = await db.all<{ address: string; tx_hash: string; vout: number; amount_raw: string }>(`
       SELECT address, tx_hash, vout, amount_raw

@@ -552,8 +552,10 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 ### Zasady v3 — chain_events i btc-indexer
 
 - **Engine NIE wywołuje `listunspent`, `importaddress`, `importdescriptors`, `createwallet`, `loadwallet`** w kontekście detekcji depozytów. Te operacje są domeną `btc-indexer`.
-- **`DepositEventProcessorWorker`** pobiera eventy przez `chainEventsService.fetchUnprocessed()` i oznacza je przez `chainEventsService.markProcessed()`. Zero bezpośredniego SQL na `chain_events` w workerze.
-- **`DepositMonitorWorker`** jest przestarzały (deprecated). Działa obok `DepositEventProcessorWorker` w fazie przejściowej; zostanie usunięty po zakończeniu FAZY 2.
+- **`ChainEventProcessorWorker`** pobiera eventy przez `chainEventsService.fetchUnprocessed()` i oznacza je przez `chainEventsService.markProcessed()`. Zero bezpośredniego SQL na `chain_events` w workerze.
+
+
+
 - **Dwa statusy depozytu:** `detected` i `confirmed`. Brak `pending_confirmation` i `finalized`. Próg N pochodzi z `tenant_configs.btc_confirmations_required` (per-tenant), czytany przez `tenantsService.getConfirmationsRequired()`.
 - **Transition gate depozytów:** tickler `detected` emitowany raz — przy `isNew=true` (INSERT depozytu). Tickler `confirmed` raz — przy `previousStatus !== 'confirmed' && status === 'confirmed'`. Re-processing już potwierdzonego depozytu = operacja bezoperacyjna (zero ticklerów, zero efektów).
 - **chain_node credentials**: `rpc_password_ref` w formacie `'env:VAR_NAME'` → engine czyta z `process.env` przy connect. Nigdy nie loguj ani nie zwracaj w API.

@@ -355,7 +355,7 @@ export const ledgerService = {
 
   // Idempotent: creates a deposit ledger entry only if one with the same
   // (ledgerAccountId, entryType, depositId) does not already exist.
-  // Called by DepositEventProcessorWorker for both deposit_pending and deposit_settled.
+  // Called by ChainEventProcessorWorker for both deposit_pending and deposit_settled.
   async ensureDepositEntry(input: {
     ledgerAccountId: string;
     depositId: string;

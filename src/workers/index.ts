@@ -1,4 +1,4 @@
-import { DepositEventProcessorWorker } from './deposit-event-processor.worker';
+import { ChainEventProcessorWorker } from './chain-event-processor-worker';
 import { TxStatusWorker } from './tx-status.worker';
 import { WebhookDeliveryWorker } from './webhook-delivery.worker';
 import { SweepWorker } from './sweep.worker';
@@ -11,7 +11,7 @@ import { ClusterHeartbeatWorker } from './cluster-heartbeat.worker';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 
-const depositEventProcessor = new DepositEventProcessorWorker();
+const chainEventProcessor = new ChainEventProcessorWorker();
 const txStatus = new TxStatusWorker();
 const webhookDelivery = new WebhookDeliveryWorker();
 const sweepWorker = new SweepWorker();
@@ -29,7 +29,7 @@ export function startWorkers(): void {
   }
 
   logger.info('Starting background workers...');
-  depositEventProcessor.start();
+  chainEventProcessor.start();
   txStatus.start();
   webhookDelivery.start();
   sweepWorker.start();
@@ -44,7 +44,7 @@ export function startWorkers(): void {
 
 export function stopWorkers(): void {
   logger.info('Stopping background workers...');
-  depositEventProcessor.stop();
+  chainEventProcessor.stop();
   txStatus.stop();
   webhookDelivery.stop();
   sweepWorker.stop();

@@ -1179,7 +1179,7 @@ Wszystkie endpointy wymagają `Authorization: Bearer <customer-jwt>` (token wyst
 
 v2 przenosi konfigurację z `.env` na poziom tenant:
 
-- `tenant_configs.btc_confirmations_required` — ile bloków potrzeba do uznania depozytu za `confirmed` (domyślnie 1). Czytane przez `DepositEventProcessorWorker` per-tenant.
+- `tenant_configs.btc_confirmations_required` — ile bloków potrzeba do uznania depozytu za `confirmed` (domyślnie 1). Czytane przez `ChainEventProcessorWorker` per-tenant.
 - `tenant_configs.btc_finality_confirmations` — próg nieodwracalności tx (domyślnie 6). Używany przez `SweepConfirmationWorker`; nie wpływa na status depozytu.
 - Payment request może mieć własne `confirmationsRequired` (override per-request).
 
@@ -1581,7 +1581,7 @@ BtcIndexer (pętla co 5s)
 chain_events tabela (SQLite/PostgreSQL)
        │ SELECT WHERE processed=0
        ▼
-DepositEventProcessorWorker (engine)
+ChainEventProcessorWorker (engine)
   — ta sama logika biznesowa co DepositMonitorWorker
   — deposits, cached_utxos, ledger, webhooks, ticklers
 ```
@@ -1619,11 +1619,7 @@ chain_events (
 )
 ```
 
-### 14.6 Transition period (FAZA 1)
 
-`DepositMonitorWorker` (v2) i `DepositEventProcessorWorker` (v3) działają równolegle.
-`deposits.upsert()` jest idempotent (`UNIQUE(chain_id, tx_hash, vout)`), więc brak duplikatów.
-Po wdrożeniu btc-indexer i weryfikacji → `DepositMonitorWorker` usunięty (FAZA 2).
 
 ### 14.7 Rozszerzenie na ETH/TRON
 

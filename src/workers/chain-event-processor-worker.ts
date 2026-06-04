@@ -22,7 +22,7 @@ interface AddressContext {
 }
 
 /**
- * DepositEventProcessorWorker (v3)
+ * ChainEventProcessorWorker (v3)
  *
  * Processes chain_events written by btc-indexer.
  * Replaces DepositMonitorWorker's deposit detection logic.
@@ -34,27 +34,27 @@ interface AddressContext {
  * 3. For each utxo_spent: mark cached_utxo as spent
  * 4. Mark events processed
  */
-export class DepositEventProcessorWorker {
+export class ChainEventProcessorWorker {
   private interval: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
   start(): void {
     if (this.interval) return;
-    logger.info('DepositEventProcessorWorker started', { intervalMs: INTERVAL_MS });
+    logger.info('ChainEventProcessorWorker started', { intervalMs: INTERVAL_MS });
     this.interval = setInterval(async () => {
       if (this.running) return;
       this.running = true;
       try {
         await this.run();
       } catch (err) {
-        logger.error('DepositEventProcessorWorker error', { error: String(err) });
+        logger.error('ChainEventProcessorWorker error', { error: String(err) });
       } finally {
         this.running = false;
       }
     }, INTERVAL_MS);
 
     setImmediate(() => this.run().catch(err =>
-      logger.error('DepositEventProcessorWorker initial run error', { error: String(err) })
+      logger.error('ChainEventProcessorWorker initial run error', { error: String(err) })
     ));
   }
 
@@ -62,7 +62,7 @@ export class DepositEventProcessorWorker {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
-      logger.info('DepositEventProcessorWorker stopped');
+      logger.info('ChainEventProcessorWorker stopped');
     }
   }
 
