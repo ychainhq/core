@@ -133,7 +133,7 @@ export class DepositEventProcessorWorker {
     const status = this.confirmationsToStatus(confirmations);
     const amountDisplay = satoshiToBtc(event.amount_raw);
 
-    const deposit = await depositsService.upsert({
+    const { deposit, isNew } = await depositsService.upsert({
       tenantId: ctx.tenant_id,
       customerId: ctx.customer_id ?? undefined,
       chainId: event.chain_id,
@@ -162,7 +162,6 @@ export class DepositEventProcessorWorker {
       confirmations,
     });
 
-    const isNew = !(await depositsService.getByIdInternal(deposit.id)).payment_request_id;
     const isConfirmed = status === 'confirmed' || status === 'finalized';
 
     // New deposit: emit detected event + check payment request

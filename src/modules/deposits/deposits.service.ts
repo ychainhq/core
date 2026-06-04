@@ -52,7 +52,7 @@ export const depositsService = {
     status: string;
     paymentRequestId?: string;
     metadata?: Record<string, unknown>;
-  }): Promise<Deposit> {
+  }): Promise<{ deposit: Deposit; isNew: boolean }> {
     const db = getDbClient();
     const now = new Date().toISOString();
 
@@ -82,7 +82,7 @@ export const depositsService = {
         now,
         existing.id
       ]);
-      return await depositsService.getByIdInternal(existing.id);
+      return { deposit: await depositsService.getByIdInternal(existing.id), isNew: false };
     }
 
     const id = `dep_${crypto.randomBytes(8).toString('hex')}`;
@@ -114,7 +114,7 @@ export const depositsService = {
       now
     ]);
 
-    return await depositsService.getByIdInternal(id);
+    return { deposit: await depositsService.getByIdInternal(id), isNew: true };
   },
 
   // Tenant-scoped lookup for API handlers

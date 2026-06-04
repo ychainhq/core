@@ -219,7 +219,7 @@ export const withdrawalsService = {
         isPending: false,
       });
 
-      return await depositsService.upsert({
+      const { deposit: internalDeposit } = await depositsService.upsert({
         tenantId,
         customerId: recipientCustomerId,
         chainId: 'bitcoin',
@@ -232,6 +232,7 @@ export const withdrawalsService = {
         status: 'confirmed',
         metadata: { internal_transfer: true, sender_customer_id: senderCustomerId },
       });
+      return internalDeposit;
     });
 
     const withdrawal = await withdrawalsService.getByIdInternal(id);

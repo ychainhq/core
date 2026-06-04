@@ -1628,6 +1628,39 @@ Nowy chain = nowy indexer binary. Różnice:
 
 Tabela `chain_events` obsługuje wszystkie chainy przez `chain_id` + `contract_address`.
 
+### 14.8 Cykl życia chain_event i ticklerów depozytów
+
+#### updateConfirmations — ograniczenie do progu finality
+
+`BlockScanner.updateConfirmations(tip, finalityThreshold)` resetuje `processed=0` tylko gdy confirmations rosną I nie osiągnęły jeszcze finality:
+
+```sql
+processed = CASE
+  WHEN (tip - block_height) > confirmations   -- confirmations wzrosły
+   AND confirmations < finalityThreshold       -- poniżej progu finality
+  THEN 0
+  ELSE processed                              -- po finality: nigdy nie resetuj
+END
+```
+
+Konfiguracja indexera: `INDEXER_FINALITY_CONFIRMATIONS` (domyślnie 6, odpowiada `BTC_FINALITY_CONFIRMATIONS` w engine).
+
+Bez tego ograniczenia każdy nowy blok generowałby ponowne przetwarzanie eventu w nieskończoność.
+
+#### deposits.upsert() — flaga isNew
+
+`depositsService.upsert()` zwraca `{ deposit: Deposit; isNew: boolean }`. Flaga `isNew=true` oznacza, że depozyt został właśnie wstawiony do bazy (INSERT), nie zaktualizowany (UPDATE). To jedyne pewne źródło informacji o "pierwszym wykryciu" — niezależne od stanu payment_request_id.
+
+#### Semantyka ticklerów depozytów
+
+| Zdarzenie | Warunek | Tickler |
+|-----------|---------|---------|
+| Pierwsze wykrycie (mempool lub blok) | `isNew = true` | `deposit / detected` — **dokładnie raz** |
+| Blok z potwierdzeniem | `isNew = false`, `status ∈ {confirmed, finalized}` | `deposit / confirmed` |
+| Kolejne bloki po finality | `updateConfirmations` nie resetuje `processed` | brak ticklera |
+
+Tickler `detected` jest zapisywany jednorazowo przy INSERT depozytu. Tickler `confirmed` może pojawić się wielokrotnie jeśli potwierdzenia rosną przed finality (Bug#3 — celowo nie eliminowany, immutable audit trail zachowany).
+
 ---
 
 ## Appendix C: Granice adapterów dla przyszłych chainów
