@@ -412,6 +412,15 @@ export const tenantsService = {
     return mapConfig(row);
   },
 
+  async getConfirmationsRequired(tenantId: string): Promise<number> {
+    const db = getDbClient();
+    const row = await db.get<{ btc_confirmations_required: number }>(
+      'SELECT btc_confirmations_required FROM tenant_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
+    return row?.btc_confirmations_required ?? config.BTC_DEFAULT_CONFIRMATIONS;
+  },
+
   async generateApiKey(tenantId: string, name: string): Promise<{ keyId: string; rawKey: string }> {
     const db = getDbClient();
     await tenantsService.getById(tenantId); // 404 guard

@@ -162,6 +162,18 @@ export const monitorsService = {
     `, [id, tenantId, input.chainId, input.address, input.walletId ?? null, input.label ?? null, now, now]);
   },
 
+  // Used by workers to resolve tenant/customer/wallet context for a watched address.
+  async findActiveByAddress(address: string, chainId: string): Promise<{
+    tenant_id: string; customer_id: string | null; wallet_id: string | null;
+  } | null> {
+    const db = getDbClient();
+    const row = await db.get<{ tenant_id: string; customer_id: string | null; wallet_id: string | null }>(
+      'SELECT tenant_id, customer_id, wallet_id FROM watched_addresses WHERE address = ? AND chain_id = ? AND is_active = 1 LIMIT 1',
+      [address, chainId]
+    );
+    return row ?? null;
+  },
+
   // Used by workers — intentionally cross-tenant
   async getActiveByChain(chainId: string): Promise<WatchedAddress[]> {
     const db = getDbClient();

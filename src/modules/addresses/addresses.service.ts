@@ -157,4 +157,21 @@ export const addressesService = {
     );
     return { isInternal: !!row, customerId: row?.customer_id ?? null };
   },
+
+  // Used by workers to resolve tenant/customer/wallet context for an active deposit address.
+  async resolveDepositContext(address: string, chainId: string): Promise<{
+    tenant_id: string; customer_id: string | null; wallet_id: string | null; wallet_role: string | null;
+  } | null> {
+    const db = getDbClient();
+    const row = await db.get<{
+      tenant_id: string; customer_id: string | null; wallet_id: string | null; wallet_role: string | null;
+    }>(`
+      SELECT a.tenant_id, a.customer_id, a.wallet_id, w.wallet_role
+      FROM addresses a
+      LEFT JOIN wallets w ON w.id = a.wallet_id
+      WHERE a.address = ? AND a.chain_id = ? AND a.status = 'active'
+      LIMIT 1
+    `, [address, chainId]);
+    return row ?? null;
+  },
 };

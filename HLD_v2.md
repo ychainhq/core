@@ -1179,13 +1179,18 @@ Wszystkie endpointy wymagają `Authorization: Bearer <customer-jwt>` (token wyst
 
 v2 przenosi konfigurację z `.env` na poziom tenant:
 
-- `tenant_configs.btc_confirmations_required` — domyślna polityka dla tenanta (domyślnie 1).
-- `tenant_configs.btc_finality_confirmations` — próg finality (domyślnie 6).
+- `tenant_configs.btc_confirmations_required` — ile bloków potrzeba do uznania depozytu za `confirmed` (domyślnie 1). Czytane przez `DepositEventProcessorWorker` per-tenant.
+- `tenant_configs.btc_finality_confirmations` — próg nieodwracalności tx (domyślnie 6). Używany przez `SweepConfirmationWorker`; nie wpływa na status depozytu.
 - Payment request może mieć własne `confirmationsRequired` (override per-request).
-- `detected` = transakcja w mempolu (0 confirmations).
-- `pending_confirmation` = w bloku, ale poniżej progu.
-- `confirmed` = wymagana liczba confirmations osiągnięta.
-- `finalized` = próg finality osiągnięty.
+
+**Dwa statusy depozytu:**
+
+| Status | Warunek | Skutki |
+|--------|---------|--------|
+| `detected` | `confirmations < btc_confirmations_required` (lub pierwsza detekcja) | tickler `deposit/detected` (raz), ledger `deposit_pending`, webhook `deposit.detected` |
+| `confirmed` | `confirmations ≥ btc_confirmations_required` | tickler `deposit/confirmed` (raz, przy przejściu), ledger `deposit_settled`, webhook `deposit.confirmed` |
+
+Status `detected` może pojawić się przy `conf=0` (mempool) lub `conf≥1` (blok-only, jeśli indexer nie widział tx w mempoolu). Tickler `detected` zawsze zapisywany przy pierwszym INSERT (flaga `isNew` z `deposits.upsert()`). Tickler `confirmed` zapisywany dokładnie raz, przy przejściu statusu `detected→confirmed` (transition gate oparty na `previousStatus` z `deposits.upsert()`).
 
 Globalne wartości domyślne nadal przez `.env` (jako fallback przy tworzeniu tenant_config):
 
@@ -1632,7 +1637,7 @@ Tabela `chain_events` obsługuje wszystkie chainy przez `chain_id` + `contract_a
 
 #### updateConfirmations — ograniczenie do progu finality
 
-`BlockScanner.updateConfirmations(tip, finalityThreshold)` resetuje `processed=0` tylko gdy confirmations rosną I nie osiągnęły jeszcze finality:
+`BlockScanner.updateConfirmations(tip, finalityThreshold)` resetuje `processed=0` tylko gdy confirmations rosną I nie osiągnęły jeszcze `INDEXER_FINALITY_CONFIRMATIONS` (domyślnie 6):
 
 ```sql
 processed = CASE
@@ -1643,23 +1648,30 @@ processed = CASE
 END
 ```
 
-Konfiguracja indexera: `INDEXER_FINALITY_CONFIRMATIONS` (domyślnie 6, odpowiada `BTC_FINALITY_CONFIRMATIONS` w engine).
+Konfiguracja indexera: `INDEXER_FINALITY_CONFIRMATIONS` (env). Bez tego ograniczenia każdy nowy blok generowałby nieskończone re-przetwarzanie.
 
-Bez tego ograniczenia każdy nowy blok generowałby ponowne przetwarzanie eventu w nieskończoność.
+#### deposits.upsert() — flagi isNew i previousStatus
 
-#### deposits.upsert() — flaga isNew
+`depositsService.upsert()` zwraca `{ deposit, isNew, previousStatus }`:
 
-`depositsService.upsert()` zwraca `{ deposit: Deposit; isNew: boolean }`. Flaga `isNew=true` oznacza, że depozyt został właśnie wstawiony do bazy (INSERT), nie zaktualizowany (UPDATE). To jedyne pewne źródło informacji o "pierwszym wykryciu" — niezależne od stanu payment_request_id.
+- `isNew=true` — depozyt wstawiony po raz pierwszy (INSERT); wyznacza moment emisji `detected`
+- `previousStatus` — status depozytu przed upsert (`null` gdy `isNew=true`); wyznacza transition gate dla `confirmed`
 
-#### Semantyka ticklerów depozytów
+#### Transition gate — dokładnie jeden tickler na każdy etap
 
-| Zdarzenie | Warunek | Tickler |
-|-----------|---------|---------|
-| Pierwsze wykrycie (mempool lub blok) | `isNew = true` | `deposit / detected` — **dokładnie raz** |
-| Blok z potwierdzeniem | `isNew = false`, `status ∈ {confirmed, finalized}` | `deposit / confirmed` |
-| Kolejne bloki po finality | `updateConfirmations` nie resetuje `processed` | brak ticklera |
+```
+isNew=true                → detected effects (tickler + ledger pending + webhook)
+previousStatus ≠ confirmed
+  AND status = confirmed  → confirmed effects (tickler + ledger settled + webhook)
+previousStatus = confirmed → nic (depozyt już potwierdzony, re-processing bezoperacyjny)
+```
 
-Tickler `detected` jest zapisywany jednorazowo przy INSERT depozytu. Tickler `confirmed` może pojawić się wielokrotnie jeśli potwierdzenia rosną przed finality (Bug#3 — celowo nie eliminowany, immutable audit trail zachowany).
+| Scenariusz | isNew | previousStatus | detected | confirmed |
+|------------|-------|---------------|----------|-----------|
+| Mempool (conf=0) | true | null | ✓ | — |
+| Blok-only (conf≥N, brak mempool) | true | null | ✓ | ✓ |
+| Potwierdzenie po mempoolu (conf≥N) | false | detected | — | ✓ |
+| Re-processing potwierdzonego | false | confirmed | — | — |
 
 ---
 

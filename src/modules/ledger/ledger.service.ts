@@ -352,4 +352,37 @@ export const ledgerService = {
     );
     return row ? mapAccount(row) : null;
   },
+
+  // Idempotent: creates a deposit ledger entry only if one with the same
+  // (ledgerAccountId, entryType, depositId) does not already exist.
+  // Called by DepositEventProcessorWorker for both deposit_pending and deposit_settled.
+  async ensureDepositEntry(input: {
+    ledgerAccountId: string;
+    depositId: string;
+    entryType: 'deposit_pending' | 'deposit_settled';
+    amountRaw: string;
+    isPending: boolean;
+  }): Promise<void> {
+    const db = getDbClient();
+    const exists = await db.get(
+      `SELECT id FROM ledger_entries WHERE ledger_account_id = ? AND type = ?
+       AND reference_type = 'deposit' AND reference_id = ? LIMIT 1`,
+      [input.ledgerAccountId, input.entryType, input.depositId]
+    );
+    if (exists) return;
+    try {
+      await ledgerService.addEntry({
+        ledgerAccountId: input.ledgerAccountId,
+        type: input.entryType,
+        amountRaw: input.amountRaw,
+        referenceType: 'deposit',
+        referenceId: input.depositId,
+        isPending: input.isPending,
+      });
+    } catch (err) {
+      // Log but do not propagate — deposit processing must not fail due to a ledger write error.
+      const { logger } = await import('../../shared/logging/index');
+      logger.warn('ensureDepositEntry failed', { depositId: input.depositId, entryType: input.entryType, error: String(err) });
+    }
+  },
 };

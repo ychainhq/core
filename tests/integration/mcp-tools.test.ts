@@ -164,7 +164,7 @@ describe('MCP customer deposit filters', () => {
       tx_hash: 'mcp_filter_tx_finalized',
       address: 'bcrt1qmcpfilteralpha',
       confirmations: 110,
-      status: 'finalized',
+      status: 'confirmed',
     });
     insertDeposit(customerId, {
       id: 'dep_mcp_filter_confirmed',
@@ -201,7 +201,7 @@ describe('MCP customer deposit filters', () => {
       tx_hash: 'mcp_me_tx_finalized',
       address: 'bcrt1qmeother',
       confirmations: 100,
-      status: 'finalized',
+      status: 'confirmed',
     });
 
     const res = await customerTool(token, 'chainapi_me_list_deposits', {

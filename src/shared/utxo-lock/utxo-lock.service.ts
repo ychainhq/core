@@ -391,4 +391,35 @@ export const utxoLockService = {
     }
     return result;
   },
+
+  // Called by DepositEventProcessorWorker when a utxo_created event is processed.
+  async upsertFromDeposit(input: {
+    tenantId: string; customerId: string | null; walletId: string | null; walletRole: string | null;
+    chainId: string; address: string; txHash: string; vout: number;
+    amountRaw: string; confirmations: number;
+  }): Promise<void> {
+    const db = getDbClient();
+    const now = new Date().toISOString();
+    const id = `utxo_${crypto.randomBytes(8).toString('hex')}`;
+    await db.run(`
+      INSERT INTO cached_utxos (
+        id, tenant_id, customer_id, wallet_id, wallet_role, chain_id,
+        address, tx_hash, vout, amount_raw, confirmations, is_spent, is_locked, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+      ON CONFLICT(chain_id, tx_hash, vout) DO UPDATE SET
+        confirmations = excluded.confirmations,
+        is_spent = 0,
+        updated_at = excluded.updated_at
+    `, [id, input.tenantId, input.customerId, input.walletId, input.walletRole, input.chainId,
+      input.address, input.txHash, input.vout, input.amountRaw, input.confirmations, now, now]);
+  },
+
+  // Called by DepositEventProcessorWorker when a utxo_spent chain_event is processed.
+  async markSpentByUtxo(chainId: string, txHash: string, vout: number): Promise<void> {
+    const db = getDbClient();
+    await db.run(
+      'UPDATE cached_utxos SET is_spent = 1, is_locked = 0, updated_at = ? WHERE chain_id = ? AND tx_hash = ? AND vout = ?',
+      [new Date().toISOString(), chainId, txHash, vout]
+    );
+  },
 };

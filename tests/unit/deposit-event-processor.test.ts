@@ -1,11 +1,16 @@
 /**
  * DepositEventProcessorWorker unit tests.
  *
- * Tests the deposit confirmation lifecycle:
- *   detected (conf=0) → confirmed (conf≥required) → finalized (conf≥finality)
+ * Deposit lifecycle: detected (conf < N) → confirmed (conf ≥ N, exactly once).
+ * N = tenant_configs.btc_confirmations_required (per-tenant).
  */
 
-// jest.mock calls are hoisted — use jest.fn() directly inside factories
+jest.mock('../../src/modules/chain-events/chain-events.service', () => ({
+  chainEventsService: {
+    fetchUnprocessed: jest.fn(),
+    markProcessed: jest.fn(),
+  },
+}));
 jest.mock('../../src/modules/deposits/deposits.service', () => ({
   depositsService: {
     upsert: jest.fn(),
@@ -13,11 +18,29 @@ jest.mock('../../src/modules/deposits/deposits.service', () => ({
     updatePaymentRequestId: jest.fn(),
   },
 }));
+jest.mock('../../src/modules/addresses/addresses.service', () => ({
+  addressesService: { resolveDepositContext: jest.fn() },
+}));
+jest.mock('../../src/modules/monitors/monitors.service', () => ({
+  monitorsService: { findActiveByAddress: jest.fn() },
+}));
+jest.mock('../../src/modules/payment-requests/payment-requests.service', () => ({
+  paymentRequestsService: {
+    findPendingByAddressInternal: jest.fn(),
+    updateStatus: jest.fn(),
+  },
+}));
 jest.mock('../../src/modules/ledger/ledger.service', () => ({
   ledgerService: {
     findAccountByCustomerAndAsset: jest.fn(),
     findAccountByWalletAndAsset: jest.fn(),
-    addEntry: jest.fn(),
+    ensureDepositEntry: jest.fn(),
+  },
+}));
+jest.mock('../../src/shared/utxo-lock/utxo-lock.service', () => ({
+  utxoLockService: {
+    upsertFromDeposit: jest.fn(),
+    markSpentByUtxo: jest.fn(),
   },
 }));
 jest.mock('../../src/shared/tickler/tickler.service', () => ({
@@ -26,18 +49,18 @@ jest.mock('../../src/shared/tickler/tickler.service', () => ({
 jest.mock('../../src/modules/webhooks/webhooks.service', () => ({
   webhooksService: { queueEventOnce: jest.fn() },
 }));
-jest.mock('../../src/modules/payment-requests/payment-requests.service', () => ({
-  paymentRequestsService: { updateStatus: jest.fn() },
-}));
-jest.mock('../../src/db/client', () => ({
-  getDbClient: jest.fn(),
+jest.mock('../../src/modules/tenants/tenants.service', () => ({
+  tenantsService: { getConfirmationsRequired: jest.fn() },
 }));
 
 import { DepositEventProcessorWorker } from '../../src/workers/deposit-event-processor.worker';
-import { getDbClient } from '../../src/db/client';
+import { chainEventsService } from '../../src/modules/chain-events/chain-events.service';
 import { depositsService } from '../../src/modules/deposits/deposits.service';
+import { addressesService } from '../../src/modules/addresses/addresses.service';
 import { ledgerService } from '../../src/modules/ledger/ledger.service';
+import { utxoLockService } from '../../src/shared/utxo-lock/utxo-lock.service';
 import { ticklerService } from '../../src/shared/tickler/tickler.service';
+import { tenantsService } from '../../src/modules/tenants/tenants.service';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -49,6 +72,8 @@ function makeChainEvent(confirmations: number, overrides: Record<string, unknown
     event_type: 'utxo_created',
     tx_hash: 'abc123',
     vout_index: 0,
+    spent_tx_hash: null,
+    spent_vout: null,
     address: 'bcrt1qtest',
     amount_raw: '100000',
     block_height: 100,
@@ -59,58 +84,62 @@ function makeChainEvent(confirmations: number, overrides: Record<string, unknown
   };
 }
 
-function makeDeposit(overrides = {}) {
+function makeDeposit(overrides: Record<string, unknown> = {}) {
   return { id: 'dep_test', payment_request_id: null, status: 'detected', confirmations: 0, ...overrides };
 }
 
-// Returns the shape that depositsService.upsert now resolves to.
-function makeUpsertResult(depositOverrides = {}, isNew = true) {
-  return { deposit: makeDeposit(depositOverrides), isNew };
+function makeUpsertResult(
+  depositOverrides: Record<string, unknown> = {},
+  isNew = true,
+  previousStatus: string | null = null,
+) {
+  return { deposit: makeDeposit(depositOverrides), isNew, previousStatus };
 }
 
 const ADDR_CTX = { tenant_id: 'tenant_default', customer_id: 'cust_test', wallet_id: null, wallet_role: null };
 
-function makeDb(events: ReturnType<typeof makeChainEvent>[]) {
-  let chainEventCallCount = 0;
-  return {
-    isPostgres: false,
-    all: jest.fn(async (sql: string) => {
-      if (sql.includes('chain_events')) return chainEventCallCount++ === 0 ? events : [];
-      if (sql.includes('payment_requests')) return [];
-      return [];
-    }),
-    get: jest.fn(async (sql: string) => {
-      // resolveAddressContext — address lookup must return a valid context
-      if (sql.includes('FROM addresses')) return ADDR_CTX;
-      if (sql.includes('watched_addresses')) return null;
-      // ledger entry existence check — return null so new entries are created
-      if (sql.includes('ledger_entries')) return null;
-      return null;
-    }),
-    run: jest.fn().mockResolvedValue({ changes: 1 }),
-    exec: jest.fn().mockResolvedValue(undefined),
-    transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({})),
-  };
-}
-
-// ─── Setup / teardown ─────────────────────────────────────────────────────────
+// ─── Setup ────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // Default: new deposit (isNew=true), detected state
+
+  // Chain events: one event by default, then empty
+  let callCount = 0;
+  (chainEventsService.fetchUnprocessed as jest.Mock).mockImplementation(async () =>
+    callCount++ === 0 ? [makeChainEvent(0)] : []
+  );
+  (chainEventsService.markProcessed as jest.Mock).mockResolvedValue(undefined);
+
+  // Address resolution: returns valid context
+  (addressesService.resolveDepositContext as jest.Mock).mockResolvedValue(ADDR_CTX);
+
+  // Tenant confirmation threshold: 1 block
+  (tenantsService.getConfirmationsRequired as jest.Mock).mockResolvedValue(1);
+
+  // Deposits
   (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult());
   (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(makeDeposit());
+
+  // Payment requests: none pending
+  const { paymentRequestsService } = require('../../src/modules/payment-requests/payment-requests.service');
+  (paymentRequestsService.findPendingByAddressInternal as jest.Mock).mockResolvedValue([]);
+
+  // Ledger
   (ledgerService.findAccountByCustomerAndAsset as jest.Mock).mockResolvedValue({ id: 'lacc_test' });
   (ledgerService.findAccountByWalletAndAsset as jest.Mock).mockResolvedValue(null);
-  (ledgerService.addEntry as jest.Mock).mockResolvedValue(undefined);
+  (ledgerService.ensureDepositEntry as jest.Mock).mockResolvedValue(undefined);
+
+  // UTXO lock
+  (utxoLockService.upsertFromDeposit as jest.Mock).mockResolvedValue(undefined);
+  (utxoLockService.markSpentByUtxo as jest.Mock).mockResolvedValue(undefined);
 });
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+// ─── Confirmation lifecycle ───────────────────────────────────────────────────
 
 describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
 
-  test('processes utxo_created event with conf=0 → calls depositsService.upsert with status=detected', async () => {
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(0)]));
+  test('conf=0 → upsert with status=detected', async () => {
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new DepositEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
@@ -118,126 +147,137 @@ describe('DepositEventProcessorWorker — confirmation lifecycle', () => {
     );
   });
 
-  test('processes utxo_created event with conf=6 → upsert with status confirmed or finalized', async () => {
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(6)]));
+  test('conf=1 (≥ required=1) → upsert with status=confirmed', async () => {
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
     await new DepositEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        confirmations: 6,
-        status: expect.stringMatching(/confirmed|finalized/),
-      })
+      expect.objectContaining({ confirmations: 1, status: 'confirmed' })
     );
   });
 
-  test('deposits with high confirmations (100) get finalized status', async () => {
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(100)]));
+  test('conf=100 → upsert with status=confirmed (no finalized state)', async () => {
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(100)]);
     await new DepositEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'finalized' })
+      expect.objectContaining({ status: 'confirmed' })
     );
   });
 
-  test('marks chain_event processed=1 after handling', async () => {
-    const db = makeDb([makeChainEvent(0)]);
-    (getDbClient as jest.Mock).mockReturnValue(db);
+  test('marks chain_events as processed', async () => {
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new DepositEventProcessorWorker().run();
 
-    const updateCall = (db.run as jest.Mock).mock.calls.find(
-      (c: unknown[]) => (c[0] as string).includes('processed = 1')
+    expect(chainEventsService.markProcessed).toHaveBeenCalledWith(['cevt_test']);
+  });
+
+  test('calls upsertFromDeposit on utxo-lock service', async () => {
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    await new DepositEventProcessorWorker().run();
+
+    expect(utxoLockService.upsertFromDeposit).toHaveBeenCalledWith(
+      expect.objectContaining({ txHash: 'abc123', vout: 0, confirmations: 0 })
     );
-    expect(updateCall).toBeTruthy();
   });
 
   test('creates pending ledger entry for new deposit (conf=0)', async () => {
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(0)]));
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new DepositEventProcessorWorker().run();
 
-    expect(ledgerService.addEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'deposit_pending' })
+    expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ entryType: 'deposit_pending' })
     );
   });
 
-  test('creates settled ledger entry for finalized deposit (conf=100)', async () => {
-    const finalized = makeDeposit({ confirmations: 100, status: 'finalized' });
-    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: finalized, isNew: false });
-    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(finalized);
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(100)]));
+  test('creates settled ledger entry when deposit transitions to confirmed', async () => {
+    const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
+    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
     await new DepositEventProcessorWorker().run();
 
-    expect(ledgerService.addEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'deposit_settled' })
+    expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ entryType: 'deposit_settled' })
     );
   });
 
   test('does nothing when no unprocessed events exist', async () => {
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([]));
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([]);
     await new DepositEventProcessorWorker().run();
 
     expect(depositsService.upsert).not.toHaveBeenCalled();
   });
 
   test('skips event with missing address or amount_raw', async () => {
-    const event = makeChainEvent(0, { address: null, amount_raw: null });
-    const db = makeDb([event]);
-    (getDbClient as jest.Mock).mockReturnValue(db);
-
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([
+      makeChainEvent(0, { address: null, amount_raw: null }),
+    ]);
     await new DepositEventProcessorWorker().run();
 
-    // Event is processed (marked processed=1) but deposit upsert is skipped
+    expect(depositsService.upsert).not.toHaveBeenCalled();
+  });
+
+  test('utxo_spent event calls markSpentByUtxo', async () => {
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([
+      makeChainEvent(1, { event_type: 'utxo_spent', spent_tx_hash: 'abc123', spent_vout: 0, address: null, amount_raw: null }),
+    ]);
+    await new DepositEventProcessorWorker().run();
+
+    expect(utxoLockService.markSpentByUtxo).toHaveBeenCalledWith('bitcoin', 'abc123', 0);
     expect(depositsService.upsert).not.toHaveBeenCalled();
   });
 });
 
+// ─── isNew tickler semantics ──────────────────────────────────────────────────
+
 describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
 
   test('new deposit (isNew=true, conf=0) fires detected tickler', async () => {
-    (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true));
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(0)]));
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
 
     await new DepositEventProcessorWorker().run();
 
-    const detectedCalls = (ticklerService.record as jest.Mock).mock.calls.filter(
+    const detected = (ticklerService.record as jest.Mock).mock.calls.filter(
       (c: unknown[]) => (c[0] as any).subcategory === 'detected'
     );
-    expect(detectedCalls).toHaveLength(1);
+    expect(detected).toHaveLength(1);
   });
 
-  test('re-processed deposit (isNew=false, conf≥1) does NOT fire detected tickler', async () => {
+  test('re-processed deposit (isNew=false) does NOT fire detected tickler', async () => {
     const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
-    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false });
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(1)]));
 
     await new DepositEventProcessorWorker().run();
 
-    const detectedCalls = (ticklerService.record as jest.Mock).mock.calls.filter(
+    const detected = (ticklerService.record as jest.Mock).mock.calls.filter(
       (c: unknown[]) => (c[0] as any).subcategory === 'detected'
     );
-    expect(detectedCalls).toHaveLength(0);
+    expect(detected).toHaveLength(0);
   });
 
-  test('re-processed confirmed deposit (isNew=false) still fires confirmed tickler', async () => {
-    const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
-    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false });
-    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(1)]));
+  test('mempool deposit (isNew=true, conf=0) fires detected but not confirmed', async () => {
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
 
     await new DepositEventProcessorWorker().run();
 
-    const confirmedCalls = (ticklerService.record as jest.Mock).mock.calls.filter(
-      (c: unknown[]) => (c[0] as any).subcategory === 'confirmed'
+    const subcategories = (ticklerService.record as jest.Mock).mock.calls.map(
+      (c: unknown[]) => (c[0] as any).subcategory
     );
-    expect(confirmedCalls).toHaveLength(1);
+    expect(subcategories).toContain('detected');
+    expect(subcategories).not.toContain('confirmed');
   });
 
-  test('new deposit (isNew=true) confirmed in first block fires both detected and confirmed', async () => {
+  test('block-only deposit (isNew=true, conf=1) fires both detected and confirmed', async () => {
     const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
-    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: true });
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: true, previousStatus: null });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(1)]));
 
     await new DepositEventProcessorWorker().run();
 
@@ -248,16 +288,29 @@ describe('DepositEventProcessorWorker — isNew tickler semantics', () => {
     expect(subcategories).toContain('confirmed');
   });
 
-  test('mempool-only deposit (conf=0, isNew=true) fires detected but not confirmed', async () => {
-    (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true));
-    (getDbClient as jest.Mock).mockReturnValue(makeDb([makeChainEvent(0)]));
+  test('re-processed already-confirmed deposit (previousStatus=confirmed) fires NO ticklers', async () => {
+    const confirmed = makeDeposit({ confirmations: 2, status: 'confirmed' });
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(2)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'confirmed' });
+    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
+
+    await new DepositEventProcessorWorker().run();
+
+    expect(ticklerService.record).not.toHaveBeenCalled();
+  });
+
+  test('transition detected→confirmed (isNew=false, previousStatus=detected) fires confirmed tickler only', async () => {
+    const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
+    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
+    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
     await new DepositEventProcessorWorker().run();
 
     const subcategories = (ticklerService.record as jest.Mock).mock.calls.map(
       (c: unknown[]) => (c[0] as any).subcategory
     );
-    expect(subcategories).toContain('detected');
-    expect(subcategories).not.toContain('confirmed');
+    expect(subcategories).not.toContain('detected');
+    expect(subcategories).toContain('confirmed');
   });
 });

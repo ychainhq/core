@@ -214,4 +214,17 @@ export const paymentRequestsService = {
       `, [address, chainId]);
     return rows.map(mapPaymentRequest);
   },
+
+  // Used by workers — tenant-scoped, returns only the fields needed for deposit processing.
+  async findPendingByAddressInternal(
+    tenantId: string, address: string, chainId: string,
+  ): Promise<Array<{ id: string; confirmations_required: number }>> {
+    const db = getDbClient();
+    return db.all<{ id: string; confirmations_required: number }>(`
+      SELECT id, confirmations_required FROM payment_requests
+      WHERE tenant_id = ? AND chain_id = ? AND address = ?
+        AND status IN ('pending', 'detected', 'partially_paid')
+      ORDER BY created_at DESC
+    `, [tenantId, chainId, address]);
+  },
 };

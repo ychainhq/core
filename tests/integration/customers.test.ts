@@ -209,7 +209,7 @@ describe('GET /v1/customers/:customerId/deposits', () => {
          tx_hash, vout, block_height, block_hash, confirmations, status, payment_request_id, metadata, created_at, updated_at)
       VALUES
         (?, 'tenant_default', ?, 'bitcoin', 'bitcoin:BTC', NULL, 'bcrt1qfilteralpha', '5000000000', '50.00000000',
-         'aaa_filter_hash_001', 0, NULL, NULL, 110, 'finalized', NULL, NULL, ?, ?),
+         'aaa_filter_hash_001', 0, NULL, NULL, 110, 'confirmed', NULL, NULL, ?, ?),
         (?, 'tenant_default', ?, 'bitcoin', 'bitcoin:BTC', NULL, 'bcrt1qfilterbeta', '100000000', '1.00000000',
          'bbb_filter_hash_002', 1, NULL, NULL, 3, 'confirmed', NULL, NULL, ?, ?)
     `).run(finalizedDepositId, customerId, now, now, confirmedDepositId, customerId, now, now);
