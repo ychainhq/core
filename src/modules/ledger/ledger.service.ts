@@ -28,6 +28,7 @@ export interface LedgerAccount {
 
 export interface LedgerEntry {
   id: string;
+  tenant_id: string | null;
   ledger_account_id: string;
   type: string;
   amount_raw: string;
@@ -57,6 +58,7 @@ function mapAccount(row: any): LedgerAccount {
 function mapEntry(row: any): LedgerEntry {
   return {
     ...row,
+    tenant_id: row.tenant_id ?? null,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
     created_at: toUnixTs(row.created_at),
   };
@@ -196,8 +198,21 @@ export const ledgerService = {
     referenceId?: string;
     isPending?: boolean;  // true = affects pending balance, false = affects settled balance
     metadata?: Record<string, unknown>;
+    tenantId?: string;    // optional — avoids extra DB lookup when caller already knows it
   }): Promise<{ entry: LedgerEntry; balance: LedgerBalance }> {
     const db = getDbClient();
+
+    // Resolve tenant_id once — used in both the INSERT and the tickler.
+    // Callers that already know the tenantId (e.g. ensureDepositEntry) pass it
+    // directly; others fall back to a lookup on ledger_accounts.
+    let resolvedTenantId: string | null = input.tenantId ?? null;
+    if (!resolvedTenantId) {
+      const acct = await db.get<{ tenant_id: string | null }>(
+        'SELECT tenant_id FROM ledger_accounts WHERE id = ?',
+        [input.ledgerAccountId]
+      );
+      resolvedTenantId = acct?.tenant_id ?? null;
+    }
 
     // Get current balance
     const currentBalance = await ledgerService.getBalance(input.ledgerAccountId);
@@ -229,11 +244,12 @@ export const ledgerService = {
 
     await db.run(
       `INSERT INTO ledger_entries
-        (id, ledger_account_id, type, amount_raw, reference_type, reference_id,
+        (id, tenant_id, ledger_account_id, type, amount_raw, reference_type, reference_id,
          balance_pending_raw, balance_settled_raw, metadata, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
+        resolvedTenantId,
         input.ledgerAccountId,
         input.type,
         input.amountRaw,
@@ -247,12 +263,8 @@ export const ledgerService = {
     );
 
     const entry = mapEntry(await db.get('SELECT * FROM ledger_entries WHERE id = ?', [id]));
-    const account = await db.get<{ tenant_id: string | null }>(
-      'SELECT tenant_id FROM ledger_accounts WHERE id = ?',
-      [input.ledgerAccountId]
-    );
     ticklerService.record({
-      tenantId: account?.tenant_id ?? null,
+      tenantId: resolvedTenantId,
       category: 'ledger',
       subcategory: 'entry.posted',
       entityId: id,
@@ -357,6 +369,7 @@ export const ledgerService = {
   // (ledgerAccountId, entryType, depositId) does not already exist.
   // Called by ChainEventProcessorWorker for both deposit_pending and deposit_settled.
   async ensureDepositEntry(input: {
+    tenantId: string;
     ledgerAccountId: string;
     depositId: string;
     entryType: 'deposit_pending' | 'deposit_settled';
@@ -372,6 +385,7 @@ export const ledgerService = {
     if (exists) return;
     try {
       await ledgerService.addEntry({
+        tenantId: input.tenantId,
         ledgerAccountId: input.ledgerAccountId,
         type: input.entryType,
         amountRaw: input.amountRaw,

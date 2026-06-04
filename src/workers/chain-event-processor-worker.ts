@@ -247,6 +247,7 @@ export class ChainEventProcessorWorker {
     if (!account) return;
 
     await ledgerService.ensureDepositEntry({
+      tenantId: input.tenantId,
       ledgerAccountId: account.id,
       depositId: input.depositId,
       entryType: 'deposit_pending',
@@ -293,6 +294,7 @@ export class ChainEventProcessorWorker {
     if (!account) return;
 
     await ledgerService.ensureDepositEntry({
+      tenantId: input.tenantId,
       ledgerAccountId: account.id,
       depositId: input.depositId,
       entryType: 'deposit_settled',

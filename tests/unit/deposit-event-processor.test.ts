@@ -187,7 +187,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
     await new ChainEventProcessorWorker().run();
 
     expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ entryType: 'deposit_pending' })
+      expect.objectContaining({ tenantId: ADDR_CTX.tenant_id, entryType: 'deposit_pending' })
     );
   });
 
@@ -200,7 +200,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
     await new ChainEventProcessorWorker().run();
 
     expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ entryType: 'deposit_settled' })
+      expect.objectContaining({ tenantId: ADDR_CTX.tenant_id, entryType: 'deposit_settled' })
     );
   });
 
