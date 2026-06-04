@@ -4,8 +4,8 @@
 
 - **Runtime:** Node.js 20+, TypeScript
 - **Framework:** Express 4
-- **Baza danych (dev):** SQLite (better-sqlite3, WAL mode, foreign keys ON) — `data/crypto-api.sqlite`
-- **Baza danych (enterprise):** PostgreSQL 16+ — ścieżka migracji w `docs/v3-architecture-plan.md`
+- **Baza danych (produkcja):** PostgreSQL 16+ — Docker `chainapi-postgres`, port 5433. `DATABASE_URL=postgres://chainapi:chainapi_dev@localhost:5433/chainapi`. Konfiguracja przez `DB_TYPE=postgres` w `.env`.
+- **Baza danych (testy):** SQLite in-memory (`:memory:`) — używane wyłącznie w testach integracyjnych przez `bootstrapApp()`. Testy NIE dotykają Postgresa.
 - **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — **stateless** (bez FWallet), brak kluczy prywatnych
 - **Block indexer:** `packages/btc-indexer` — osobny proces skanujący bloki; engine konsumuje zdarzenia z tabeli `chain_events`
 - **MCP:** `@modelcontextprotocol/sdk` — silnik wystawia narzędzia MCP na `/mcp/tenant`, `/mcp/customer`, `/mcp/admin`
@@ -98,7 +98,7 @@ PATCH /v1/tenant/config
 | `verifier.ts` | Weryfikacja JWT (HMAC-SHA256, per-tenant secret) |
 | `context.ts` | `resolveActorContext()`, `resolvePermission()` |
 | `filter.ts` | `buildAccessFilter()`, `adminAllFilter()` |
-| `compiler.ts` | `compileSqliteFilter()` → SQL fragment |
+| `compiler.ts` | `compileSqliteFilter()` → SQL fragment (nazwa historyczna; generuje standard SQL kompatybilny z PostgreSQL) |
 | `query.ts` | `SecuredQuery.for(filter, alias)` — wrapper wymuszający użycie filtra |
 | `sort.ts` | `normalizeSort()`, `encodeCursor()`, `decodeCursor()`, `cursorToSql()` |
 | `middleware.ts` | Express middleware ustawiający `req.actorContext` |
@@ -201,10 +201,11 @@ tests/
 
 ### Konwencje testów
 
-- Każdy plik testowy woła `bootstrapApp()` z `helpers.ts` — tworzy świeżą bazę SQLite in-memory (`:memory:`)
+- Każdy plik testowy woła `bootstrapApp()` z `helpers.ts` — tworzy świeżą bazę **SQLite in-memory** (`:memory:`). Testy integracyjne NIE korzystają z PostgreSQL.
 - `bootstrapApp()` jest wywoływane raz per plik, nie per test (izolacja przez osobną bazę per plik)
-- `uniqueAddr()` generuje unikalne adresy BTC mainnet z xpub — używaj zamiast harcoded adresów gdy test potrzebuje unikatowego adresu
+- `uniqueAddr()` generuje unikalne adresy BTC mainnet z xpub — używaj zamiast hardcoded adresów gdy test potrzebuje unikatowego adresu
 - Testy integracyjne nie mocują Bitcoin Core — komendy RPC są mocowane przez `.env.test` lub service-level stubs
+- Testy jednostkowe mocują serwisy bezpośrednio (nie `getDbClient`) — zero dostępu do bazy w unit testach
 - `afterAll(() => teardownDb())` — obowiązkowe w każdym pliku testowym
 - Uruchomienie: `npm test` (Jest `--runInBand --forceExit`)
 
@@ -545,15 +546,19 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 - Tabela `ticklers` jest write-once: nigdy nie modyfikuj ani nie usuwaj wierszy. Tylko INSERT.
 - Workers używają `actorLogin: 'system:{worker-name}'`; router-level endpointy używają `resolveActorLogin(req)`.
 - Tickler call ZAWSZE po udanej mutacji (nie przed), aby entity_id był znany.
+- **`deposits.upsert()` zwraca `{ deposit, isNew, previousStatus }`** — używaj tych flag zamiast dodatkowych SELECT do określenia czy depozyt jest nowy i jaki był poprzedni status.
+- **Statusy depozytu to wyłącznie `detected` i `confirmed`** — nie używaj `pending_confirmation` ani `finalized` w nowym kodzie.
 
 ### Zasady v3 — chain_events i btc-indexer
 
 - **Engine NIE wywołuje `listunspent`, `importaddress`, `importdescriptors`, `createwallet`, `loadwallet`** w kontekście detekcji depozytów. Te operacje są domeną `btc-indexer`.
-- **`DepositEventProcessor`** przetwarza zdarzenia z `chain_events` (INSERT ON CONFLICT DO NOTHING przez indexer). Logika biznesowa (deposits, ledger, webhooks) pozostaje w engine.
-- **`DepositMonitorWorker`** jest przestarzały (deprecated). Działa obok `DepositEventProcessor` w fazie przejściowej; zostanie usunięty po zakończeniu FAZY 2 (PostgreSQL).
+- **`DepositEventProcessorWorker`** pobiera eventy przez `chainEventsService.fetchUnprocessed()` i oznacza je przez `chainEventsService.markProcessed()`. Zero bezpośredniego SQL na `chain_events` w workerze.
+- **`DepositMonitorWorker`** jest przestarzały (deprecated). Działa obok `DepositEventProcessorWorker` w fazie przejściowej; zostanie usunięty po zakończeniu FAZY 2.
+- **Dwa statusy depozytu:** `detected` i `confirmed`. Brak `pending_confirmation` i `finalized`. Próg N pochodzi z `tenant_configs.btc_confirmations_required` (per-tenant), czytany przez `tenantsService.getConfirmationsRequired()`.
+- **Transition gate depozytów:** tickler `detected` emitowany raz — przy `isNew=true` (INSERT depozytu). Tickler `confirmed` raz — przy `previousStatus !== 'confirmed' && status === 'confirmed'`. Re-processing już potwierdzonego depozytu = operacja bezoperacyjna (zero ticklerów, zero efektów).
 - **chain_node credentials**: `rpc_password_ref` w formacie `'env:VAR_NAME'` → engine czyta z `process.env` przy connect. Nigdy nie loguj ani nie zwracaj w API.
-- **`pg_notify`** po rejestracji nowego adresu: `SELECT pg_notify('btc_address_registered', address)` — powiadamia btc-indexer o nowych adresach w czasie rzeczywistym (SQLite: brak tej funkcji, indexer robi pełny reload co 60s).
-- `chain_events.processed = FALSE` + `INSERT ON CONFLICT DO NOTHING` gwarantuje exactly-once processing nawet gdy wiele indexerów raportuje ten sam tx.
+- **`pg_notify`** po rejestracji nowego adresu: `SELECT pg_notify('btc_address_registered', address)` — powiadamia btc-indexer o nowych adresach w czasie rzeczywistym. W testach (SQLite) brak tej funkcji — indexer robi pełny reload co 60s.
+- `chain_events.processed = FALSE` + UNIQUE partial index gwarantuje exactly-once processing nawet gdy wiele indexerów raportuje ten sam tx. Indexer resetuje `processed=0` tylko gdy confirmations rosną I są poniżej `INDEXER_FINALITY_CONFIRMATIONS`.
 
 ### Enkapsulacja SQL — właścicielstwo tabel
 
