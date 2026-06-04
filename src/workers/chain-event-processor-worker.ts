@@ -66,16 +66,54 @@ export class ChainEventProcessorWorker {
     }
   }
 
+  /**
+   * Engine-side counterpart to btc-indexer's updateConfirmations().
+   *
+   * The two sides form a feedback loop that drives deposit status transitions:
+   *
+   *   btc-indexer: new block arrives → updateConfirmations() recalculates
+   *     confirmations for all non-finalized events and resets processed=0 for
+   *     events whose count just increased.
+   *
+   *   engine (here): picks up processed=0 events → upserts deposit with the
+   *     new confirmation count → sets processed=1 via claimAndMarkProcessed().
+   *
+   * The same chain_event is therefore processed multiple times over its
+   * lifetime — once per confirmation increase, until it reaches
+   * finalityThreshold. Each pass gives depositsService.upsert() a chance to
+   * transition the deposit:
+   *
+   *   conf=0  (mempool)  → deposit created, status=detected
+   *   conf=1..N-1        → upsert updates confirmations, status stays detected
+   *   conf=N             → status transitions to confirmed, confirmed effects fire
+   *   conf>N..finality   → upsert is a no-op (previousStatus already confirmed,
+   *                         isNew=false → no ticklers, no webhooks, no ledger entries)
+   *
+   * where N = tenant_configs.btc_confirmations_required (per-tenant).
+   *
+   * --- Multi-instance safety ---
+   *
+   * claimAndMarkProcessed() uses SELECT FOR UPDATE SKIP LOCKED + UPDATE in a
+   * single transaction (PostgreSQL). Two engine instances polling concurrently
+   * always receive disjoint batches — the same event is never processed twice
+   * in parallel.
+   *
+   * --- Failure semantics ---
+   *
+   * processed=1 is written BEFORE business logic runs (inside claimAndMarkProcessed).
+   * If processReceiveEvent() throws, the event stays processed=1 and is NOT
+   * retried unless btc-indexer resets it on the next confirmation increase.
+   * Individual event errors are caught and logged so one bad event cannot
+   * block the rest of the batch.
+   */
   async run(): Promise<void> {
-    const events = await chainEventsService.fetchUnprocessed(BATCH_SIZE);
+    const events = await chainEventsService.claimAndMarkProcessed(BATCH_SIZE);
     if (events.length === 0) return;
-
-    await chainEventsService.markProcessed(events.map(e => e.id));
 
     for (const event of events) {
       try {
         if (event.event_type === 'utxo_created') {
-          await this.processEvent(event);
+          await this.processReceiveEvent(event);
         } else if (event.event_type === 'utxo_spent') {
           await this.processSpentEvent(event);
         }
@@ -85,8 +123,14 @@ export class ChainEventProcessorWorker {
     }
   }
 
-  private async processEvent(event: ChainEvent): Promise<void> {
-    if (!event.address || !event.amount_raw || event.vout_index === null) return;
+  private async processReceiveEvent(event: ChainEvent): Promise<void> {
+    logger.info('Processing utxo_created event (RECEIVE)', { eventId: event.id, txHash: event.tx_hash, address: event.address, amountRaw: event.amount_raw, confirmations: event.confirmations });
+    if (!event.address || !event.amount_raw || event.vout_index === null){
+      logger.warn('chain_event: missing required fields for utxo_created, skipping', {
+        eventId: event.id, txHash: event.tx_hash
+      });
+      return;
+    } 
 
     const ctx = await this.resolveAddressContext(event.address, event.chain_id);
     if (!ctx) {
@@ -117,6 +161,7 @@ export class ChainEventProcessorWorker {
       status,
     });
 
+    // as we receive, the new unspent UTXO should be registered as available for spending.
     await utxoLockService.upsertFromDeposit({
       tenantId: ctx.tenant_id,
       customerId: ctx.customer_id,
@@ -129,12 +174,8 @@ export class ChainEventProcessorWorker {
       amountRaw: event.amount_raw,
       confirmations,
     });
-
-    // Transition gate: confirmed effects fire exactly once, when deposit moves detected→confirmed.
-    // previousStatus=null means the deposit was just inserted (isNew=true).
-    const isTransitionToConfirmed = status === 'confirmed' && previousStatus !== 'confirmed';
-
-    if (isNew) {
+    
+    if (isNew) {      
       logger.info('Deposit detected via chain_event', {
         depositId: deposit.id, txHash: event.tx_hash, address: event.address,
         amount: amountDisplay, confirmations, source: 'btc-indexer',
@@ -172,10 +213,13 @@ export class ChainEventProcessorWorker {
         amount: amountDisplay, amountRaw: event.amount_raw, confirmations, status,
       }, { depositId: deposit.id }, event.chain_id, ctx.wallet_id ?? undefined, ctx.tenant_id);
     }
-
+    // ok here is the tricky part - either here we have a new deposit with enough confirmations to be confirmed right away, or we have an existing deposit that just reached the confirmation threshold. In both cases we want to trigger the same "confirmed" effects, but only if we just transitioned to "confirmed" status (not on every update while already confirmed).
+    // Transition gate: confirmed effects fire exactly once, when deposit moves detected→confirmed.
+    // previousStatus=null means the deposit was just inserted (isNew=true).
+    const isTransitionToConfirmed = status === 'confirmed' && previousStatus !== 'confirmed';
     if (isTransitionToConfirmed) {
       await this.ensureConfirmedEffects({ tenantId: ctx.tenant_id, customerId: ctx.customer_id, walletId: ctx.wallet_id, chainId: event.chain_id, assetId, depositId: deposit.id, txHash: event.tx_hash, address: event.address, amountRaw: event.amount_raw, amountDisplay, confirmations, status });
-    }
+    }    
   }
 
   // Two deposit statuses: detected (below threshold) and confirmed (threshold reached).

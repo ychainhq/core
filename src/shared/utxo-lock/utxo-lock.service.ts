@@ -392,7 +392,29 @@ export const utxoLockService = {
     return result;
   },
 
-  // Called by DepositEventProcessorWorker when a utxo_created event is processed.
+  // Called by ChainEventProcessorWorker when a utxo_created event is processed.
+  /**
+   * Synchronises cached_utxos with a deposit event from btc-indexer.
+   *
+   * The engine never queries Bitcoin Core for UTXO state during coin selection —
+   * it uses cached_utxos as its own local copy. This method keeps that cache
+   * up-to-date whenever a utxo_created chain_event is processed.
+   *
+   * Behaviour:
+   *   First call (new UTXO)    → INSERT with is_spent=0, is_locked=0
+   *   Subsequent calls         → UPDATE confirmations only; resets is_spent=0
+   *                              in case a prior markSpentByUtxo was premature
+   *
+   * UTXO lifecycle in cached_utxos:
+   *
+   *   upsertFromDeposit()          is_spent=0, is_locked=0   available for coin selection
+   *          |
+   *          v  (coin selection picks this UTXO)
+   *   lockUtxo()                   is_spent=0, is_locked=1   reserved, excluded from selection
+   *          |
+   *          v  (tx broadcast + on-chain confirmation)
+   *   markSpentByUtxo()            is_spent=1, is_locked=0   spent, permanently inactive
+   */
   async upsertFromDeposit(input: {
     tenantId: string; customerId: string | null; walletId: string | null; walletRole: string | null;
     chainId: string; address: string; txHash: string; vout: number;
@@ -414,7 +436,7 @@ export const utxoLockService = {
       input.address, input.txHash, input.vout, input.amountRaw, input.confirmations, now, now]);
   },
 
-  // Called by DepositEventProcessorWorker when a utxo_spent chain_event is processed.
+  // Called by ChainEventProcessorWorker when a utxo_spent chain_event is processed.
   async markSpentByUtxo(chainId: string, txHash: string, vout: number): Promise<void> {
     const db = getDbClient();
     await db.run(

@@ -7,6 +7,7 @@
 
 jest.mock('../../src/modules/chain-events/chain-events.service', () => ({
   chainEventsService: {
+    claimAndMarkProcessed: jest.fn(),
     fetchUnprocessed: jest.fn(),
     markProcessed: jest.fn(),
   },
@@ -53,7 +54,7 @@ jest.mock('../../src/modules/tenants/tenants.service', () => ({
   tenantsService: { getConfirmationsRequired: jest.fn() },
 }));
 
-import { ChainEventProcessorWorker } from '../../src/workers/deposit-event-processor.worker';
+import { ChainEventProcessorWorker } from '../../src/workers/chain-event-processor-worker';
 import { chainEventsService } from '../../src/modules/chain-events/chain-events.service';
 import { depositsService } from '../../src/modules/deposits/deposits.service';
 import { addressesService } from '../../src/modules/addresses/addresses.service';
@@ -105,10 +106,9 @@ beforeEach(() => {
 
   // Chain events: one event by default, then empty
   let callCount = 0;
-  (chainEventsService.fetchUnprocessed as jest.Mock).mockImplementation(async () =>
+  (chainEventsService.claimAndMarkProcessed as jest.Mock).mockImplementation(async () =>
     callCount++ === 0 ? [makeChainEvent(0)] : []
   );
-  (chainEventsService.markProcessed as jest.Mock).mockResolvedValue(undefined);
 
   // Address resolution: returns valid context
   (addressesService.resolveDepositContext as jest.Mock).mockResolvedValue(ADDR_CTX);
@@ -139,7 +139,7 @@ beforeEach(() => {
 describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
 
   test('conf=0 → upsert with status=detected', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
@@ -148,7 +148,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
   });
 
   test('conf=1 (≥ required=1) → upsert with status=confirmed', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
     await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
@@ -157,7 +157,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
   });
 
   test('conf=100 → upsert with status=confirmed (no finalized state)', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(100)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(100)]);
     await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).toHaveBeenCalledWith(
@@ -165,15 +165,16 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
     );
   });
 
-  test('marks chain_events as processed', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+  test('claimAndMarkProcessed called with BATCH_SIZE and no separate markProcessed', async () => {
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new ChainEventProcessorWorker().run();
 
-    expect(chainEventsService.markProcessed).toHaveBeenCalledWith(['cevt_test']);
+    expect(chainEventsService.claimAndMarkProcessed).toHaveBeenCalledWith(50);
+    expect(chainEventsService.markProcessed).not.toHaveBeenCalled();
   });
 
   test('calls upsertFromDeposit on utxo-lock service', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new ChainEventProcessorWorker().run();
 
     expect(utxoLockService.upsertFromDeposit).toHaveBeenCalledWith(
@@ -182,7 +183,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
   });
 
   test('creates pending ledger entry for new deposit (conf=0)', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new ChainEventProcessorWorker().run();
 
     expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
@@ -192,7 +193,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
 
   test('creates settled ledger entry when deposit transitions to confirmed', async () => {
     const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
@@ -204,14 +205,14 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
   });
 
   test('does nothing when no unprocessed events exist', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([]);
     await new ChainEventProcessorWorker().run();
 
     expect(depositsService.upsert).not.toHaveBeenCalled();
   });
 
   test('skips event with missing address or amount_raw', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([
       makeChainEvent(0, { address: null, amount_raw: null }),
     ]);
     await new ChainEventProcessorWorker().run();
@@ -220,7 +221,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
   });
 
   test('utxo_spent event calls markSpentByUtxo', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([
       makeChainEvent(1, { event_type: 'utxo_spent', spent_tx_hash: 'abc123', spent_vout: 0, address: null, amount_raw: null }),
     ]);
     await new ChainEventProcessorWorker().run();
@@ -235,7 +236,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
 describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
 
   test('new deposit (isNew=true, conf=0) fires detected tickler', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
 
     await new ChainEventProcessorWorker().run();
@@ -248,7 +249,7 @@ describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
 
   test('re-processed deposit (isNew=false) does NOT fire detected tickler', async () => {
     const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
@@ -261,7 +262,7 @@ describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
   });
 
   test('mempool deposit (isNew=true, conf=0) fires detected but not confirmed', async () => {
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
 
     await new ChainEventProcessorWorker().run();
@@ -275,7 +276,7 @@ describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
 
   test('block-only deposit (isNew=true, conf=1) fires both detected and confirmed', async () => {
     const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: true, previousStatus: null });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
@@ -290,7 +291,7 @@ describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
 
   test('re-processed already-confirmed deposit (previousStatus=confirmed) fires NO ticklers', async () => {
     const confirmed = makeDeposit({ confirmations: 2, status: 'confirmed' });
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(2)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(2)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'confirmed' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
@@ -301,7 +302,7 @@ describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
 
   test('transition detected→confirmed (isNew=false, previousStatus=detected) fires confirmed tickler only', async () => {
     const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
-    (chainEventsService.fetchUnprocessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
     (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
     (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
 
