@@ -12,6 +12,8 @@ import {
 import { validateBitcoinAddress } from '../../shared/validation/bitcoin';
 import { config } from '../../config/index';
 import { logger } from '../../shared/logging/index';
+import { ValidationError } from '../../shared/errors/index';
+import { estimateTxVsize } from './tx-sizer';
 
 // Convert BTC float to satoshi string (use string math to avoid float issues)
 function btcFloatToSatoshi(btcFloat: number): string {
@@ -244,11 +246,73 @@ export class BitcoinAdapter implements IChainAdapter {
    * signer can compute the segwit sighash for each input.
    */
   async createUnsignedPsbt(
-    inputs: Array<{ txid: string; vout: number }>,
+    inputs: Array<{ txid: string; vout: number; sequence?: number }>,
     outputs: Array<Record<string, number>>,
   ): Promise<string> {
     const psbt = await this.rpc.createPsbt(inputs, outputs);
     return this.rpc.utxoUpdatePsbt(psbt);
+  }
+
+  /**
+   * Build an unsigned withdrawal PSBT without any Bitcoin Core wallet.
+   * Stateless replacement for walletCreateFundedPsbt in the withdrawal path.
+   *
+   * Computes vsize from actual address types, derives fee and change, then calls
+   * createpsbt + utxoupdatepsbt (network-level RPCs — no named wallet required).
+   *
+   * Throws ValidationError if the locked UTXOs are insufficient to cover outputs + fee.
+   */
+  async buildWithdrawalPsbt(params: {
+    inputs: Array<{ txid: string; vout: number; amountSats: bigint }>;
+    recipientOutputs: Array<{ address: string; amountSats: bigint }>;
+    changeAddress: string;
+    feeRateSatVb: number;
+    rbf: boolean;
+  }): Promise<{ psbt: string; feeSats: bigint }> {
+    const { inputs, recipientOutputs, changeAddress, feeRateSatVb, rbf } = params;
+
+    const totalInputSats = inputs.reduce((s, i) => s + i.amountSats, 0n);
+    const totalOutputSats = recipientOutputs.reduce((s, o) => s + o.amountSats, 0n);
+
+    // Estimate vsize assuming a change output will be present
+    const vsizeWithChange = estimateTxVsize({
+      inputCount: inputs.length,
+      outputs: [
+        ...recipientOutputs.map(o => ({ address: o.address })),
+        { address: changeAddress },
+      ],
+    });
+
+    const feeWithChangeSats = BigInt(Math.ceil(vsizeWithChange * feeRateSatVb));
+    const changeSats = totalInputSats - totalOutputSats - feeWithChangeSats;
+
+    if (changeSats < 0n) {
+      throw new ValidationError(
+        `Insufficient UTXOs: need ${totalOutputSats + feeWithChangeSats} sats, locked ${totalInputSats} sats`,
+      );
+    }
+
+    // Drop change if it would be dust (< 546 sats); remainder goes to miners as extra fee
+    const DUST_THRESHOLD = 546n;
+    const includeChange = changeSats >= DUST_THRESHOLD;
+    const actualFeeSats = includeChange
+      ? feeWithChangeSats
+      : totalInputSats - totalOutputSats;
+
+    const psbtOutputs: Record<string, number>[] = [
+      ...recipientOutputs.map(o => ({ [o.address]: Number(o.amountSats) / 1e8 })),
+      ...(includeChange ? [{ [changeAddress]: Number(changeSats) / 1e8 }] : []),
+    ];
+
+    const psbtInputs = inputs.map(i => ({
+      txid: i.txid,
+      vout: i.vout,
+      // opt-in RBF per BIP 125: sequence <= 0xFFFFFFFD
+      ...(rbf ? { sequence: 0xFFFFFFFD } : {}),
+    }));
+
+    const psbt = await this.createUnsignedPsbt(psbtInputs, psbtOutputs);
+    return { psbt, feeSats: actualFeeSats };
   }
 
   isValidAddress(address: string): boolean {

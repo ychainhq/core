@@ -21,6 +21,7 @@ import { signerPolicyService } from '../external-signers/signer-policy.service';
 import { signingTasksService } from '../signing-tasks/signing-tasks.service';
 import { withdrawalsService } from '../withdrawals/withdrawals.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
+import { estimateTxVsize } from '../../chain-adapters/bitcoin/tx-sizer';
 
 // BTC dust threshold for P2WPKH outputs (546 sats)
 const DUST_THRESHOLD_SATS = 546n;
@@ -296,10 +297,15 @@ export const withdrawalBatcherService = {
       return null;
     }
 
-    // Estimate vsize: roughly 10 bytes overhead + 41*inputs + 31*outputs (P2WPKH estimate)
-    // Use a generous buffer: 2 inputs assumed initially
-    const estimatedInputs = 2;
-    const estimatedVsize = 10 + 41 * estimatedInputs + 31 * (validWithdrawals.length + 1); // +1 for change
+    // Preliminary fee estimate before UTXO selection (2 inputs assumed conservatively).
+    // Uses accurate segwit formula with actual recipient address types.
+    const estimatedVsize = estimateTxVsize({
+      inputCount: 2,
+      outputs: [
+        ...validWithdrawals.map((w: any) => ({ address: w.to_address })),
+        { address: changeAddrRow.address },
+      ],
+    });
     const estimatedFeeSats = BigInt(Math.ceil(estimatedVsize * feeRateSatVb));
 
     // Fee sanity check
@@ -363,21 +369,19 @@ export const withdrawalBatcherService = {
     }
 
     // Build PSBT
-    const inputs = lockedUtxos.map(u => ({ txid: u.tx_hash, vout: u.vout }));
-    const outputs: Record<string, number>[] = validWithdrawals.map((wd: any) => ({
-      [wd.to_address]: Number(BigInt(wd.amount_raw)) / 1e8
-    }));
-
     let psbtBase64: string;
     let actualFeeSats: string;
 
     try {
-      const psbtResult = await adapter.walletCreateFundedPsbt(inputs, outputs, {
-        feeRate: feeRateSatVb / 1e5,
+      const psbtResult = await adapter.buildWithdrawalPsbt({
+        inputs: lockedUtxos.map(u => ({ txid: u.tx_hash, vout: u.vout, amountSats: BigInt(u.amount_raw) })),
+        recipientOutputs: validWithdrawals.map((wd: any) => ({ address: wd.to_address, amountSats: BigInt(wd.amount_raw) })),
         changeAddress: changeAddrRow.address,
-      }, tenantId);
+        feeRateSatVb,
+        rbf: config.btc_rbf_enabled === 1,
+      });
       psbtBase64 = psbtResult.psbt;
-      actualFeeSats = psbtResult.fee ? String(Math.round(psbtResult.fee * 1e8)) : estimatedFeeSats.toString();
+      actualFeeSats = psbtResult.feeSats.toString();
     } catch (err: any) {
       logger.error('PSBT building failed', { batchId, tenantId, error: String(err) });
 
@@ -763,21 +767,20 @@ export const withdrawalBatcherService = {
 
     // Build replacement PSBT
     const adapter = new BitcoinAdapter();
-    const inputs = lockedUtxos.map(u => ({ txid: u.tx_hash, vout: u.vout }));
-    const outputs: Record<string, number>[] = items.map(item => ({
-      [item.to_address]: Number(BigInt(item.amount_raw)) / 1e8,
-    }));
 
     let psbtBase64: string;
     let actualFeeSats: string;
 
     try {
-      const psbtResult = await adapter.walletCreateFundedPsbt(inputs, outputs, {
-        feeRate: newFeeRateSatVb / 1e5,
+      const psbtResult = await adapter.buildWithdrawalPsbt({
+        inputs: lockedUtxos.map(u => ({ txid: u.tx_hash, vout: u.vout, amountSats: BigInt(u.amount_raw) })),
+        recipientOutputs: items.map(i => ({ address: i.to_address, amountSats: BigInt(i.amount_raw) })),
         changeAddress: changeAddrRow.address,
-      }, tenantId);
+        feeRateSatVb: newFeeRateSatVb,
+        rbf: true,
+      });
       psbtBase64 = psbtResult.psbt;
-      actualFeeSats = psbtResult.fee ? String(Math.round(psbtResult.fee * 1e8)) : String(newFeeRateSatVb * 200);
+      actualFeeSats = psbtResult.feeSats.toString();
     } catch (err: any) {
       // Roll back: restore original batch, re-assign locks, delete new batch
       await utxoLockService.reassignLocks(tenantId, newBatchId, batchId);
@@ -930,13 +933,10 @@ export const withdrawalBatcherService = {
     let psbtBase64: string;
 
     try {
-      const psbtResult = await adapter.walletCreateFundedPsbt(
+      psbtBase64 = await adapter.createUnsignedPsbt(
         [{ txid: changeUtxo.tx_hash, vout: changeUtxo.vout }],
         [{ [changeAddrRow.address]: Number(cpfpOutput) / 1e8 }],
-        { feeRate: effectiveFeeRateSatVb / 1e5, changeAddress: changeAddrRow.address },
-        tenantId,
       );
-      psbtBase64 = psbtResult.psbt;
     } catch (err: any) {
       await utxoLockService.releaseSingleUtxo(tenantId, 'bitcoin', cpfpLockId, changeUtxo);
       await db.run('DELETE FROM withdrawal_batches WHERE id = ?', [cpfpBatchId]);
