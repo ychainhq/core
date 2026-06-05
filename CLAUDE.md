@@ -6,7 +6,7 @@
 - **Framework:** Express 4
 - **Baza danych (produkcja):** PostgreSQL 16+ — Docker `chainapi-postgres`, port 5433. `DATABASE_URL=postgres://chainapi:chainapi_dev@localhost:5433/chainapi`. Konfiguracja przez `DB_TYPE=postgres` w `.env`.
 - **Baza danych (testy):** SQLite in-memory (`:memory:`) — używane wyłącznie w testach integracyjnych przez `bootstrapApp()`. Testy NIE dotykają Postgresa.
-- **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — **stateless** (bez FWallet), brak kluczy prywatnych
+- **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — **stateless** (bez FWallet), brak kluczy prywatnych. Fee estimation przez `BitcoinAdapter.estimateFeeRateSatVb()`. Vsize przez `chain-adapters/bitcoin/tx-sizer.ts`.
 - **Block indexer:** `packages/btc-indexer` — osobny proces skanujący bloki; engine konsumuje zdarzenia z tabeli `chain_events`
 - **MCP:** `@modelcontextprotocol/sdk` — silnik wystawia narzędzia MCP na `/mcp/tenant`, `/mcp/customer`, `/mcp/admin`
 - **Walidacja:** `zod` (body + query params)
@@ -564,9 +564,16 @@ Przykłady **dozwolone**: `const FALLBACK_FEE_RATE_SAT_VB = 5`, `config.btc_fee_
 - **`deposits.upsert()` zwraca `{ deposit, isNew, previousStatus }`** — używaj tych flag zamiast dodatkowych SELECT do określenia czy depozyt jest nowy i jaki był poprzedni status.
 - **Statusy depozytu to wyłącznie `detected` i `confirmed`** — nie używaj `pending_confirmation` ani `finalized` w nowym kodzie.
 
+### Enkapsulacja fee estimation (Bitcoin)
+
+- **`BitcoinAdapter.estimateFeeRateSatVb()`** — jedyny publiczny punkt dostępu do fee rate w sat/vbyte. Wywołuj zamiast bezpośredniego `adapter.estimateSmartFee()`. Zawiera: TTL cache (30s, konfigurowalny przez `BTC_FEE_RATE_CACHE_TTL_MS`), fallback `FALLBACK_FEE_RATE_SAT_VB=5` gdy Bitcoin Core niedostępny, opcjonalne clampy `maxSatVb`/`minSatVb` dla polityki per-tenant.
+- **`estimateTxVsize()` z `chain-adapters/bitcoin/tx-sizer.ts`** — jedyne źródło prawdy o rozmiarze BTC transakcji. Nie duplikuj wzorów `10 + 68*n + 31*m` ani `42 + 68*n` w nowym kodzie. Eksportuje per-type rozmiary outputów (`P2WPKH=31`, `P2TR=43`, `P2PKH=34`, `P2SH=32`, `P2WSH=43`) i stałą wejściową `P2WPKH_INPUT_VBYTES=68`.
+- **`tenant_configs.btc_fee_target_blocks`** — per-tenant target bloków dla sweepów i operacji bez własnej konfiguracji (domyślnie 6). Batcher ma własną politykę w `tenant_withdrawal_batch_configs.btc_target_blocks`.
+
 ### Zasady v3 — chain_events i btc-indexer
 
 - **Engine NIE wywołuje `listunspent`, `importaddress`, `importdescriptors`, `createwallet`, `loadwallet`** w kontekście detekcji depozytów. Te operacje są domeną `btc-indexer`.
+- **Engine NIE wywołuje `walletcreatefundedpsbt`** w ścieżce withdrawal. Withdrawal batcher, RBF i CPFP używają `createpsbt` + `utxoupdatepsbt` — stateless, bez named wallet. Istniejące wywołania `walletcreatefundedpsbt` w `bitcoin-transactions.service.ts` i `prepare.router.ts` są legacy — objęte FAZA 2 cleanup.
 - **`ChainEventProcessorWorker`** pobiera eventy przez `chainEventsService.fetchUnprocessed()` i oznacza je przez `chainEventsService.markProcessed()`. Zero bezpośredniego SQL na `chain_events` w workerze.
 
 
