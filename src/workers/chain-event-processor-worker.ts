@@ -244,7 +244,12 @@ export class ChainEventProcessorWorker {
     const account = input.customerId
       ? await ledgerService.findAccountByCustomerAndAsset(input.tenantId, input.customerId, input.assetId)
       : (input.walletId ? await ledgerService.findAccountByWalletAndAsset(input.walletId, input.assetId) : null);
-    if (!account) return;
+    if (!account) {
+      logger.warn('No ledger account found for deposit, skipping pending entry', {
+        tenantId: input.tenantId, customerId: input.customerId, walletId: input.walletId, assetId: input.assetId,
+      });
+      return;
+    }
 
     await ledgerService.ensureDepositEntry({
       tenantId: input.tenantId,
@@ -291,7 +296,12 @@ export class ChainEventProcessorWorker {
     const account = input.customerId
       ? await ledgerService.findAccountByCustomerAndAsset(input.tenantId, input.customerId, input.assetId)
       : (input.walletId ? await ledgerService.findAccountByWalletAndAsset(input.walletId, input.assetId) : null);
-    if (!account) return;
+    if (!account){
+      logger.warn('No ledger account found for deposit, skipping confirmed entry', {
+        tenantId: input.tenantId, customerId: input.customerId, walletId: input.walletId, assetId: input.assetId,
+      });
+      return;
+    } 
 
     await ledgerService.ensureDepositEntry({
       tenantId: input.tenantId,
