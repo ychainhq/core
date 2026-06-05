@@ -2,7 +2,7 @@
  * Unit tests for SweepWorker.
  *
  * Covered:
- * - Uses createUnsignedPsbt (not walletCreateFundedPsbt) — regression for "Not solvable" RPC -4
+ * - Uses buildSweepPsbt (not walletCreateFundedPsbt) — regression for "Not solvable" RPC -4
  * - Fee rate from estimateFeeRateSatVb (adapter method with cache+fallback)
  * - Vsize via estimateTxVsize from tx-sizer (ceil(10.5 + 68×N + 31×1) for P2WPKH sweep)
  * - btc_fee_target_blocks from tenant_configs passed to estimateFeeRateSatVb
@@ -11,24 +11,36 @@
  * - Deduplication (existing pending_signature sweep → skip)
  * - Sweep record written with correct amounts
  * - Idempotency (second run skips because sweep is pending_signature)
+ * - PSBT enrichment: enriched PSBT stored; enrichment failure is non-fatal
+ * - Recovery: orphaned sweep (no signing_task_id) → signing task created
+ * - Recovery: expired/failed signing task → task recreated
  *
  * v3: UTXOs come from cached_utxos table (populated by DepositEventProcessorWorker),
  *     NOT from Bitcoin Core listunspent / getUtxosForAddress.
  */
+
+// Preserve exported constants (DUST_THRESHOLD_SATS) — only mock the class itself.
+jest.mock('../../src/chain-adapters/bitcoin/adapter', () => {
+  const actual = jest.requireActual('../../src/chain-adapters/bitcoin/adapter');
+  return { ...actual, BitcoinAdapter: jest.fn() };
+});
+jest.mock('../../src/chain-adapters/bitcoin/psbt-enricher');
 
 import { runMigrations } from '../../src/db/migrate';
 import { runSeed } from '../../src/db/seed';
 import { closeDb, getDb } from '../../src/db/sqlite';
 import { resetDbClient } from '../../src/db/client';
 import { BitcoinAdapter } from '../../src/chain-adapters/bitcoin/adapter';
+import { enrichSweepPsbt } from '../../src/chain-adapters/bitcoin/psbt-enricher';
 import { adapterRegistry } from '../../src/chain-adapters/registry';
 import { SweepWorker } from '../../src/workers/sweep.worker';
-
-jest.mock('../../src/chain-adapters/bitcoin/adapter');
+import { sweepsService } from '../../src/modules/sweeps/sweeps.service';
+import { signingTasksService } from '../../src/modules/signing-tasks/signing-tasks.service';
 
 const TENANT_ID = 'tenant_default';
 const DEPOSIT_ADDRESS = 'bcrt1q0000000000000000000000000000000000000qk6ng7';
 const FAKE_PSBT = 'cHNidP8BAAoAAAAA==';
+const ENRICHED_PSBT = 'ZW5yaWNoZWRwc2J0AA==';
 
 // tx-sizer: ceil(10.5 + 68×N + 31×1) for N P2WPKH inputs → 1 P2WPKH output (hot wallet)
 const VBYTES_1_INPUT = 110;  // ceil(10.5 + 68 + 31) = ceil(109.5) = 110
@@ -37,7 +49,7 @@ const VBYTES_3_INPUTS = 246; // ceil(10.5 + 204 + 31) = ceil(245.5) = 246
 type MockAdapter = {
   chain: string;
   estimateFeeRateSatVb: jest.Mock;
-  createUnsignedPsbt: jest.Mock;
+  buildSweepPsbt: jest.Mock;
   walletCreateFundedPsbt: jest.Mock;
   isValidAddress: jest.Mock;
   provisionTenantWallet: jest.Mock;
@@ -46,18 +58,18 @@ type MockAdapter = {
   getBlockCount: jest.Mock;
   getAddressBalance: jest.Mock;
   getWalletUtxos: jest.Mock;
-  getUtxosForAddress: jest.Mock; // kept for mock type completeness; NOT called in v3
+  getUtxosForAddress: jest.Mock;
   [key: string]: any;
 };
 
 let mockAdapter: MockAdapter;
-let depositWalletId: string; // set by bootstrap(), used by insertUtxo()
+let depositWalletId: string;
 
 beforeAll(() => {
   mockAdapter = {
     chain: 'bitcoin',
     estimateFeeRateSatVb: jest.fn().mockResolvedValue(5),
-    createUnsignedPsbt: jest.fn().mockResolvedValue(FAKE_PSBT),
+    buildSweepPsbt: jest.fn().mockResolvedValue(FAKE_PSBT),
     walletCreateFundedPsbt: jest.fn(),
     isValidAddress: jest.fn().mockReturnValue(true),
     provisionTenantWallet: jest.fn().mockResolvedValue(undefined),
@@ -66,7 +78,7 @@ beforeAll(() => {
     getBlockCount: jest.fn().mockResolvedValue(1000),
     getAddressBalance: jest.fn().mockResolvedValue({ confirmed: '0', unconfirmed: '0', total: '0' }),
     getWalletUtxos: jest.fn().mockResolvedValue([]),
-    getUtxosForAddress: jest.fn().mockResolvedValue([]), // should NOT be called in v3
+    getUtxosForAddress: jest.fn().mockResolvedValue([]),
   };
   (BitcoinAdapter as jest.MockedClass<typeof BitcoinAdapter>).mockImplementation(() => mockAdapter as any);
 });
@@ -77,10 +89,6 @@ afterEach(() => { closeDb(); resetDbClient(); });
 
 let _utxoSeq = 0;
 
-/**
- * Insert a row into cached_utxos (v3 UTXO source).
- * Replaces adapter.getUtxosForAddress mock — SweepWorker now reads from DB.
- */
 function insertUtxo(txHash: string, vout = 0, amountSats = 500_000, confirmations = 2) {
   const db = getDb();
   const now = new Date().toISOString();
@@ -92,7 +100,7 @@ function insertUtxo(txHash: string, vout = 0, amountSats = 500_000, confirmation
   `).run(
     `utxo_test_${++_utxoSeq}`,
     TENANT_ID, depositWalletId, DEPOSIT_ADDRESS,
-    txHash, vout, String(amountSats), confirmations, now, now
+    txHash, vout, String(amountSats), confirmations, now, now,
   );
 }
 
@@ -111,7 +119,7 @@ async function bootstrap({ thresholdSats = '100000' }: { thresholdSats?: string 
     .run(thresholdSats, TENANT_ID);
 
   const depositWallet = db.prepare(
-    "SELECT id FROM wallets WHERE tenant_id = ? AND wallet_role = 'customer_deposits' LIMIT 1"
+    "SELECT id FROM wallets WHERE tenant_id = ? AND wallet_role = 'customer_deposits' LIMIT 1",
   ).get(TENANT_ID) as { id: string } | undefined;
   if (!depositWallet) throw new Error('seed did not create a customer_deposits wallet for tenant_default');
 
@@ -125,9 +133,12 @@ async function bootstrap({ thresholdSats = '100000' }: { thresholdSats?: string 
   `).run('addr_dep_sw_test', TENANT_ID, depositWalletId, DEPOSIT_ADDRESS, now, now);
 
   mockAdapter.estimateFeeRateSatVb.mockReset().mockResolvedValue(5);
-  mockAdapter.createUnsignedPsbt.mockReset().mockResolvedValue(FAKE_PSBT);
+  mockAdapter.buildSweepPsbt.mockReset().mockResolvedValue(FAKE_PSBT);
   mockAdapter.walletCreateFundedPsbt.mockReset();
   mockAdapter.getUtxosForAddress.mockReset().mockResolvedValue([]);
+
+  // Default: enrichSweepPsbt passes PSBT through unchanged (real function handles empty inputs)
+  (enrichSweepPsbt as jest.Mock).mockReset().mockImplementation((psbt: string) => Promise.resolve(psbt));
 }
 
 function getHotAddress(): string {
@@ -150,9 +161,10 @@ function getOnlySweep(): any {
   return getDb().prepare('SELECT * FROM sweeps LIMIT 1').get();
 }
 
-function capturedOutputBtc(): number {
-  const [, outputs] = mockAdapter.createUnsignedPsbt.mock.calls[0];
-  return Object.values(outputs[0])[0] as number;
+/** Returns the outputSats bigint passed as 3rd argument to adapter.buildSweepPsbt. */
+function capturedOutputSats(): bigint {
+  const [, , outputSats] = mockAdapter.buildSweepPsbt.mock.calls[0];
+  return outputSats as bigint;
 }
 
 // ── v3 compliance ─────────────────────────────────────────────────────────────
@@ -170,48 +182,46 @@ describe('v3: UTXOs come from cached_utxos, not from Bitcoin Core', () => {
 
   it('skips when cached_utxos is empty even though deposit addresses exist', async () => {
     await bootstrap();
-    // No insertUtxo call — DB has deposit address but no cached UTXOs
 
     await new SweepWorker().run();
 
-    expect(mockAdapter.createUnsignedPsbt).not.toHaveBeenCalled();
+    expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
     expect(sweepCount()).toBe(0);
   });
 });
 
 // ── PSBT creation method ──────────────────────────────────────────────────────
 
-describe('PSBT creation uses createUnsignedPsbt, not walletCreateFundedPsbt', () => {
-  it('calls createUnsignedPsbt (regression: addr() descriptors are not solvable for walletCreateFundedPsbt)', async () => {
+describe('PSBT creation uses buildSweepPsbt, not walletCreateFundedPsbt', () => {
+  it('calls buildSweepPsbt (regression: addr() descriptors are not solvable for walletCreateFundedPsbt)', async () => {
     await bootstrap();
     insertUtxo('tx_rg01');
 
     await new SweepWorker().run();
 
-    expect(mockAdapter.createUnsignedPsbt).toHaveBeenCalledTimes(1);
+    expect(mockAdapter.buildSweepPsbt).toHaveBeenCalledTimes(1);
     expect(mockAdapter.walletCreateFundedPsbt).not.toHaveBeenCalled();
   });
 
-  it('passes correct inputs array { txid, vout } to createUnsignedPsbt', async () => {
+  it('passes UTXOs as { txHash, vout } array to buildSweepPsbt', async () => {
     await bootstrap();
     insertUtxo('deadbeef', 2);
 
     await new SweepWorker().run();
 
-    const [inputs] = mockAdapter.createUnsignedPsbt.mock.calls[0];
-    expect(inputs).toEqual([{ txid: 'deadbeef', vout: 2 }]);
+    const [utxos] = mockAdapter.buildSweepPsbt.mock.calls[0];
+    expect(utxos).toEqual([{ txHash: 'deadbeef', vout: 2, address: DEPOSIT_ADDRESS, amount: '500000' }]);
   });
 
-  it('passes hot-address as the sole output key to createUnsignedPsbt', async () => {
+  it('passes hot-address as outputAddress to buildSweepPsbt', async () => {
     await bootstrap();
     insertUtxo('tx_out01', 0, 500_000);
     mockAdapter.estimateFeeRateSatVb.mockResolvedValue(0);
 
     await new SweepWorker().run();
 
-    const [, outputs] = mockAdapter.createUnsignedPsbt.mock.calls[0];
-    const hotAddress = getHotAddress();
-    expect(outputs[0]).toHaveProperty(hotAddress);
+    const [, outputAddress] = mockAdapter.buildSweepPsbt.mock.calls[0];
+    expect(outputAddress).toBe(getHotAddress());
   });
 });
 
@@ -235,7 +245,7 @@ describe('Fee calculation', () => {
     await new SweepWorker().run();
 
     expect(mockAdapter.estimateFeeRateSatVb).toHaveBeenCalledWith(
-      expect.objectContaining({ targetBlocks: 6 }), // default from migration DEFAULT 6
+      expect.objectContaining({ targetBlocks: 6 }),
     );
   });
 
@@ -246,8 +256,8 @@ describe('Fee calculation', () => {
 
     await new SweepWorker().run();
 
-    const expectedSats = 500_000 - 10 * VBYTES_1_INPUT; // 498 900
-    expect(capturedOutputBtc()).toBeCloseTo(expectedSats / 1e8, 7);
+    const expectedSats = 500_000 - 10 * VBYTES_1_INPUT;
+    expect(capturedOutputSats()).toBe(BigInt(expectedSats));
   });
 
   it('scales fee with number of inputs: 3 inputs → fee = feeRate × ceil(10.5 + 68×3 + 31)', async () => {
@@ -259,8 +269,8 @@ describe('Fee calculation', () => {
 
     await new SweepWorker().run();
 
-    const expectedSats = 150_000 - 2 * VBYTES_3_INPUTS; // 149 508
-    expect(capturedOutputBtc()).toBeCloseTo(expectedSats / 1e8, 7);
+    const expectedSats = 150_000 - 2 * VBYTES_3_INPUTS;
+    expect(capturedOutputSats()).toBe(BigInt(expectedSats));
   });
 
   it('stores fee_raw = feeRate × vbytes in the sweep record', async () => {
@@ -270,20 +280,18 @@ describe('Fee calculation', () => {
 
     await new SweepWorker().run();
 
-    expect(getOnlySweep().fee_raw).toBe(String(10 * VBYTES_1_INPUT)); // '1100'
+    expect(getOnlySweep().fee_raw).toBe(String(10 * VBYTES_1_INPUT));
   });
 
   it('uses fallback rate (5 sat/vB) when estimateFeeRateSatVb returns fallback', async () => {
-    // Fallback logic lives inside adapter.estimateFeeRateSatVb — tested in withdrawal-psbt.test.ts.
-    // Here we verify the worker uses whatever rate the adapter returns.
     await bootstrap();
-    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(5); // adapter returned its fallback
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(5);
     insertUtxo('tx_fallback01', 0, 500_000);
 
     await new SweepWorker().run();
 
-    const expectedSats = 500_000 - 5 * VBYTES_1_INPUT; // 499 450
-    expect(capturedOutputBtc()).toBeCloseTo(expectedSats / 1e8, 7);
+    const expectedSats = 500_000 - 5 * VBYTES_1_INPUT;
+    expect(capturedOutputSats()).toBe(BigInt(expectedSats));
   });
 });
 
@@ -297,7 +305,7 @@ describe('Dust threshold guard (output ≤ 546 sats)', () => {
 
     await new SweepWorker().run();
 
-    expect(mockAdapter.createUnsignedPsbt).not.toHaveBeenCalled();
+    expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
     expect(sweepCount()).toBe(0);
   });
 
@@ -308,7 +316,7 @@ describe('Dust threshold guard (output ≤ 546 sats)', () => {
 
     await new SweepWorker().run();
 
-    expect(mockAdapter.createUnsignedPsbt).toHaveBeenCalledTimes(1);
+    expect(mockAdapter.buildSweepPsbt).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -321,17 +329,16 @@ describe('Pre-condition checks', () => {
 
     await new SweepWorker().run();
 
-    expect(mockAdapter.createUnsignedPsbt).not.toHaveBeenCalled();
+    expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
     expect(sweepCount()).toBe(0);
   });
 
   it('skips when there are no deposit UTXOs in cached_utxos', async () => {
     await bootstrap();
-    // No insertUtxo — cached_utxos is empty
 
     await new SweepWorker().run();
 
-    expect(mockAdapter.createUnsignedPsbt).not.toHaveBeenCalled();
+    expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
   });
 
   it('skips when an existing pending_signature sweep already exists', async () => {
@@ -352,8 +359,8 @@ describe('Pre-condition checks', () => {
 
     await new SweepWorker().run();
 
-    expect(mockAdapter.createUnsignedPsbt).not.toHaveBeenCalled();
-    expect(sweepCount()).toBe(1); // only the pre-inserted one
+    expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
+    expect(sweepCount()).toBe(1);
   });
 
   it('skips when no tenant has btc_sweep_threshold_sats set', async () => {
@@ -396,7 +403,7 @@ describe('Sweep record creation', () => {
     expect(getOnlySweep().to_address).toBe(getHotAddress());
   });
 
-  it('stores the PSBT returned by createUnsignedPsbt', async () => {
+  it('stores the PSBT returned by buildSweepPsbt (after enrichment pass-through)', async () => {
     await bootstrap();
     insertUtxo('tx_psbt01', 0, 500_000);
 
@@ -423,6 +430,199 @@ describe('Sweep record creation', () => {
     await worker.run();
 
     expect(sweepCount()).toBe(1);
-    expect(mockAdapter.createUnsignedPsbt).toHaveBeenCalledTimes(1);
+    expect(mockAdapter.buildSweepPsbt).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates a signing task linked to the sweep', async () => {
+    await bootstrap();
+    insertUtxo('tx_task01', 0, 500_000);
+
+    await new SweepWorker().run();
+
+    const sweep = getOnlySweep();
+    expect(sweep.signing_task_id).not.toBeNull();
+
+    const task = getDb()
+      .prepare('SELECT * FROM signing_tasks WHERE id = ?')
+      .get(sweep.signing_task_id) as any;
+    expect(task).toBeDefined();
+    expect(task.request_type).toBe('btc_sweep');
+    expect(task.sweep_id).toBe(sweep.id);
+  });
+});
+
+// ── PSBT enrichment ───────────────────────────────────────────────────────────
+
+describe('PSBT enrichment', () => {
+  it('calls enrichSweepPsbt after buildSweepPsbt', async () => {
+    await bootstrap();
+    insertUtxo('tx_enr_call01', 0, 500_000);
+
+    await new SweepWorker().run();
+
+    expect(enrichSweepPsbt as jest.Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('stores enriched PSBT in sweep record when enrichment succeeds', async () => {
+    await bootstrap();
+    (enrichSweepPsbt as jest.Mock).mockResolvedValueOnce(ENRICHED_PSBT);
+    insertUtxo('tx_enr_stored01', 0, 500_000);
+
+    await new SweepWorker().run();
+
+    expect(getOnlySweep().psbt).toBe(ENRICHED_PSBT);
+  });
+
+  it('creates sweep with unenriched PSBT when enrichSweepPsbt throws (non-fatal)', async () => {
+    await bootstrap();
+    (enrichSweepPsbt as jest.Mock).mockRejectedValueOnce(new Error('enrich failed'));
+    insertUtxo('tx_enr_fail01', 0, 500_000);
+
+    await new SweepWorker().run();
+
+    expect(sweepCount()).toBe(1);
+    expect(getOnlySweep().psbt).toBe(FAKE_PSBT);
+  });
+
+  it('aborts sweep when buildSweepPsbt itself throws', async () => {
+    await bootstrap();
+    mockAdapter.buildSweepPsbt.mockRejectedValueOnce(new Error('rpc error'));
+    insertUtxo('tx_enr_rpcfail01', 0, 500_000);
+
+    await new SweepWorker().run();
+
+    expect(sweepCount()).toBe(0);
+    expect(enrichSweepPsbt as jest.Mock).not.toHaveBeenCalled();
+  });
+});
+
+// ── Recovery: orphaned sweep ──────────────────────────────────────────────────
+
+describe('Recovery: orphaned sweep with no signing_task_id', () => {
+  it('creates and links a signing task for a sweep that has none', async () => {
+    await bootstrap();
+    const hotAddress = getHotAddress();
+
+    const sweep = await sweepsService.create(TENANT_ID, {
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      fromAddresses: [DEPOSIT_ADDRESS],
+      toAddress: hotAddress,
+      amountRaw: '500000',
+      feeRaw: '550',
+      psbt: FAKE_PSBT,
+    });
+    // Deliberately NOT calling linkSigningTask — sweep is orphaned
+
+    await new SweepWorker().run();
+
+    const updated = await sweepsService.getByIdInternal(sweep.id);
+    expect(updated.signing_task_id).not.toBeNull();
+
+    const task = getDb()
+      .prepare('SELECT * FROM signing_tasks WHERE id = ?')
+      .get(updated.signing_task_id) as any;
+    expect(task).toBeDefined();
+    expect(task.request_type).toBe('btc_sweep');
+    expect(task.sweep_id).toBe(sweep.id);
+  });
+
+  it('does NOT build a new sweep when recovering an orphaned one', async () => {
+    await bootstrap();
+    const hotAddress = getHotAddress();
+    insertUtxo('tx_orp_nosweep', 0, 500_000);
+
+    await sweepsService.create(TENANT_ID, {
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      fromAddresses: [DEPOSIT_ADDRESS],
+      toAddress: hotAddress,
+      amountRaw: '500000',
+      feeRaw: '550',
+      psbt: FAKE_PSBT,
+    });
+
+    await new SweepWorker().run();
+
+    expect(sweepCount()).toBe(1);
+    expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
+  });
+});
+
+// ── Recovery: expired/failed signing task ─────────────────────────────────────
+
+describe('Recovery: expired or failed signing task', () => {
+  it('recreates signing task when the existing task has status "expired"', async () => {
+    await bootstrap();
+    const hotAddress = getHotAddress();
+
+    const sweep = await sweepsService.create(TENANT_ID, {
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      fromAddresses: [DEPOSIT_ADDRESS],
+      toAddress: hotAddress,
+      amountRaw: '500000',
+      feeRaw: '550',
+      psbt: FAKE_PSBT,
+    });
+
+    const oldTask = await signingTasksService.create({
+      tenantId: TENANT_ID,
+      signerId: null,
+      requestType: 'btc_sweep',
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      sweepId: sweep.id,
+      amountRaw: '500000',
+      feeRaw: '550',
+      payloadFormat: 'btc_psbt',
+      unsignedPayload: FAKE_PSBT,
+      decisionMode: 'auto',
+    });
+    await sweepsService.linkSigningTask(sweep.id, oldTask.id);
+    getDb().prepare("UPDATE signing_tasks SET status = 'expired' WHERE id = ?").run(oldTask.id);
+
+    await new SweepWorker().run();
+
+    const updated = await sweepsService.getByIdInternal(sweep.id);
+    expect(updated.signing_task_id).not.toBe(oldTask.id);
+    expect(updated.signing_task_id).not.toBeNull();
+  });
+
+  it('does NOT recreate signing task when existing task is still pending (active)', async () => {
+    await bootstrap();
+    const hotAddress = getHotAddress();
+
+    const sweep = await sweepsService.create(TENANT_ID, {
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      fromAddresses: [DEPOSIT_ADDRESS],
+      toAddress: hotAddress,
+      amountRaw: '500000',
+      feeRaw: '550',
+      psbt: FAKE_PSBT,
+    });
+
+    const task = await signingTasksService.create({
+      tenantId: TENANT_ID,
+      signerId: null,
+      requestType: 'btc_sweep',
+      chainId: 'bitcoin',
+      assetId: 'bitcoin:BTC',
+      sweepId: sweep.id,
+      amountRaw: '500000',
+      feeRaw: '550',
+      payloadFormat: 'btc_psbt',
+      unsignedPayload: FAKE_PSBT,
+      decisionMode: 'auto',
+    });
+    await sweepsService.linkSigningTask(sweep.id, task.id);
+    // task status remains 'pending' (default)
+
+    await new SweepWorker().run();
+
+    const updated = await sweepsService.getByIdInternal(sweep.id);
+    expect(updated.signing_task_id).toBe(task.id); // unchanged
+    expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
   });
 });

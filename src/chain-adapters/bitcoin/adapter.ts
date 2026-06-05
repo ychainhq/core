@@ -16,6 +16,8 @@ import { ValidationError } from '../../shared/errors/index';
 import { estimateTxVsize } from './tx-sizer';
 
 const FALLBACK_FEE_RATE_SAT_VB = 5; // used when Bitcoin Core estimatesmartfee is unavailable
+
+export const DUST_THRESHOLD_SATS = 546n; // P2WPKH/P2TR minimum non-dust output (BIP 141)
 const FEE_RATE_CACHE_TTL_MS = parseInt(process.env['BTC_FEE_RATE_CACHE_TTL_MS'] ?? '30000', 10);
 
 // Convert BTC float to satoshi string (use string math to avoid float issues)
@@ -335,8 +337,8 @@ export class BitcoinAdapter implements IChainAdapter {
       );
     }
 
-    // Drop change if it would be dust (< 546 sats); remainder goes to miners as extra fee
-    const DUST_THRESHOLD = 546n;
+    // Drop change if it would be dust; remainder goes to miners as extra fee
+    const DUST_THRESHOLD = DUST_THRESHOLD_SATS;
     const includeChange = changeSats >= DUST_THRESHOLD;
     const actualFeeSats = includeChange
       ? feeWithChangeSats
@@ -356,6 +358,21 @@ export class BitcoinAdapter implements IChainAdapter {
 
     const psbt = await this.createUnsignedPsbt(psbtInputs, psbtOutputs);
     return { psbt, feeSats: actualFeeSats };
+  }
+
+  /**
+   * Build an unsigned sweep PSBT for a set of UTXOs to a single output.
+   * Handles the satoshi→BTC float conversion and input mapping so callers
+   * work in bigint satoshis, not in Bitcoin Core's floating-point format.
+   */
+  async buildSweepPsbt(
+    utxos: Array<{ txHash: string; vout: number }>,
+    outputAddress: string,
+    outputSats: bigint,
+  ): Promise<string> {
+    const inputs = utxos.map(u => ({ txid: u.txHash, vout: u.vout }));
+    const outputBtc = parseFloat((Number(outputSats) / 1e8).toFixed(8));
+    return this.createUnsignedPsbt(inputs, [{ [outputAddress]: outputBtc }]);
   }
 
   isValidAddress(address: string): boolean {

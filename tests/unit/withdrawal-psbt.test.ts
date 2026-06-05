@@ -253,6 +253,82 @@ describe('BitcoinAdapter.buildWithdrawalPsbt', () => {
   });
 });
 
+// ─── buildSweepPsbt ──────────────────────────────────────────────────────────
+
+describe('BitcoinAdapter.buildSweepPsbt', () => {
+  let adapter: BitcoinAdapter;
+  let mockCreate: jest.Mock;
+  let mockUpdate: jest.Mock;
+
+  beforeEach(() => {
+    mockCreate = jest.fn().mockResolvedValue('mock-unsigned-psbt');
+    mockUpdate = jest.fn().mockResolvedValue('mock-updated-psbt');
+
+    MockedRpcClient.mockImplementation(() => ({
+      createPsbt: mockCreate,
+      utxoUpdatePsbt: mockUpdate,
+    } as any));
+
+    adapter = new BitcoinAdapter();
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  test('returns PSBT from utxoUpdatePsbt', async () => {
+    const result = await adapter.buildSweepPsbt(
+      [{ txHash: TXID, vout: 0 }],
+      WPKH,
+      500_000n,
+    );
+    expect(result).toBe('mock-updated-psbt');
+  });
+
+  test('maps txHash→txid for the RPC layer', async () => {
+    await adapter.buildSweepPsbt([{ txHash: TXID, vout: 2 }], WPKH, 100_000n);
+
+    const [psbtInputs] = mockCreate.mock.calls[0] as [any[]];
+    expect(psbtInputs).toEqual([{ txid: TXID, vout: 2 }]);
+  });
+
+  test('converts outputSats bigint to BTC float for createPsbt', async () => {
+    // 50_000 sats = 0.0005 BTC
+    await adapter.buildSweepPsbt([{ txHash: TXID, vout: 0 }], WPKH, 50_000n);
+
+    const [, psbtOutputs] = mockCreate.mock.calls[0] as [any[], any[]];
+    expect(psbtOutputs).toHaveLength(1);
+    expect(Object.keys(psbtOutputs[0]!)[0]).toBe(WPKH);
+    expect(Object.values(psbtOutputs[0]!)[0] as number).toBeCloseTo(0.0005, 8);
+  });
+
+  test('passes all UTXOs as inputs when multiple are given', async () => {
+    await adapter.buildSweepPsbt(
+      [{ txHash: TXID, vout: 0 }, { txHash: TXID2, vout: 1 }, { txHash: TXID, vout: 2 }],
+      WPKH,
+      200_000n,
+    );
+
+    const [psbtInputs] = mockCreate.mock.calls[0] as [any[]];
+    expect(psbtInputs).toHaveLength(3);
+    expect(psbtInputs[0]).toEqual({ txid: TXID, vout: 0 });
+    expect(psbtInputs[1]).toEqual({ txid: TXID2, vout: 1 });
+    expect(psbtInputs[2]).toEqual({ txid: TXID, vout: 2 });
+  });
+
+  test('calls createPsbt and utxoUpdatePsbt exactly once each', async () => {
+    await adapter.buildSweepPsbt([{ txHash: TXID, vout: 0 }], WPKH, 500_000n);
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(mockUpdate).toHaveBeenCalledWith('mock-unsigned-psbt');
+  });
+
+  test('large satoshi value converts without floating-point precision loss', async () => {
+    await adapter.buildSweepPsbt([{ txHash: TXID, vout: 0 }], WPKH, 100_000_000n); // 1 BTC
+
+    const [, psbtOutputs] = mockCreate.mock.calls[0] as [any[], any[]];
+    expect(Object.values(psbtOutputs[0]!)[0] as number).toBeCloseTo(1.0, 8);
+  });
+});
+
 // ─── estimateFeeRateSatVb ────────────────────────────────────────────────────
 
 describe('BitcoinAdapter.estimateFeeRateSatVb', () => {
