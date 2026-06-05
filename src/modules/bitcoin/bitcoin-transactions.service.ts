@@ -7,10 +7,7 @@ import { validateRawTransaction, validatePsbt } from '../../shared/validation/bi
 import { transactionsService } from '../transactions/transactions.service';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
-
-const INPUT_SIZE = 68;
-const OUTPUT_SIZE = 31;
-const TX_OVERHEAD = 10;
+import { estimateTxVsize } from '../../chain-adapters/bitcoin/tx-sizer';
 
 interface CoinSelectionInput {
   fromAddresses: string[];
@@ -55,7 +52,13 @@ async function selectCoins(input: CoinSelectionInput, tenantId: string): Promise
     selected.push(utxo);
     selectedTotal += BigInt(utxo.amount);
 
-    const estimatedSize = selected.length * INPUT_SIZE + (input.outputs.length + 1) * OUTPUT_SIZE + TX_OVERHEAD;
+    const estimatedSize = estimateTxVsize({
+      inputCount: selected.length,
+      outputs: [
+        ...input.outputs.map(o => ({ address: o.address })),
+        { address: input.changeAddress },
+      ],
+    });
     const estimatedFee = BigInt(Math.ceil(estimatedSize * input.feeRate));
 
     if (selectedTotal >= targetAmount + estimatedFee) {

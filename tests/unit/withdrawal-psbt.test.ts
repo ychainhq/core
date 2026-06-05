@@ -1,8 +1,7 @@
 /**
- * Unit tests for BitcoinAdapter.buildWithdrawalPsbt.
- *
- * Verifies fee calculation, change handling, dust detection, RBF sequences,
- * and error cases — all without requiring a real Bitcoin Core node.
+ * Unit tests for:
+ *   BitcoinAdapter.buildWithdrawalPsbt — fee calculation, change, dust, RBF
+ *   BitcoinAdapter.estimateFeeRateSatVb — caching, fallback, min/max clamping
  */
 
 import { BitcoinAdapter } from '../../src/chain-adapters/bitcoin/adapter';
@@ -251,5 +250,105 @@ describe('BitcoinAdapter.buildWithdrawalPsbt', () => {
     });
 
     expect(result.feeSats).toBe(1_385n);
+  });
+});
+
+// ─── estimateFeeRateSatVb ────────────────────────────────────────────────────
+
+describe('BitcoinAdapter.estimateFeeRateSatVb', () => {
+  let adapter: BitcoinAdapter;
+  let spyEstimateSmartFee: jest.SpyInstance;
+
+  beforeEach(() => {
+    MockedRpcClient.mockImplementation(() => ({
+      estimateSmartFee: jest.fn(),
+      createPsbt: jest.fn(),
+      utxoUpdatePsbt: jest.fn(),
+    } as any));
+
+    adapter = new BitcoinAdapter(); // fresh instance = empty cache per test
+
+    // Mock at adapter level to skip the BTC/kB → sat/vbyte conversion in estimateSmartFee
+    spyEstimateSmartFee = jest
+      .spyOn(adapter, 'estimateSmartFee')
+      .mockResolvedValue({ feeRate: 20, targetBlocks: 6, mode: 'conservative' });
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  test('returns feeRate from estimateSmartFee on first call', async () => {
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6 });
+    expect(rate).toBe(20);
+    expect(spyEstimateSmartFee).toHaveBeenCalledTimes(1);
+  });
+
+  test('second call with same params returns cached value — RPC not called again', async () => {
+    await adapter.estimateFeeRateSatVb({ targetBlocks: 6 });
+    await adapter.estimateFeeRateSatVb({ targetBlocks: 6 });
+    expect(spyEstimateSmartFee).toHaveBeenCalledTimes(1);
+  });
+
+  test('different targetBlocks = different cache key — both call RPC', async () => {
+    await adapter.estimateFeeRateSatVb({ targetBlocks: 6 });
+    await adapter.estimateFeeRateSatVb({ targetBlocks: 2 });
+    expect(spyEstimateSmartFee).toHaveBeenCalledTimes(2);
+  });
+
+  test('different maxSatVb = different cache key — both call RPC', async () => {
+    await adapter.estimateFeeRateSatVb({ targetBlocks: 6, maxSatVb: 50 });
+    await adapter.estimateFeeRateSatVb({ targetBlocks: 6, maxSatVb: 30 });
+    expect(spyEstimateSmartFee).toHaveBeenCalledTimes(2);
+  });
+
+  test('RPC throws → returns fallbackSatVb (default 5)', async () => {
+    spyEstimateSmartFee.mockRejectedValue(new Error('estimatesmartfee unavailable'));
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6 });
+    expect(rate).toBe(5);
+  });
+
+  test('RPC throws → returns custom fallbackSatVb when provided', async () => {
+    spyEstimateSmartFee.mockRejectedValue(new Error('rpc down'));
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, fallbackSatVb: 3 });
+    expect(rate).toBe(3);
+  });
+
+  test('maxSatVb clamp: RPC returns 100, maxSatVb=50 → returns 50', async () => {
+    spyEstimateSmartFee.mockResolvedValue({ feeRate: 100, targetBlocks: 6, mode: 'conservative' });
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, maxSatVb: 50 });
+    expect(rate).toBe(50);
+  });
+
+  test('maxSatVb clamp: RPC returns 20, maxSatVb=50 → returns 20 (below ceiling)', async () => {
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, maxSatVb: 50 });
+    expect(rate).toBe(20);
+  });
+
+  test('minSatVb clamp: RPC returns 2, minSatVb=10 → returns 10', async () => {
+    spyEstimateSmartFee.mockResolvedValue({ feeRate: 2, targetBlocks: 6, mode: 'conservative' });
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, minSatVb: 10 });
+    expect(rate).toBe(10);
+  });
+
+  test('minSatVb clamp: RPC returns 20, minSatVb=10 → returns 20 (above floor)', async () => {
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, minSatVb: 10 });
+    expect(rate).toBe(20);
+  });
+
+  test('minSatVb=null → no floor clamp applied', async () => {
+    spyEstimateSmartFee.mockResolvedValue({ feeRate: 1, targetBlocks: 6, mode: 'conservative' });
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, minSatVb: null });
+    expect(rate).toBe(1);
+  });
+
+  test('both maxSatVb and minSatVb: RPC returns 3, min=5, max=50 → returns 5', async () => {
+    spyEstimateSmartFee.mockResolvedValue({ feeRate: 3, targetBlocks: 6, mode: 'conservative' });
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, maxSatVb: 50, minSatVb: 5 });
+    expect(rate).toBe(5);
+  });
+
+  test('both maxSatVb and minSatVb: RPC returns 80, min=5, max=50 → returns 50', async () => {
+    spyEstimateSmartFee.mockResolvedValue({ feeRate: 80, targetBlocks: 6, mode: 'conservative' });
+    const rate = await adapter.estimateFeeRateSatVb({ targetBlocks: 6, maxSatVb: 50, minSatVb: 5 });
+    expect(rate).toBe(50);
   });
 });

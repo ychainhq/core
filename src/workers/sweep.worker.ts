@@ -1,6 +1,7 @@
 import { getDbClient } from '../db/client';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
 import { enrichSweepPsbt } from '../chain-adapters/bitcoin/psbt-enricher';
+import { estimateTxVsize } from '../chain-adapters/bitcoin/tx-sizer';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { externalSignersService } from '../modules/external-signers/external-signers.service';
@@ -110,8 +111,8 @@ export class SweepWorker {
     }
 
     // Load tenant xpub — needed for PSBT enrichment (public-key derivation only)
-    const tenantCfg = await db.get<{ btc_xpub: string | null }>(
-      'SELECT btc_xpub FROM tenant_configs WHERE tenant_id = ?', [tenantId]
+    const tenantCfg = await db.get<{ btc_xpub: string | null; btc_fee_target_blocks: number }>(
+      'SELECT btc_xpub, btc_fee_target_blocks FROM tenant_configs WHERE tenant_id = ?', [tenantId]
     );
 
     if (!tenantCfg?.btc_xpub) {
@@ -260,21 +261,20 @@ export class SweepWorker {
       utxoCount: sweepableUtxos.length,
     });
 
-    // Estimate fee (target 6 blocks). adapter.estimateSmartFee already returns sat/vbyte.
-    let feeRateSatPerVbyte = 5; // fallback
-    try {
-      const feeEst = await adapter.estimateSmartFee(6);
-      if (feeEst.feeRate) feeRateSatPerVbyte = feeEst.feeRate;
-    } catch {
-      logger.warn('SweepWorker: fee estimation failed, using fallback', { tenantId });
-    }
+    // Estimate fee rate — caching, fallback and logging handled inside adapter.
+    const feeRateSatPerVbyte = await adapter.estimateFeeRateSatVb({
+      targetBlocks: tenantCfg.btc_fee_target_blocks,
+    });
 
     // Build unsigned PSBT via createpsbt + utxoupdatepsbt.
     // walletCreateFundedPsbt fails on watch-only wallets with addr() descriptors
     // because those are not "solvable". createpsbt skips that check entirely and
     // utxoupdatepsbt fills in witness_utxo from the global UTXO set so the
     // external signer can compute the segwit sighash.
-    const txVbytes = 42 + 68 * sweepableUtxos.length; // P2WPKH: 42 overhead + 68/input
+    const txVbytes = estimateTxVsize({
+      inputCount: sweepableUtxos.length,
+      outputs: [{ address: hotAddr.address }],
+    });
     const feeSats = BigInt(Math.ceil(feeRateSatPerVbyte * txVbytes));
     const outputSats = totalSats - feeSats;
 

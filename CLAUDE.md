@@ -536,6 +536,21 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 
 ## Zasady kodu
 
+### Zakaz magic numbers
+
+Literały liczbowe w kodzie są dozwolone tylko gdy ich znaczenie jest oczywiste z kontekstu (np. `0`, `1`, indeksy tablicowe). Każda inna liczba musi być nazwaną stałą. Zasada wyboru gdzie mieszka ta stała:
+
+| Typ stałej | Gdzie mieszka |
+|-----------|---------------|
+| Protokołowa / chain-specific (rozmiary, progi) | `const` w pliku chain-adaptera lub `tx-sizer.ts` |
+| Konfiguracja deployment (timeouty, retry, porty) | `config/index.ts` jako zmienna środowiskowa z sensownym default |
+| Polityka biznesowa per-tenant (fee targets, progi, limity) | kolumna w `tenant_configs` lub `tenant_withdrawal_batch_configs` — nie hardkoduj |
+| Stała używana w jednym pliku, nie reużywalna | `const` na poziomie modułu w tym pliku |
+| Stała używana w wielu plikach | export z dedykowanego pliku stałych |
+
+Przykłady **zakazane**: `let fallback = 5`, `targetBlocks: 6`, `const OVERHEAD = 10`, `output > 546`.
+Przykłady **dozwolone**: `const FALLBACK_FEE_RATE_SAT_VB = 5`, `config.btc_fee_target_blocks`, `P2WPKH_INPUT_VBYTES` z tx-sizer, `DUST_THRESHOLD_SATS = 546n`.
+
 - Wszystkie zapytania SQL do tabel tenant-scoped **muszą** zawierać `WHERE tenant_id = ?`.
 - Coin selection: `WHERE tenant_id = ? AND is_locked = 0 AND is_spent = 0` — nienaruszalne.
 - Satoshi przechowywane jako `TEXT` w bazie (BigInt safety) — nie konwertuj na `number`.

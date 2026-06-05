@@ -15,6 +15,9 @@ import { logger } from '../../shared/logging/index';
 import { ValidationError } from '../../shared/errors/index';
 import { estimateTxVsize } from './tx-sizer';
 
+const FALLBACK_FEE_RATE_SAT_VB = 5; // used when Bitcoin Core estimatesmartfee is unavailable
+const FEE_RATE_CACHE_TTL_MS = parseInt(process.env['BTC_FEE_RATE_CACHE_TTL_MS'] ?? '30000', 10);
+
 // Convert BTC float to satoshi string (use string math to avoid float issues)
 function btcFloatToSatoshi(btcFloat: number): string {
   const btcStr = btcFloat.toFixed(8);
@@ -32,6 +35,7 @@ export class BitcoinAdapter implements IChainAdapter {
   public readonly chain = 'bitcoin';
   private readonly rpc: BitcoinRpcClient;
   private readonly network: string;
+  private readonly feeRateCache = new Map<string, { feeRate: number; expiresAt: number }>();
 
   constructor() {
     this.rpc = new BitcoinRpcClient();
@@ -190,6 +194,45 @@ export class BitcoinAdapter implements IChainAdapter {
       feeRate: satPerVbyte,
       mode: 'conservative',
     };
+  }
+
+  /**
+   * Estimate fee rate in sat/vbyte with caching, fallback, and optional min/max clamping.
+   *
+   * Cache key includes targetBlocks + clamp params so different callers with different
+   * policies don't share a stale cached value.
+   *
+   * - maxSatVb: tenant ceiling — never pay more than this (e.g. btc_max_fee_rate_sat_vb)
+   * - minSatVb: tenant floor — never pay less than this (e.g. btc_min_fee_rate_sat_vb)
+   * - fallbackSatVb: used when Bitcoin Core is unreachable (default: FALLBACK_FEE_RATE_SAT_VB)
+   */
+  async estimateFeeRateSatVb(params: {
+    targetBlocks: number;
+    maxSatVb?: number;
+    minSatVb?: number | null;
+    fallbackSatVb?: number;
+  }): Promise<number> {
+    const { targetBlocks, maxSatVb, minSatVb, fallbackSatVb = FALLBACK_FEE_RATE_SAT_VB } = params;
+    const cacheKey = `${targetBlocks}:${maxSatVb ?? ''}:${minSatVb ?? ''}`;
+
+    const cached = this.feeRateCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.feeRate;
+    }
+
+    let feeRate = fallbackSatVb;
+    try {
+      const est = await this.estimateSmartFee(targetBlocks);
+      feeRate = est.feeRate;
+    } catch {
+      logger.warn('BitcoinAdapter: fee estimation failed, using fallback', { targetBlocks, fallbackSatVb });
+    }
+
+    if (maxSatVb !== undefined) feeRate = Math.min(feeRate, maxSatVb);
+    if (minSatVb != null)       feeRate = Math.max(feeRate, minSatVb);
+
+    this.feeRateCache.set(cacheKey, { feeRate, expiresAt: Date.now() + FEE_RATE_CACHE_TTL_MS });
+    return feeRate;
   }
 
   async testMempoolAccept(rawTx: string): Promise<MempoolAcceptResult> {

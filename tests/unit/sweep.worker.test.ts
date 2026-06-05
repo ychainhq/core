@@ -3,8 +3,9 @@
  *
  * Covered:
  * - Uses createUnsignedPsbt (not walletCreateFundedPsbt) — regression for "Not solvable" RPC -4
- * - Fee is taken directly from estimateSmartFee.feeRate (no ×100000 bug)
- * - Fee vbytes formula: 42 + 68 × N_inputs (P2WPKH)
+ * - Fee rate from estimateFeeRateSatVb (adapter method with cache+fallback)
+ * - Vsize via estimateTxVsize from tx-sizer (ceil(10.5 + 68×N + 31×1) for P2WPKH sweep)
+ * - btc_fee_target_blocks from tenant_configs passed to estimateFeeRateSatVb
  * - Dust threshold guard (output ≤ 546 sats → skip)
  * - Threshold check (totalSats < threshold → skip)
  * - Deduplication (existing pending_signature sweep → skip)
@@ -29,12 +30,13 @@ const TENANT_ID = 'tenant_default';
 const DEPOSIT_ADDRESS = 'bcrt1q0000000000000000000000000000000000000qk6ng7';
 const FAKE_PSBT = 'cHNidP8BAAoAAAAA==';
 
-const VBYTES_1_INPUT = 42 + 68;       // 110
-const VBYTES_3_INPUTS = 42 + 68 * 3;  // 246
+// tx-sizer: ceil(10.5 + 68×N + 31×1) for N P2WPKH inputs → 1 P2WPKH output (hot wallet)
+const VBYTES_1_INPUT = 110;  // ceil(10.5 + 68 + 31) = ceil(109.5) = 110
+const VBYTES_3_INPUTS = 246; // ceil(10.5 + 204 + 31) = ceil(245.5) = 246
 
 type MockAdapter = {
   chain: string;
-  estimateSmartFee: jest.Mock;
+  estimateFeeRateSatVb: jest.Mock;
   createUnsignedPsbt: jest.Mock;
   walletCreateFundedPsbt: jest.Mock;
   isValidAddress: jest.Mock;
@@ -54,7 +56,7 @@ let depositWalletId: string; // set by bootstrap(), used by insertUtxo()
 beforeAll(() => {
   mockAdapter = {
     chain: 'bitcoin',
-    estimateSmartFee: jest.fn().mockResolvedValue({ feeRate: 5, targetBlocks: 6, mode: 'conservative' }),
+    estimateFeeRateSatVb: jest.fn().mockResolvedValue(5),
     createUnsignedPsbt: jest.fn().mockResolvedValue(FAKE_PSBT),
     walletCreateFundedPsbt: jest.fn(),
     isValidAddress: jest.fn().mockReturnValue(true),
@@ -122,7 +124,7 @@ async function bootstrap({ thresholdSats = '100000' }: { thresholdSats?: string 
     VALUES (?, ?, NULL, ?, 'bitcoin', ?, NULL, 'p2wpkh', 'active', 'customer_deposit', NULL, ?, ?)
   `).run('addr_dep_sw_test', TENANT_ID, depositWalletId, DEPOSIT_ADDRESS, now, now);
 
-  mockAdapter.estimateSmartFee.mockReset().mockResolvedValue({ feeRate: 5, targetBlocks: 6, mode: 'conservative' });
+  mockAdapter.estimateFeeRateSatVb.mockReset().mockResolvedValue(5);
   mockAdapter.createUnsignedPsbt.mockReset().mockResolvedValue(FAKE_PSBT);
   mockAdapter.walletCreateFundedPsbt.mockReset();
   mockAdapter.getUtxosForAddress.mockReset().mockResolvedValue([]);
@@ -203,7 +205,7 @@ describe('PSBT creation uses createUnsignedPsbt, not walletCreateFundedPsbt', ()
   it('passes hot-address as the sole output key to createUnsignedPsbt', async () => {
     await bootstrap();
     insertUtxo('tx_out01', 0, 500_000);
-    mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 0, targetBlocks: 6, mode: 'conservative' });
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(0);
 
     await new SweepWorker().run();
 
@@ -216,9 +218,9 @@ describe('PSBT creation uses createUnsignedPsbt, not walletCreateFundedPsbt', ()
 // ── Fee calculation ───────────────────────────────────────────────────────────
 
 describe('Fee calculation', () => {
-  it('uses feeRate from estimateSmartFee directly (regression: old code multiplied by 100000)', async () => {
+  it('uses feeRate from estimateFeeRateSatVb (adapter encapsulates estimation + caching)', async () => {
     await bootstrap();
-    mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 10, targetBlocks: 6, mode: 'conservative' });
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(10);
     insertUtxo('tx_reg_fee01', 0, 500_000);
 
     await new SweepWorker().run();
@@ -226,9 +228,20 @@ describe('Fee calculation', () => {
     expect(sweepCount()).toBe(1);
   });
 
-  it('deducts feeRate × (42 + 68 × 1) sats for a single P2WPKH input', async () => {
+  it('passes btc_fee_target_blocks from tenant_configs to estimateFeeRateSatVb', async () => {
     await bootstrap();
-    mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 10, targetBlocks: 6, mode: 'conservative' });
+    insertUtxo('tx_target01', 0, 500_000);
+
+    await new SweepWorker().run();
+
+    expect(mockAdapter.estimateFeeRateSatVb).toHaveBeenCalledWith(
+      expect.objectContaining({ targetBlocks: 6 }), // default from migration DEFAULT 6
+    );
+  });
+
+  it('deducts feeRate × ceil(10.5 + 68×1 + 31) sats for a single P2WPKH input', async () => {
+    await bootstrap();
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(10);
     insertUtxo('tx_fee1in', 0, 500_000);
 
     await new SweepWorker().run();
@@ -237,9 +250,9 @@ describe('Fee calculation', () => {
     expect(capturedOutputBtc()).toBeCloseTo(expectedSats / 1e8, 7);
   });
 
-  it('scales fee with number of inputs: 3 inputs → fee = feeRate × (42 + 68 × 3)', async () => {
+  it('scales fee with number of inputs: 3 inputs → fee = feeRate × ceil(10.5 + 68×3 + 31)', async () => {
     await bootstrap({ thresholdSats: '10000' });
-    mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 2, targetBlocks: 6, mode: 'conservative' });
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(2);
     insertUtxo('tx_3in_a', 0, 50_000);
     insertUtxo('tx_3in_b', 1, 50_000);
     insertUtxo('tx_3in_c', 2, 50_000);
@@ -252,7 +265,7 @@ describe('Fee calculation', () => {
 
   it('stores fee_raw = feeRate × vbytes in the sweep record', async () => {
     await bootstrap();
-    mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 10, targetBlocks: 6, mode: 'conservative' });
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(10);
     insertUtxo('tx_feerec01', 0, 500_000);
 
     await new SweepWorker().run();
@@ -260,9 +273,11 @@ describe('Fee calculation', () => {
     expect(getOnlySweep().fee_raw).toBe(String(10 * VBYTES_1_INPUT)); // '1100'
   });
 
-  it('falls back to 5 sat/vB when estimateSmartFee throws', async () => {
+  it('uses fallback rate (5 sat/vB) when estimateFeeRateSatVb returns fallback', async () => {
+    // Fallback logic lives inside adapter.estimateFeeRateSatVb — tested in withdrawal-psbt.test.ts.
+    // Here we verify the worker uses whatever rate the adapter returns.
     await bootstrap();
-    mockAdapter.estimateSmartFee.mockRejectedValue(new Error('estimatesmartfee not available'));
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(5); // adapter returned its fallback
     insertUtxo('tx_fallback01', 0, 500_000);
 
     await new SweepWorker().run();
@@ -277,7 +292,7 @@ describe('Fee calculation', () => {
 describe('Dust threshold guard (output ≤ 546 sats)', () => {
   it('skips when fee consumes enough that output ≤ 546 sats', async () => {
     await bootstrap({ thresholdSats: '100' });
-    mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 5, targetBlocks: 6, mode: 'conservative' });
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(5);
     insertUtxo('tx_dust01', 0, 1_000);
 
     await new SweepWorker().run();
@@ -288,7 +303,7 @@ describe('Dust threshold guard (output ≤ 546 sats)', () => {
 
   it('proceeds when output after fee is above 546 sats', async () => {
     await bootstrap({ thresholdSats: '100' });
-    mockAdapter.estimateSmartFee.mockResolvedValue({ feeRate: 1, targetBlocks: 6, mode: 'conservative' });
+    mockAdapter.estimateFeeRateSatVb.mockResolvedValue(1);
     insertUtxo('tx_nodust01', 0, 1_000);
 
     await new SweepWorker().run();

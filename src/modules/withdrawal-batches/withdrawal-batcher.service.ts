@@ -25,37 +25,6 @@ import { estimateTxVsize } from '../../chain-adapters/bitcoin/tx-sizer';
 
 // BTC dust threshold for P2WPKH outputs (546 sats)
 const DUST_THRESHOLD_SATS = 546n;
-const FEE_RATE_CACHE_TTL_MS = parseInt(process.env['BTC_FEE_RATE_CACHE_TTL_MS'] ?? '30000', 10);
-
-const feeRateCache = new Map<string, { feeRate: number; expiresAt: number }>();
-
-async function estimateFeeRateCached(input: {
-  adapter: BitcoinAdapter;
-  tenantId: string;
-  targetBlocks: number;
-  maxFeeRateSatVb: number;
-  minFeeRateSatVb: number | null;
-}): Promise<number> {
-  const key = `${input.targetBlocks}:${input.maxFeeRateSatVb}:${input.minFeeRateSatVb ?? ''}`;
-  const cached = feeRateCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.feeRate;
-  }
-
-  let feeRateSatVb = input.maxFeeRateSatVb;
-  try {
-    const feeEst = await input.adapter.estimateSmartFee(input.targetBlocks);
-    feeRateSatVb = Math.min(feeEst.feeRate, input.maxFeeRateSatVb);
-    if (input.minFeeRateSatVb) {
-      feeRateSatVb = Math.max(feeRateSatVb, input.minFeeRateSatVb);
-    }
-    feeRateCache.set(key, { feeRate: feeRateSatVb, expiresAt: Date.now() + FEE_RATE_CACHE_TTL_MS });
-  } catch (err) {
-    logger.warn('Fee estimation failed, using fallback', { tenantId: input.tenantId, error: String(err) });
-  }
-
-  return feeRateSatVb;
-}
 
 export interface WithdrawalBatch {
   id: string;
@@ -272,14 +241,12 @@ export const withdrawalBatcherService = {
       return null;
     }
 
-    // Estimate fee rate
+    // Estimate fee rate — caching, fallback and clamping handled inside adapter
     const adapter = new BitcoinAdapter();
-    const feeRateSatVb = await estimateFeeRateCached({
-      adapter,
-      tenantId,
+    const feeRateSatVb = await adapter.estimateFeeRateSatVb({
       targetBlocks: config.btc_target_blocks,
-      maxFeeRateSatVb: config.btc_max_fee_rate_sat_vb,
-      minFeeRateSatVb: config.btc_min_fee_rate_sat_vb,
+      maxSatVb:     config.btc_max_fee_rate_sat_vb,
+      minSatVb:     config.btc_min_fee_rate_sat_vb,
     });
 
     // Find change address (tenant hot wallet)
