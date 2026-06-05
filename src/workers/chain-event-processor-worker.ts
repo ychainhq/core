@@ -206,7 +206,7 @@ export class ChainEventProcessorWorker {
         }, { depositId: deposit.id, paymentRequestId: pr.id }, event.chain_id, ctx.wallet_id ?? undefined, ctx.tenant_id);
       }
 
-      await this.ensurePendingLedgerEntry({ tenantId: ctx.tenant_id, customerId: ctx.customer_id, walletId: ctx.wallet_id, assetId, depositId: deposit.id, amountRaw: event.amount_raw });
+      await ledgerService.ensureDepositEntryForDeposit({ tenantId: ctx.tenant_id, customerId: ctx.customer_id, walletId: ctx.wallet_id, assetId, depositId: deposit.id, amountRaw: event.amount_raw, entryType: 'deposit_pending' });
 
       webhooksService.queueEventOnce('deposit.detected', {
         depositId: deposit.id, txHash: event.tx_hash, address: event.address,
@@ -237,36 +237,12 @@ export class ChainEventProcessorWorker {
     return { ...watched, wallet_role: null };
   }
 
-  private async ensurePendingLedgerEntry(input: {
-    tenantId: string; customerId: string | null; walletId: string | null;
-    assetId: string; depositId: string; amountRaw: string;
-  }): Promise<void> {
-    const account = input.customerId
-      ? await ledgerService.findAccountByCustomerAndAsset(input.tenantId, input.customerId, input.assetId)
-      : (input.walletId ? await ledgerService.findAccountByWalletAndAsset(input.walletId, input.assetId) : null);
-    if (!account) {
-      logger.warn('No ledger account found for deposit, skipping pending entry', {
-        tenantId: input.tenantId, customerId: input.customerId, walletId: input.walletId, assetId: input.assetId,
-      });
-      return;
-    }
-
-    await ledgerService.ensureDepositEntry({
-      tenantId: input.tenantId,
-      ledgerAccountId: account.id,
-      depositId: input.depositId,
-      entryType: 'deposit_pending',
-      amountRaw: input.amountRaw,
-      isPending: true,
-    });
-  }
-
   private async ensureConfirmedEffects(input: {
     tenantId: string; customerId: string | null; walletId: string | null; chainId: string;
     assetId: string; depositId: string; txHash: string; address: string;
     amountRaw: string; amountDisplay: string; confirmations: number; status: string;
   }): Promise<void> {
-    await this.ensurePendingLedgerEntry(input);
+    await ledgerService.ensureDepositEntryForDeposit({ tenantId: input.tenantId, customerId: input.customerId, walletId: input.walletId, assetId: input.assetId, depositId: input.depositId, amountRaw: input.amountRaw, entryType: 'deposit_pending' });
 
     webhooksService.queueEventOnce('deposit.confirmed', {
       depositId: input.depositId, txHash: input.txHash, address: input.address,
@@ -293,24 +269,7 @@ export class ChainEventProcessorWorker {
       }, { depositId: input.depositId, paymentRequestId: deposit.payment_request_id }, input.chainId, input.walletId ?? undefined, input.tenantId);
     }
 
-    const account = input.customerId
-      ? await ledgerService.findAccountByCustomerAndAsset(input.tenantId, input.customerId, input.assetId)
-      : (input.walletId ? await ledgerService.findAccountByWalletAndAsset(input.walletId, input.assetId) : null);
-    if (!account){
-      logger.warn('No ledger account found for deposit, skipping confirmed entry', {
-        tenantId: input.tenantId, customerId: input.customerId, walletId: input.walletId, assetId: input.assetId,
-      });
-      return;
-    } 
-
-    await ledgerService.ensureDepositEntry({
-      tenantId: input.tenantId,
-      ledgerAccountId: account.id,
-      depositId: input.depositId,
-      entryType: 'deposit_settled',
-      amountRaw: input.amountRaw,
-      isPending: false,
-    });
+    await ledgerService.ensureDepositEntryForDeposit({ tenantId: input.tenantId, customerId: input.customerId, walletId: input.walletId, assetId: input.assetId, depositId: input.depositId, amountRaw: input.amountRaw, entryType: 'deposit_settled' });
   }
 
   private async processSpentEvent(event: ChainEvent): Promise<void> {

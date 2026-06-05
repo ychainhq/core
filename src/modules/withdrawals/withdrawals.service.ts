@@ -95,7 +95,8 @@ export const withdrawalsService = {
     );
 
     if (platformAddr) {
-      return withdrawalsService._executeInternalTransfer({
+      
+      const result = withdrawalsService._executeInternalTransfer({
         tenantId,
         senderCustomerId: customerId,
         recipientCustomerId: platformAddr.customer_id,
@@ -104,6 +105,8 @@ export const withdrawalsService = {
         toAddress: input.toAddress,
         idempotencyKey: input.idempotencyKey,
       });
+      logger.info('Customer withdrawal executed for internal transfer', { tenantId, customerId, recipientCustomerId: platformAddr.customer_id, toAddress: input.toAddress, amountSats: amountBigInt });
+      return result;
     }
 
     // External path — validate BTC address before reserving

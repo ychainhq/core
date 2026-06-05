@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
+import { logger } from '../../shared/logging/index';
 import { addSatoshi } from '../../shared/money/index';
 import { toUnixTs } from '../../shared/time/index';
 import { ticklerService } from '../../shared/tickler/tickler.service';
@@ -365,6 +366,40 @@ export const ledgerService = {
     return row ? mapAccount(row) : null;
   },
 
+  // Resolves a ledger account from a deposit context (customerId or walletId), then
+  // calls ensureDepositEntry. isPending is derived from entryType — callers do not
+  // need to keep those two in sync. Safe no-op when no ledger account exists.
+  async ensureDepositEntryForDeposit(input: {
+    tenantId: string;
+    customerId: string | null;
+    walletId: string | null;
+    assetId: string;
+    depositId: string;
+    entryType: 'deposit_pending' | 'deposit_settled';
+    amountRaw: string;
+  }): Promise<void> {
+    const account = input.customerId
+      ? await ledgerService.findAccountByCustomerAndAsset(input.tenantId, input.customerId, input.assetId)
+      : (input.walletId ? await ledgerService.findAccountByWalletAndAsset(input.walletId, input.assetId) : null);
+
+    if (!account) {
+      logger.warn('No ledger account found for deposit, skipping entry', {
+        tenantId: input.tenantId, customerId: input.customerId, walletId: input.walletId,
+        assetId: input.assetId, entryType: input.entryType,
+      });
+      return;
+    }
+
+    await ledgerService.ensureDepositEntry({
+      tenantId: input.tenantId,
+      ledgerAccountId: account.id,
+      depositId: input.depositId,
+      entryType: input.entryType,
+      amountRaw: input.amountRaw,
+      isPending: input.entryType === 'deposit_pending',
+    });
+  },
+
   // Idempotent: creates a deposit ledger entry only if one with the same
   // (ledgerAccountId, entryType, depositId) does not already exist.
   // Called by ChainEventProcessorWorker for both deposit_pending and deposit_settled.
@@ -395,7 +430,6 @@ export const ledgerService = {
       });
     } catch (err) {
       // Log but do not propagate — deposit processing must not fail due to a ledger write error.
-      const { logger } = await import('../../shared/logging/index');
       logger.warn('ensureDepositEntry failed', { depositId: input.depositId, entryType: input.entryType, error: String(err) });
     }
   },

@@ -1,5 +1,7 @@
 import request from 'supertest';
-import { bootstrapApp, AUTH, teardownDb } from './helpers';
+import { bootstrapApp, AUTH, teardownDb, TEST_TENANT_ID } from './helpers';
+import { ledgerService } from '../../src/modules/ledger/ledger.service';
+import { getDbClient } from '../../src/db/client';
 
 const app = bootstrapApp();
 
@@ -242,5 +244,114 @@ describe('POST /v1/ledger/transfers', () => {
       });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('ledgerService.ensureDepositEntryForDeposit', () => {
+  let testWalletId: string;
+  let testAccountId: string;
+
+  beforeAll(async () => {
+    const wRes = await request(app)
+      .post('/v1/wallets')
+      .set(AUTH)
+      .send({ name: 'EDE Test Wallet', type: 'watch_only' });
+    testWalletId = wRes.body.data.id;
+
+    const laRes = await request(app)
+      .post('/v1/ledger/accounts')
+      .set(AUTH)
+      .send({ walletId: testWalletId, chainId: 'bitcoin', assetId: 'bitcoin:BTC', name: 'EDE Test Account' });
+    testAccountId = laRes.body.data.id;
+  });
+
+  it('creates deposit_pending entry via walletId with isPending=true', async () => {
+    const depositId = 'dep_ede_pending_wallet';
+    await ledgerService.ensureDepositEntryForDeposit({
+      tenantId: TEST_TENANT_ID,
+      customerId: null,
+      walletId: testWalletId,
+      assetId: 'bitcoin:BTC',
+      depositId,
+      entryType: 'deposit_pending',
+      amountRaw: '100000',
+    });
+
+    const db = getDbClient();
+    const entry = await db.get(
+      "SELECT * FROM ledger_entries WHERE reference_id = ? AND type = 'deposit_pending'",
+      [depositId]
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.type).toBe('deposit_pending');
+    expect(entry!.amount_raw).toBe('100000');
+    expect(entry!.ledger_account_id).toBe(testAccountId);
+  });
+
+  it('creates deposit_settled entry via walletId with isPending=false', async () => {
+    const depositId = 'dep_ede_settled_wallet';
+    await ledgerService.ensureDepositEntryForDeposit({
+      tenantId: TEST_TENANT_ID,
+      customerId: null,
+      walletId: testWalletId,
+      assetId: 'bitcoin:BTC',
+      depositId,
+      entryType: 'deposit_settled',
+      amountRaw: '200000',
+    });
+
+    const db = getDbClient();
+    const entry = await db.get(
+      "SELECT * FROM ledger_entries WHERE reference_id = ? AND type = 'deposit_settled'",
+      [depositId]
+    );
+    expect(entry).toBeDefined();
+    expect(entry!.type).toBe('deposit_settled');
+    expect(entry!.amount_raw).toBe('200000');
+  });
+
+  it('is a no-op when both customerId and walletId are null', async () => {
+    const depositId = 'dep_ede_no_account';
+    await expect(
+      ledgerService.ensureDepositEntryForDeposit({
+        tenantId: TEST_TENANT_ID,
+        customerId: null,
+        walletId: null,
+        assetId: 'bitcoin:BTC',
+        depositId,
+        entryType: 'deposit_pending',
+        amountRaw: '50000',
+      })
+    ).resolves.toBeUndefined();
+
+    const db = getDbClient();
+    const entry = await db.get(
+      'SELECT * FROM ledger_entries WHERE reference_id = ?',
+      [depositId]
+    );
+    expect(entry).toBeUndefined();
+  });
+
+  it('is idempotent — second call with same depositId and entryType is a no-op', async () => {
+    const depositId = 'dep_ede_idempotent';
+    const args = {
+      tenantId: TEST_TENANT_ID,
+      customerId: null,
+      walletId: testWalletId,
+      assetId: 'bitcoin:BTC',
+      depositId,
+      entryType: 'deposit_pending' as const,
+      amountRaw: '75000',
+    };
+
+    await ledgerService.ensureDepositEntryForDeposit(args);
+    await ledgerService.ensureDepositEntryForDeposit(args);
+
+    const db = getDbClient();
+    const rows = await db.all(
+      "SELECT * FROM ledger_entries WHERE reference_id = ? AND type = 'deposit_pending'",
+      [depositId]
+    );
+    expect(rows).toHaveLength(1);
   });
 });
