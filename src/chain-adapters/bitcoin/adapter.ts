@@ -214,6 +214,14 @@ export class BitcoinAdapter implements IChainAdapter {
     return this.rpc.decodePsbt(psbt);
   }
 
+  /**
+   * @deprecated Use createUnsignedPsbt + external signing instead for better security and wallet compatibility.
+   * @param inputs 
+   * @param outputs 
+   * @param options 
+   * @param tenantId 
+   * @returns 
+   */
   async walletCreateFundedPsbt(inputs: any[], outputs: any[], options?: any, tenantId?: string): Promise<any> {
     return this.rpc.walletCreateFundedPsbt(
       inputs,

@@ -206,7 +206,10 @@ export const withdrawalBatcherService = {
     const db = getDbClient();
     const config = await withdrawalBatcherService.getBatchConfig(tenantId);
 
-    if (!config.btc_batching_enabled) return null;
+    if (!config.btc_batching_enabled){
+      logger.warn('BTC batching is disabled for tenant', { tenantId });
+      return null;
+    } 
 
     // Get queued withdrawals
     const maxAge = config.btc_max_batch_age_seconds;
@@ -230,7 +233,10 @@ export const withdrawalBatcherService = {
       (queuedWithdrawals.length >= config.btc_min_outputs_per_batch &&
         queuedWithdrawals[0]!.created_at < cutoffTime);
 
-    if (!shouldBatch) return null;
+    if (!shouldBatch){
+      logger.info('Not batching yet: conditions not met', { tenantId, queuedCount: queuedWithdrawals.length, oldestCreatedAt: queuedWithdrawals[0]!.created_at, cutoffTime });
+      return null;
+    } 
 
     // Dust and amount validation
     const validWithdrawals = [];
