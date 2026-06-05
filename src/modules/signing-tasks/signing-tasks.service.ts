@@ -311,6 +311,12 @@ export const signingTasksService = {
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.error('Failed to auto-finalize sweep after signing', { sweepId, taskId, tenantId, error: msg });
+          // Sweep was marked 'failed' inside finalizeSweepFromSigningTask — release UTXO locks
+          await utxoLockService.releaseLocksForSweep(tenantId, sweepId).catch((e) =>
+            logger.warn('Failed to release sweep UTXO locks after auto-finalize error', {
+              sweepId, error: String(e),
+            }),
+          );
         }
       });
     }

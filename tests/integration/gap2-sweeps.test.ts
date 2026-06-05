@@ -13,6 +13,8 @@ import request from 'supertest';
 import { bootstrapApp, ADMIN_AUTH, teardownDb, uniqueAddr, AUTH } from './helpers';
 import { sweepsService } from '../../src/modules/sweeps/sweeps.service';
 import { signingTasksService } from '../../src/modules/signing-tasks/signing-tasks.service';
+import { utxoLockService } from '../../src/shared/utxo-lock/utxo-lock.service';
+import { getDb } from '../../src/db/sqlite';
 
 const app = bootstrapApp();
 afterAll(() => teardownDb());
@@ -322,6 +324,121 @@ describe('Sweep — finalizeSweepFromSigningTask rejects wrong status', () => {
     await expect(
       sweepsService.finalizeSweepFromSigningTask(TEST_TENANT_ID, sweep.id, 'signedpsbt==')
     ).rejects.toThrow("expected 'pending_signature'");
+  });
+});
+
+// ─── Summary — UTXO locking behaviour (UI bug regression) ────────────────────
+//
+// Before the fix: getSummary() always returned UTXOs from cached_utxos with
+// is_spent=0 AND is_locked=0. Since SweepWorker never locked UTXOs, the
+// summary showed full balance even after a sweep was pending/broadcast.
+// After the fix: SweepWorker calls lockUtxosForSweep(), making UTXOs invisible
+// to getSummary() immediately after sweep creation.
+
+describe('GET /v1/sweeps/summary — UTXO locking behaviour', () => {
+  const CHAIN = 'bitcoin';
+  let depositWalletId: string;
+
+  // Insert a UTXO for tenant_default customer_deposits wallet
+  let utxoSeq = 0;
+  function insertUtxo(txHash: string, vout = 0, amountSats = 100_000) {
+    const db = getDb();
+    const now = new Date().toISOString();
+    const id = `utxo_gap2_${++utxoSeq}`;
+    db.prepare(`
+      INSERT OR IGNORE INTO cached_utxos
+        (id, tenant_id, customer_id, wallet_id, wallet_role, chain_id,
+         address, tx_hash, vout, amount_raw, confirmations, is_spent, is_locked, created_at, updated_at)
+      VALUES (?, ?, NULL, ?, 'customer_deposits', ?, ?, ?, ?, ?, 6, 0, 0, ?, ?)
+    `).run(id, TEST_TENANT_ID, depositWalletId, CHAIN, uniqueAddr(), txHash, vout, String(amountSats), now, now);
+  }
+
+  beforeAll(() => {
+    const row = getDb().prepare(
+      "SELECT id FROM wallets WHERE tenant_id = ? AND wallet_role = 'customer_deposits' LIMIT 1"
+    ).get(TEST_TENANT_ID) as { id: string } | undefined;
+    if (!row) throw new Error('seed missing customer_deposits wallet for tenant_default');
+    depositWalletId = row.id;
+  });
+
+  afterEach(() => {
+    getDb().prepare("DELETE FROM cached_utxos WHERE id LIKE 'utxo_gap2_%'").run();
+    getDb().prepare("DELETE FROM utxo_locks WHERE reference_type = 'sweep' AND reference_id LIKE 'sweep_%'").run();
+  });
+
+  it('shows UTXOs before a sweep is created', async () => {
+    insertUtxo('gap2_tx_01', 0, 175_000);
+    insertUtxo('gap2_tx_02', 0, 100_000);
+
+    const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.total_utxos).toBe(2);
+    expect(res.body.data.current_total_sats).toBe('275000');
+    expect(res.body.data.addresses_with_balance).toBe(2);
+  });
+
+  it('returns 0 utxos/sats after lockUtxosForSweep — UI bug regression', async () => {
+    insertUtxo('gap2_tx_03', 0, 175_000);
+    insertUtxo('gap2_tx_04', 0, 100_000);
+
+    const sweep = await sweepsService.create(TEST_TENANT_ID, {
+      chainId: CHAIN, assetId: 'bitcoin:BTC',
+      fromAddresses: [uniqueAddr()],
+      toAddress: uniqueAddr(),
+      amountRaw: '275000', feeRaw: '550',
+      psbt: Buffer.from('fake').toString('base64'),
+    });
+    await utxoLockService.lockUtxosForSweep(TEST_TENANT_ID, sweep.id, CHAIN, [
+      { tx_hash: 'gap2_tx_03', vout: 0, amount_raw: '175000' },
+      { tx_hash: 'gap2_tx_04', vout: 0, amount_raw: '100000' },
+    ]);
+
+    const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.total_utxos).toBe(0);
+    expect(res.body.data.current_total_sats).toBe('0');
+    expect(res.body.data.addresses_with_balance).toBe(0);
+  });
+
+  it('still returns 0 after sweep moves to broadcast status', async () => {
+    insertUtxo('gap2_tx_05', 0, 175_000);
+
+    const sweep = await sweepsService.create(TEST_TENANT_ID, {
+      chainId: CHAIN, assetId: 'bitcoin:BTC',
+      fromAddresses: [uniqueAddr()], toAddress: uniqueAddr(),
+      amountRaw: '175000', feeRaw: '550',
+      psbt: Buffer.from('fake').toString('base64'),
+    });
+    await utxoLockService.lockUtxosForSweep(TEST_TENANT_ID, sweep.id, CHAIN, [
+      { tx_hash: 'gap2_tx_05', vout: 0, amount_raw: '175000' },
+    ]);
+    await sweepsService.updateStatus(sweep.id, 'broadcast', { txHash: 'deadbeef_gap2' });
+
+    const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.total_utxos).toBe(0);
+    expect(res.body.data.current_total_sats).toBe('0');
+  });
+
+  it('restores UTXO count after releaseLocksForSweep (sweep failed)', async () => {
+    insertUtxo('gap2_tx_06', 0, 175_000);
+
+    const sweep = await sweepsService.create(TEST_TENANT_ID, {
+      chainId: CHAIN, assetId: 'bitcoin:BTC',
+      fromAddresses: [uniqueAddr()], toAddress: uniqueAddr(),
+      amountRaw: '175000', feeRaw: '550',
+      psbt: Buffer.from('fake').toString('base64'),
+    });
+    await utxoLockService.lockUtxosForSweep(TEST_TENANT_ID, sweep.id, CHAIN, [
+      { tx_hash: 'gap2_tx_06', vout: 0, amount_raw: '175000' },
+    ]);
+    await sweepsService.updateStatus(sweep.id, 'failed', { error: 'test' });
+    await utxoLockService.releaseLocksForSweep(TEST_TENANT_ID, sweep.id);
+
+    const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.total_utxos).toBe(1);
+    expect(res.body.data.current_total_sats).toBe('175000');
   });
 });
 

@@ -1,6 +1,7 @@
 import { getDbClient } from '../db/client';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
+import { utxoLockService } from '../shared/utxo-lock/utxo-lock.service';
 import { ledgerService } from '../modules/ledger/ledger.service';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { logger } from '../shared/logging/index';
@@ -97,6 +98,12 @@ export class SweepConfirmationWorker {
     logger.info('SweepConfirmationWorker: sweep confirmed', { sweepId, tenantId, txHash, confirmations: txStatus.confirmations });
 
     await sweepsService.updateStatus(sweepId, 'confirmed', { txHash });
+
+    await utxoLockService.markSpentForSweep(tenantId, sweepId).catch((e) =>
+      logger.warn('SweepConfirmationWorker: failed to mark sweep UTXOs spent in utxo_locks', {
+        sweepId, error: String(e),
+      }),
+    );
 
     const fee = BigInt(feeRaw ?? '0');
     const total = BigInt(amountRaw);

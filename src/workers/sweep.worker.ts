@@ -3,6 +3,7 @@ import { BitcoinAdapter, DUST_THRESHOLD_SATS } from '../chain-adapters/bitcoin/a
 import { enrichSweepPsbt } from '../chain-adapters/bitcoin/psbt-enricher';
 import { estimateTxVsize } from '../chain-adapters/bitcoin/tx-sizer';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
+import { utxoLockService } from '../shared/utxo-lock/utxo-lock.service';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { externalSignersService } from '../modules/external-signers/external-signers.service';
 import { signerPolicyService } from '../modules/external-signers/signer-policy.service';
@@ -198,6 +199,23 @@ export class SweepWorker {
       feeRaw: feeSats.toString(),
       psbt,
     });
+
+    // Lock UTXOs so they disappear from getSummary() immediately and cannot be
+    // claimed by a concurrent sweep worker (active-active cluster, Phase 4).
+    try {
+      await utxoLockService.lockUtxosForSweep(
+        tenantId, sweep.id, 'bitcoin',
+        utxos.map(u => ({ tx_hash: u.txHash, vout: u.vout, amount_raw: u.amount })),
+      );
+    } catch (lockErr) {
+      await sweepsService.updateStatus(sweep.id, 'failed', {
+        error: `UTXO locking failed: ${String(lockErr)}`,
+      });
+      logger.warn('SweepWorker: UTXO locking failed — sweep marked failed', {
+        tenantId, sweepId: sweep.id, error: String(lockErr),
+      });
+      return;
+    }
 
     const { signingTask, policyDecision } = await this.createAndLinkSigningTask({
       tenantId,

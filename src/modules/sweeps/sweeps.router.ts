@@ -7,6 +7,7 @@ import { logger } from '../../shared/logging/index';
 import { ValidationError } from '../../shared/errors/index';
 import { ticklerService } from '../../shared/tickler/tickler.service';
 import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
+import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
 
 export const sweepsRouter = Router();
 
@@ -82,6 +83,11 @@ sweepsRouter.post('/:sweepId/submit-signed', async (req: Request, res: Response,
       txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
       await sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
+      await utxoLockService.releaseLocksForSweep(tenantId(req), sweep.id).catch((e) =>
+        logger.warn('Failed to release sweep UTXO locks after broadcast error', {
+          sweepId: sweep.id, error: String(e),
+        }),
+      );
       throw new ValidationError(`Failed to broadcast sweep: ${err.message ?? err}`);
     }
 

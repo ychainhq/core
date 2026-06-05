@@ -677,11 +677,7 @@ export const withdrawalBatcherService = {
     const now = new Date().toISOString();
 
     // Get locked UTXOs from original batch
-    const lockedUtxos = await db.all<{ tx_hash: string; vout: number; amount_raw: string }>(`
-      SELECT tx_hash, vout, amount_raw
-      FROM utxo_locks
-      WHERE tenant_id = ? AND batch_id = ? AND status = 'locked'
-    `, [tenantId, batchId]);
+    const lockedUtxos = await utxoLockService.getLockedForBatch(tenantId, batchId);
 
     if (lockedUtxos.length === 0) {
       throw new ValidationError(`No locked UTXOs found for batch ${batchId}`);

@@ -36,6 +36,7 @@ import { adapterRegistry } from '../../src/chain-adapters/registry';
 import { SweepWorker } from '../../src/workers/sweep.worker';
 import { sweepsService } from '../../src/modules/sweeps/sweeps.service';
 import { signingTasksService } from '../../src/modules/signing-tasks/signing-tasks.service';
+import { utxoLockService } from '../../src/shared/utxo-lock/utxo-lock.service';
 
 const TENANT_ID = 'tenant_default';
 const DEPOSIT_ADDRESS = 'bcrt1q0000000000000000000000000000000000000qk6ng7';
@@ -624,5 +625,88 @@ describe('Recovery: expired or failed signing task', () => {
     const updated = await sweepsService.getByIdInternal(sweep.id);
     expect(updated.signing_task_id).toBe(task.id); // unchanged
     expect(mockAdapter.buildSweepPsbt).not.toHaveBeenCalled();
+  });
+});
+
+// ── UTXO locking ──────────────────────────────────────────────────────────────
+
+describe('UTXO locking after sweep creation', () => {
+  it('sets is_locked=1 on swept UTXOs — getSummary returns 0 utxos immediately', async () => {
+    await bootstrap();
+    insertUtxo('tx_lock01', 0, 175_000);
+    insertUtxo('tx_lock02', 0, 100_000);
+
+    await new SweepWorker().run();
+
+    expect(sweepCount()).toBe(1);
+    expect(getOnlySweep().status).toBe('pending_signature');
+
+    // All swept UTXOs should be locked
+    const db = getDb();
+    const locked = db.prepare(
+      "SELECT COUNT(*) AS n FROM cached_utxos WHERE is_locked = 1 AND wallet_role = 'customer_deposits'"
+    ).get() as { n: number };
+    expect(locked.n).toBe(2);
+
+    // getSummary must reflect the locked state — this is the UI bug fix
+    const summary = await sweepsService.getSummary(TENANT_ID);
+    expect(summary.total_utxos).toBe(0);
+    expect(summary.current_total_sats).toBe('0');
+    expect(summary.addresses_with_balance).toBe(0);
+  });
+
+  it('getSummary returns 0 while sweep is in broadcast status (UTXOs still locked)', async () => {
+    await bootstrap();
+    insertUtxo('tx_lock03', 0, 175_000);
+
+    await new SweepWorker().run();
+    const sweep = getOnlySweep();
+
+    // Simulate broadcast — status changes but UTXOs stay locked until btc-indexer
+    await sweepsService.updateStatus(sweep.id, 'broadcast', { txHash: 'deadbeef01' });
+
+    const summary = await sweepsService.getSummary(TENANT_ID);
+    expect(summary.total_utxos).toBe(0);
+    expect(summary.current_total_sats).toBe('0');
+  });
+
+  it('getSummary restores UTXO count after releaseLocksForSweep (sweep failed)', async () => {
+    await bootstrap();
+    insertUtxo('tx_lock04', 0, 175_000);
+
+    await new SweepWorker().run();
+    const sweep = getOnlySweep();
+
+    await sweepsService.updateStatus(sweep.id, 'failed', { error: 'rpc error' });
+    await utxoLockService.releaseLocksForSweep(TENANT_ID, sweep.id);
+
+    const summary = await sweepsService.getSummary(TENANT_ID);
+    expect(summary.total_utxos).toBe(1);
+    expect(summary.current_total_sats).toBe('175000');
+  });
+
+  it('marks sweep as failed immediately when lockUtxosForSweep fails (race: UTXO locked between collect and lock)', async () => {
+    await bootstrap();
+    insertUtxo('tx_lock05', 0, 175_000);
+
+    // Simulate race: another engine instance locks the UTXO after collectSweepableUtxos()
+    // but before lockUtxosForSweep(). We do this by mocking lockUtxosForSweep to throw.
+    const lockSpy = jest
+      .spyOn(utxoLockService, 'lockUtxosForSweep')
+      .mockRejectedValueOnce(new Error('UTXO tx_lock05:0 no longer available'));
+
+    await new SweepWorker().run();
+
+    lockSpy.mockRestore();
+
+    // Sweep was created then immediately failed
+    expect(sweepCount()).toBe(1);
+    expect(getOnlySweep().status).toBe('failed');
+
+    // No utxo_locks records should exist for this sweep
+    const lockRows = getDb().prepare(
+      "SELECT COUNT(*) AS n FROM utxo_locks WHERE reference_type = 'sweep'"
+    ).get() as { n: number };
+    expect(lockRows.n).toBe(0);
   });
 });

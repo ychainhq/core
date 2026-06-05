@@ -1,0 +1,43 @@
+-- Migration 032: make utxo_locks polymorphic (batch + sweep)
+--
+-- Renames batch_id → reference_id, drops the FK to withdrawal_batches,
+-- adds reference_type discriminator ('batch' | 'sweep').
+--
+-- PostgreSQL: can drop the FK constraint and rename the column in-place.
+-- SQLite: cannot drop FK constraints without table recreation, so we recreate
+--         the table. Tests use a fresh in-memory DB so no data migration needed.
+
+-- === PostgreSQL (production) ===
+-- PG_ONLY: ALTER TABLE utxo_locks DROP CONSTRAINT IF EXISTS utxo_locks_batch_id_fkey;
+-- PG_ONLY: ALTER TABLE utxo_locks RENAME COLUMN batch_id TO reference_id;
+-- PG_ONLY: ALTER TABLE utxo_locks ADD COLUMN IF NOT EXISTS reference_type TEXT NOT NULL DEFAULT 'batch';
+-- PG_ONLY: UPDATE utxo_locks SET reference_type = 'batch' WHERE reference_type IS NULL;
+-- PG_ONLY: DROP INDEX IF EXISTS idx_utxo_locks_batch;
+-- PG_ONLY: CREATE INDEX IF NOT EXISTS idx_utxo_locks_reference ON utxo_locks(tenant_id, reference_id, reference_type);
+
+-- === SQLite (tests) ===
+-- Each line below has the "-- SQLITE_ONLY: " prefix stripped by the SQLite
+-- migration runner, producing valid multi-statement SQL executed via db.exec().
+-- PG runner strips these lines entirely.
+-- SQLITE_ONLY: CREATE TABLE utxo_locks_new (
+-- SQLITE_ONLY:   id             TEXT PRIMARY KEY,
+-- SQLITE_ONLY:   tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+-- SQLITE_ONLY:   reference_id   TEXT NOT NULL,
+-- SQLITE_ONLY:   reference_type TEXT NOT NULL DEFAULT 'batch',
+-- SQLITE_ONLY:   chain_id       TEXT NOT NULL,
+-- SQLITE_ONLY:   tx_hash        TEXT NOT NULL,
+-- SQLITE_ONLY:   vout           INTEGER NOT NULL,
+-- SQLITE_ONLY:   amount_raw     TEXT NOT NULL,
+-- SQLITE_ONLY:   status         TEXT NOT NULL DEFAULT 'locked',
+-- SQLITE_ONLY:   locked_at      TEXT NOT NULL,
+-- SQLITE_ONLY:   expires_at     TEXT NOT NULL,
+-- SQLITE_ONLY:   released_at    TEXT,
+-- SQLITE_ONLY:   UNIQUE(chain_id, tx_hash, vout)
+-- SQLITE_ONLY: );
+-- SQLITE_ONLY: INSERT INTO utxo_locks_new SELECT id, tenant_id, batch_id, 'batch', chain_id, tx_hash, vout, amount_raw, status, locked_at, expires_at, released_at FROM utxo_locks;
+-- SQLITE_ONLY: DROP TABLE utxo_locks;
+-- SQLITE_ONLY: ALTER TABLE utxo_locks_new RENAME TO utxo_locks;
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_utxo_locks_tenant     ON utxo_locks(tenant_id);
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_utxo_locks_reference  ON utxo_locks(tenant_id, reference_id, reference_type);
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_utxo_locks_expires    ON utxo_locks(expires_at) WHERE status = 'locked';
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_utxo_locks_utxo       ON utxo_locks(chain_id, tx_hash, vout);
