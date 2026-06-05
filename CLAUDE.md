@@ -617,3 +617,10 @@ Każdy serwis jest **jedynym właścicielem** swoich tabel. SQL (INSERT/UPDATE/D
 - Operacje INSERT na danej tabeli mogą być tylko w jednym serwisie. Nigdy nie twórz rekordu z zewnętrznego serwisu.
 - Shared services (`utxo-lock`, `tickler`, `idempotency`) są wyjątkiem — są zaprojektowane do współdzielenia, ale nadal mają wyłączne właścicielstwo swoich tabel.
 - Naruszenie tej zasady = circular dependency lub god-service — oba są sygnałem złej architektury.
+
+**`utxo_locks` — tabela polimorficzna (migracja 032):**
+- Kolumna `reference_id` (dawniej `batch_id`) + `reference_type` ('batch' | 'sweep') — jeden rekord może należeć do withdrawal batch LUB do sweep.
+- Metody dla batchy: `lockUtxosForBatch`, `releaseLocksForBatch`, `markSpentForBatch`, `getLockedForBatch`, `lockSingleUtxo`, `reassignLocks`.
+- Metody dla sweepów: `lockUtxosForSweep`, `releaseLocksForSweep`, `markSpentForSweep`.
+- TTL: batch = 15 min (`UTXO_LOCK_TTL_SECONDS`), sweep = 7 dni (`SWEEP_UTXO_LOCK_TTL_SECONDS`) — safety net, nie normalny lifecycle.
+- Sweep lock lifecycle: `locked` po create sweep → `released` gdy sweep `failed` → `spent` gdy sweep `confirmed` (btc-indexer ustawia `is_spent=1` niezależnie).

@@ -26,8 +26,10 @@ import * as bitcoin from 'bitcoinjs-lib';
  *   1. Builds a PSBT via createpsbt + utxoupdatepsbt (stateless, no FWallet)
  *   2. Enriches the PSBT with bip32Derivation hints via enrichSweepPsbt
  *   3. Creates a `sweeps` record with status 'pending_signature'
- *   4. Creates a signing_task so the signer daemon can poll and claim it
- *   5. Fires a `sweep.ready_for_signing` webhook for backward compatibility
+ *   4. Locks UTXOs via utxoLockService.lockUtxosForSweep() — sets is_locked=1 in
+ *      cached_utxos so getSummary() shows 0 immediately (prevents UI stale state)
+ *   5. Creates a signing_task so the signer daemon can poll and claim it
+ *   6. Fires a `sweep.ready_for_signing` webhook for backward compatibility
  */
 
 interface TenantSweepContext {

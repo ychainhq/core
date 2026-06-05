@@ -487,13 +487,43 @@ CREATE TABLE cached_utxos (
   script_pub_key TEXT,
   confirmations  INTEGER NOT NULL DEFAULT 0,
   is_spent       INTEGER NOT NULL DEFAULT 0,
-  is_locked      INTEGER NOT NULL DEFAULT 0,  -- locked podczas withdrawal construction
+  is_locked      INTEGER NOT NULL DEFAULT 0,  -- locked podczas withdrawal batch construction lub sweep
   wallet_id      TEXT REFERENCES wallets(id),
   wallet_role    TEXT,                      -- 'customer_deposit' | 'tenant_hot' | 'tenant_cold'
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL,
   UNIQUE(chain_id, tx_hash, vout)
 );
+```
+
+#### Tabela: `utxo_locks`
+
+Polimorficzna tabela rezerwacji UTXO — chroni UTXO przed równoczesnym użyciem przez wiele workerów (active-active cluster).
+
+`reference_type` rozróżnia właściciela blokady:
+- `'batch'` — withdrawal batch (`reference_id = withdrawal_batches.id`), TTL 15 min
+- `'sweep'`  — sweep (`reference_id = sweeps.id`), TTL 7 dni (safety net)
+
+```sql
+CREATE TABLE utxo_locks (
+  id             TEXT PRIMARY KEY,          -- 'ulk_...'
+  tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+  reference_id   TEXT NOT NULL,             -- withdrawal_batches.id lub sweeps.id (bez FK)
+  reference_type TEXT NOT NULL DEFAULT 'batch',  -- 'batch' | 'sweep'
+  chain_id       TEXT NOT NULL,
+  tx_hash        TEXT NOT NULL,
+  vout           INTEGER NOT NULL,
+  amount_raw     TEXT NOT NULL,             -- satoshi
+  status         TEXT NOT NULL DEFAULT 'locked',  -- 'locked' | 'released' | 'spent'
+  locked_at      TEXT NOT NULL,
+  expires_at     TEXT NOT NULL,
+  released_at    TEXT,
+  UNIQUE(chain_id, tx_hash, vout)
+);
+CREATE INDEX idx_utxo_locks_tenant     ON utxo_locks(tenant_id);
+CREATE INDEX idx_utxo_locks_reference  ON utxo_locks(tenant_id, reference_id, reference_type);
+CREATE INDEX idx_utxo_locks_expires    ON utxo_locks(expires_at) WHERE status = 'locked';
+CREATE INDEX idx_utxo_locks_utxo       ON utxo_locks(chain_id, tx_hash, vout);
 ```
 
 #### Tabela: `ledger_accounts`
@@ -1002,9 +1032,15 @@ Worker `SweepWorker` co minutę sprawdza skumulowane UTXO na adresach depozytowy
 2. Buduje unsigned PSBT przez Bitcoin Core (`createpsbt` + `utxoupdatepsbt`) — stateless, bez named wallet.
 3. Enrichuje PSBT o `bip32_derivation` per input (`psbt-enricher.ts`) — dla każdego inputu pobiera `derivationIndex` z `addresses.metadata`, derywuje klucz publiczny z tenant xpub, dodaje hint do PSBT. **Tylko operacje na kluczach publicznych — engine nie dotyka kluczy prywatnych.**
 4. Tworzy rekord `sweeps` (status `pending_signature`).
-5. Tworzy `signing_task` (`request_type = 'btc_sweep'`) z linkiem `sweep_id` — signer daemon pobiera go przez polling.
-6. Linkiem wstecznym uzupełnia `sweeps.signing_task_id`.
-7. Po podpisaniu przez signera (`signing_task` → `signed`) silnik automatycznie wykonuje `finalizePsbt` + broadcast i ustawia status sweepа na `broadcast`.
+5. Blokuje UTXOs przez `utxoLockService.lockUtxosForSweep()` — ustawia `cached_utxos.is_locked=1`. Efekt: `GET /v1/sweeps/summary` natychmiast zwraca 0 UTXOs/sats (UI nie pokazuje "starych" danych po starcie sweepa). Jeśli blokowanie się nie powiedzie (race w active-active), sweep trafia od razu do `failed`.
+6. Tworzy `signing_task` (`request_type = 'btc_sweep'`) z linkiem `sweep_id` — signer daemon pobiera go przez polling.
+7. Linkiem wstecznym uzupełnia `sweeps.signing_task_id`.
+8. Po podpisaniu przez signera (`signing_task` → `signed`) silnik automatycznie wykonuje `finalizePsbt` + broadcast i ustawia status sweepа na `broadcast`.
+
+Lifecycle blokady UTXO:
+- `pending_signature` / `broadcast` → UTXO `is_locked=1` (invisible for getSummary)
+- sweep `failed` → `utxoLockService.releaseLocksForSweep()` → UTXO `is_locked=0`
+- sweep `confirmed` → `utxoLockService.markSpentForSweep()` + btc-indexer `markSpentByUtxo()` → UTXO `is_spent=1`
 
 Webhook `sweep.ready_for_signing` jest wysyłany jako backward-compatibility dla tenantów bez polling signera.
 
