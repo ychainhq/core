@@ -36,6 +36,7 @@ jest.mock('../../src/modules/ledger/ledger.service', () => ({
     findAccountByCustomerAndAsset: jest.fn(),
     findAccountByWalletAndAsset: jest.fn(),
     ensureDepositEntry: jest.fn(),
+    ensureDepositEntryForDeposit: jest.fn(),
   },
 }));
 jest.mock('../../src/shared/utxo-lock/utxo-lock.service', () => ({
@@ -186,7 +187,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
     (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
     await new ChainEventProcessorWorker().run();
 
-    expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
+    expect(ledgerService.ensureDepositEntryForDeposit).toHaveBeenCalledWith(
       expect.objectContaining({ tenantId: ADDR_CTX.tenant_id, entryType: 'deposit_pending' })
     );
   });
@@ -199,7 +200,7 @@ describe('ChainEventProcessorWorker — confirmation lifecycle', () => {
 
     await new ChainEventProcessorWorker().run();
 
-    expect(ledgerService.ensureDepositEntry).toHaveBeenCalledWith(
+    expect(ledgerService.ensureDepositEntryForDeposit).toHaveBeenCalledWith(
       expect.objectContaining({ tenantId: ADDR_CTX.tenant_id, entryType: 'deposit_settled' })
     );
   });
