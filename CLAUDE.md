@@ -419,9 +419,10 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 
 ### Sweeps
 
+> Sweepy tworzone są automatycznie przez `SweepWorker` — brak endpointu `POST /v1/sweeps`.
+
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
-| POST | `/v1/sweeps` | ✅ | ✅ | ❌ |
 | GET | `/v1/sweeps/summary` | ✅ | ✅ | ✅ `chainapi_get_sweeps_summary` |
 | GET | `/v1/sweeps` | ✅ | ⚠️ | ✅ `chainapi_list_sweeps` |
 | GET | `/v1/sweeps/:sweepId` | ✅ | ⚠️ | ✅ `chainapi_get_sweep` |
