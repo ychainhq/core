@@ -11,6 +11,7 @@ import { getDbClient } from '../../db/client';
 import { NotFoundError, ValidationError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
 import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
+import { config } from '../../config/index';
 // Lazy import to avoid circular dependency — batcher depends on signing-tasks
 let _withdrawalBatcherService: typeof import('../withdrawal-batches/withdrawal-batcher.service').withdrawalBatcherService | null = null;
 async function getBatcherService() {
@@ -21,7 +22,7 @@ async function getBatcherService() {
   return _withdrawalBatcherService;
 }
 
-const TASK_TTL_SECONDS = parseInt(process.env['SIGNING_TASK_TTL_SECONDS'] ?? '300', 10);
+const TASK_TTL_SECONDS = config.SIGNING_TASK_TTL_SECONDS;
 
 export interface SigningTask {
   id: string;

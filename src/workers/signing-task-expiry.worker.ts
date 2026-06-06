@@ -10,11 +10,9 @@ import { signingTasksService } from '../modules/signing-tasks/signing-tasks.serv
 import { utxoLockService } from '../shared/utxo-lock/utxo-lock.service';
 import { logger } from '../shared/logging/index';
 import { ticklerService } from '../shared/tickler/tickler.service';
+import { config } from '../config/index';
 
-const EXPIRY_WORKER_INTERVAL_MS = parseInt(
-  process.env['SIGNING_TASK_EXPIRY_INTERVAL_MS'] ?? '60000',
-  10
-);
+const EXPIRY_WORKER_INTERVAL_MS = config.SIGNING_TASK_EXPIRY_INTERVAL_MS;
 
 export class SigningTaskExpiryWorker {
   private interval: ReturnType<typeof setInterval> | null = null;

@@ -18,7 +18,7 @@ import { estimateTxVsize } from './tx-sizer';
 const FALLBACK_FEE_RATE_SAT_VB = 5; // used when Bitcoin Core estimatesmartfee is unavailable
 
 export const DUST_THRESHOLD_SATS = 546n; // P2WPKH/P2TR minimum non-dust output (BIP 141)
-const FEE_RATE_CACHE_TTL_MS = parseInt(process.env['BTC_FEE_RATE_CACHE_TTL_MS'] ?? '30000', 10);
+const FEE_RATE_CACHE_TTL_MS = config.BTC_FEE_RATE_CACHE_TTL_MS;
 
 // Convert BTC float to satoshi string (use string math to avoid float issues)
 function btcFloatToSatoshi(btcFloat: number): string {

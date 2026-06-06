@@ -17,6 +17,7 @@
 import crypto from 'crypto';
 import { getDbClient } from '../../db/client';
 import { logger } from '../logging/index';
+import { config } from '../../config/index';
 
 export interface UtxoLock {
   id: string;
@@ -42,14 +43,11 @@ export interface UtxoCandidate {
 }
 
 // Withdrawal batch locks expire after 15 min (safety net for abandoned batches).
-const LOCK_TTL_SECONDS = parseInt(process.env['UTXO_LOCK_TTL_SECONDS'] ?? '900', 10);
+const LOCK_TTL_SECONDS = config.UTXO_LOCK_TTL_SECONDS;
 
 // Sweep locks expire after 7 days (safety net — sweeps should resolve in minutes,
 // but if stuck indefinitely the expiry worker will release and unblock coin selection).
-const SWEEP_LOCK_TTL_SECONDS = parseInt(
-  process.env['SWEEP_UTXO_LOCK_TTL_SECONDS'] ?? String(7 * 24 * 3600),
-  10,
-);
+const SWEEP_LOCK_TTL_SECONDS = config.SWEEP_UTXO_LOCK_TTL_SECONDS;
 
 export const utxoLockService = {
   /**

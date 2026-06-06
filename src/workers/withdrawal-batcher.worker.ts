@@ -13,13 +13,10 @@ import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 import { ticklerService } from '../shared/tickler/tickler.service';
 
-const BATCH_WORKER_INTERVAL_MS = parseInt(
-  process.env['BATCH_WORKER_INTERVAL_MS'] ?? '30000',
-  10
-);
-const MAX_BATCHES_PER_RUN = parseInt(process.env['BATCH_WORKER_MAX_BATCHES_PER_RUN'] ?? '25', 10);
-const MAX_BATCHES_PER_TENANT_PER_RUN = parseInt(process.env['BATCH_WORKER_MAX_BATCHES_PER_TENANT_PER_RUN'] ?? '5', 10);
-const MAX_RUN_MS = parseInt(process.env['BATCH_WORKER_MAX_RUN_MS'] ?? '25000', 10);
+const BATCH_WORKER_INTERVAL_MS = config.BATCH_WORKER_INTERVAL_MS;
+const MAX_BATCHES_PER_RUN = config.BATCH_WORKER_MAX_BATCHES_PER_RUN;
+const MAX_BATCHES_PER_TENANT_PER_RUN = config.BATCH_WORKER_MAX_BATCHES_PER_TENANT_PER_RUN;
+const MAX_RUN_MS = config.BATCH_WORKER_MAX_RUN_MS;
 
 export class WithdrawalBatcherWorker {
   private interval: ReturnType<typeof setInterval> | null = null;

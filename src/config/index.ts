@@ -7,7 +7,7 @@ const configSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   // Database: SQLite (dev/MVP) or PostgreSQL (enterprise)
   DB_TYPE: z.enum(['sqlite', 'postgres']).default('sqlite'),
-  SQLITE_DB_PATH: z.string().default('./data/crypto-api.sqlite'),
+  SQLITE_DB_PATH: z.string().default('./data/chain-api.db'),
   DATABASE_URL: z.string().optional(),  // postgres://user:pass@host:5432/dbname
   DB_POOL_MAX: z.coerce.number().int().positive().default(20),
   DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
@@ -55,6 +55,18 @@ const configSchema = z.object({
   CLUSTER_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
   CLUSTER_LEADER_TTL_MS: z.coerce.number().int().positive().default(30000),
   ENGINE_URL: z.string().url().optional(),  // this engine's public URL (for cluster)
+  // External Signer & Withdrawal Batcher
+  BATCH_WORKER_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  BATCH_WORKER_MAX_BATCHES_PER_RUN: z.coerce.number().int().positive().default(25),
+  BATCH_WORKER_MAX_BATCHES_PER_TENANT_PER_RUN: z.coerce.number().int().positive().default(5),
+  BATCH_WORKER_MAX_RUN_MS: z.coerce.number().int().positive().default(25000),
+  SIGNING_TASK_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  SIGNING_TASK_EXPIRY_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+  // UTXO locks
+  UTXO_LOCK_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  SWEEP_UTXO_LOCK_TTL_SECONDS: z.coerce.number().int().positive().default(604800),
+  // Bitcoin fee rate cache
+  BTC_FEE_RATE_CACHE_TTL_MS: z.coerce.number().int().positive().default(30000),
 });
 
 const parsed = configSchema.safeParse(process.env);
