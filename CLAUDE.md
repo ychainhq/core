@@ -8,6 +8,7 @@
 - **Baza danych (testy):** SQLite in-memory (`:memory:`) — używane wyłącznie w testach integracyjnych przez `bootstrapApp()`. Testy NIE dotykają Postgresa.
 - **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — **stateless** (bez FWallet), brak kluczy prywatnych. Fee estimation przez `BitcoinAdapter.estimateFeeRateSatVb()`. Vsize przez `chain-adapters/bitcoin/tx-sizer.ts`.
 - **Block indexer:** `packages/btc-indexer` — osobny proces skanujący bloki; engine konsumuje zdarzenia z tabeli `chain_events`
+- **External signers:** provider-neutral protocol. Engine nie zalezy od OSS/Enterprise implementacji ani od Vault/AWS/Azure/GCP/HSM; zna tylko enrollment, heartbeat, signing tasks, signer responses i fingerprinty.
 - **MCP:** `@modelcontextprotocol/sdk` — silnik wystawia narzędzia MCP na `/mcp/tenant`, `/mcp/customer`, `/mcp/admin`
 - **Walidacja:** `zod` (body + query params)
 - **Testy:** Jest + ts-jest + supertest; wszystkie testy w `tests/`
@@ -29,6 +30,14 @@
 - **ClusterService** — zarządza rejestracją i leader election. `CLUSTER_ENABLED=true` + `ENGINE_URL` + `CLUSTER_PEER_URLS` aktywuje klaster.
 - **EthereumAdapter** — `chain-adapters/ethereum/adapter.ts`. Implementuje `IChainAdapter` dla Ethereum. Aktywowany gdy `ETH_NODE_URL` ustawiony.
 - `tenant_id` w tabeli `cached_utxos` + `is_locked` to krytyczna granica bezpieczeństwa — coin selection nigdy nie może przekroczyć granicy tenanta.
+
+## External signers — granica architektoniczna
+
+- Engine publikuje i konsumuje tylko neutralny protokol external signer. Nie dodawaj w engine warunkow typu `if provider === vault/aws/azure/gcp` ani logiki zależnej od edycji signera.
+- OSS signer i Enterprise signer musza zachowac zgodny kontrakt: enrollment, capabilities, fingerprint, polling, task claim, response signing, heartbeat i health semantics.
+- Provider key/secret/signing/policy/audit jest wewnetrznym adapterem signera. Zmiana lub dodanie providera nie moze wymagac migracji schematu engine'u ani nowych endpointow provider-specific.
+- Wspolny kod protokolu i walidacji trafia do `packages/external-signer-protocol` lub `packages/external-signer-core`; engine uzywa tych kontraktow zamiast duplikowac formaty.
+- Fingerprint reprezentuje material/zakres podpisujacy, nie nazwe providera. Nie zapisuj w engine sekretow ani identyfikatorow providerow, ktore pozwalalyby ominac signer protocol.
 
 ## X-Actor-Token — RBAC dla użytkowników tenanta
 
