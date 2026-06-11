@@ -1,6 +1,7 @@
 import { IChainAdapter } from './types';
 import { BitcoinAdapter } from './bitcoin/adapter';
 import { EthereumAdapter } from './ethereum/adapter';
+import { TronAdapter } from './tron/adapter';
 import { ApiError } from '../shared/errors/index';
 import { config } from '../config/index';
 
@@ -38,4 +39,10 @@ adapterRegistry.register(new BitcoinAdapter());
 // Enable via: PATCH /admin/v1/chains/ethereum { isEnabled: true } + set ETH_NODE_URL
 if (config.ETH_NODE_URL) {
   adapterRegistry.register(new EthereumAdapter(config.ETH_NODE_URL, config.ETH_NODE_AUTH));
+}
+
+// TRON adapter — registered only for local/self-hosted TRON nodes.
+// TronGrid/hosted third-party APIs are intentionally unsupported.
+if (config.TRON_NODE_URL) {
+  adapterRegistry.register(new TronAdapter(config.TRON_NODE_URL));
 }

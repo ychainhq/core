@@ -5,11 +5,12 @@ import { ledgerService } from '../modules/ledger/ledger.service';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
 import { addressesService } from '../modules/addresses/addresses.service';
 import { monitorsService } from '../modules/monitors/monitors.service';
+import { assetsService, Asset } from '../modules/assets/assets.service';
 import { utxoLockService } from '../shared/utxo-lock/utxo-lock.service';
-import { satoshiToBtc } from '../shared/money/index';
 import { logger } from '../shared/logging/index';
 import { ticklerService } from '../shared/tickler/tickler.service';
 import { tenantsService } from '../modules/tenants/tenants.service';
+import { config } from '../config/index';
 
 const BATCH_SIZE = 50;
 const INTERVAL_MS = 5_000;
@@ -112,7 +113,7 @@ export class ChainEventProcessorWorker {
 
     for (const event of events) {
       try {
-        if (event.event_type === 'utxo_created') {
+        if (event.event_type === 'utxo_created' || event.event_type === 'deposit_created') {
           await this.processReceiveEvent(event);
         } else if (event.event_type === 'utxo_spent') {
           await this.processSpentEvent(event);
@@ -124,9 +125,14 @@ export class ChainEventProcessorWorker {
   }
 
   private async processReceiveEvent(event: ChainEvent): Promise<void> {
-    logger.info('Processing utxo_created event (RECEIVE)', { eventId: event.id, txHash: event.tx_hash, address: event.address, amountRaw: event.amount_raw, confirmations: event.confirmations });
-    if (!event.address || !event.amount_raw || event.vout_index === null){
-      logger.warn('chain_event: missing required fields for utxo_created, skipping', {
+    logger.info('Processing receive chain_event', {
+      eventId: event.id, eventType: event.event_type, chainId: event.chain_id,
+      txHash: event.tx_hash, address: event.address, amountRaw: event.amount_raw,
+      confirmations: event.confirmations,
+    });
+    const isBitcoinUtxo = event.chain_id === 'bitcoin' && event.event_type === 'utxo_created';
+    if (!event.address || !event.amount_raw || (isBitcoinUtxo && event.vout_index === null)){
+      logger.warn('chain_event: missing required fields for receive event, skipping', {
         eventId: event.id, txHash: event.tx_hash
       });
       return;
@@ -140,11 +146,20 @@ export class ChainEventProcessorWorker {
       return;
     }
 
-    const assetId = 'bitcoin:BTC';
+    const asset = await this.resolveAsset(event);
+    if (!asset) {
+      logger.warn('chain_event: asset not found for receive event, skipping', {
+        eventId: event.id, chainId: event.chain_id, contractAddress: event.contract_address,
+      });
+      return;
+    }
+
+    const assetId = asset.id;
     const confirmations = event.confirmations;
-    const required = await tenantsService.getConfirmationsRequired(ctx.tenant_id);
+    const required = await this.getConfirmationsRequired(event.chain_id, ctx.tenant_id);
     const status = this.confirmationsToStatus(confirmations, required);
-    const amountDisplay = satoshiToBtc(event.amount_raw);
+    const amountDisplay = formatRawAmount(event.amount_raw, asset.decimals);
+    const depositIndex = isBitcoinUtxo ? event.vout_index! : event.log_index ?? null;
 
     const { deposit, isNew, previousStatus } = await depositsService.upsert({
       tenantId: ctx.tenant_id,
@@ -156,29 +171,31 @@ export class ChainEventProcessorWorker {
       amountRaw: event.amount_raw,
       amountDisplay,
       txHash: event.tx_hash,
-      vout: event.vout_index,
+      vout: depositIndex ?? undefined,
       confirmations,
       status,
     });
 
-    // as we receive, the new unspent UTXO should be registered as available for spending.
-    await utxoLockService.upsertFromDeposit({
-      tenantId: ctx.tenant_id,
-      customerId: ctx.customer_id,
-      walletId: ctx.wallet_id,
-      walletRole: ctx.wallet_role,
-      chainId: event.chain_id,
-      address: event.address,
-      txHash: event.tx_hash,
-      vout: event.vout_index,
-      amountRaw: event.amount_raw,
-      confirmations,
-    });
+    if (isBitcoinUtxo) {
+      // As we receive BTC, the new unspent UTXO should be registered as available for spending.
+      await utxoLockService.upsertFromDeposit({
+        tenantId: ctx.tenant_id,
+        customerId: ctx.customer_id,
+        walletId: ctx.wallet_id,
+        walletRole: ctx.wallet_role,
+        chainId: event.chain_id,
+        address: event.address,
+        txHash: event.tx_hash,
+        vout: event.vout_index!,
+        amountRaw: event.amount_raw,
+        confirmations,
+      });
+    }
     
     if (isNew) {      
       logger.info('Deposit detected via chain_event', {
         depositId: deposit.id, txHash: event.tx_hash, address: event.address,
-        amount: amountDisplay, confirmations, source: 'btc-indexer',
+        amount: amountDisplay, confirmations, source: `${event.chain_id}-indexer`,
       });
 
       ticklerService.record({
@@ -237,6 +254,27 @@ export class ChainEventProcessorWorker {
     return { ...watched, wallet_role: null };
   }
 
+  private async resolveAsset(event: ChainEvent): Promise<Asset | null> {
+    if (event.contract_address) {
+      return assetsService.findByContractAddress(event.chain_id, event.contract_address);
+    }
+
+    const nativeSymbols: Record<string, string> = {
+      bitcoin: 'BTC',
+      ethereum: 'ETH',
+      tron: 'TRX',
+    };
+    const symbol = nativeSymbols[event.chain_id];
+    if (!symbol) return null;
+    return assetsService.getByChainAndSymbol(event.chain_id, symbol);
+  }
+
+  private async getConfirmationsRequired(chainId: string, tenantId: string): Promise<number> {
+    if (chainId === 'bitcoin') return tenantsService.getConfirmationsRequired(tenantId);
+    if (chainId === 'tron') return config.TRON_DEFAULT_CONFIRMATIONS;
+    return 1;
+  }
+
   private async ensureConfirmedEffects(input: {
     tenantId: string; customerId: string | null; walletId: string | null; chainId: string;
     assetId: string; depositId: string; txHash: string; address: string;
@@ -282,4 +320,16 @@ export class ChainEventProcessorWorker {
       spentTxHash, spentVout, spendingTxHash: event.tx_hash, chainId: event.chain_id,
     });
   }
+}
+
+function formatRawAmount(raw: string, decimals: number): string {
+  const negative = raw.startsWith('-');
+  const value = negative ? raw.slice(1) : raw;
+  const units = BigInt(value);
+  const scale = 10n ** BigInt(decimals);
+  const whole = units / scale;
+  const fraction = units % scale;
+  if (decimals === 0) return `${negative ? '-' : ''}${whole.toString()}`;
+  const paddedFraction = fraction.toString().padStart(decimals, '0');
+  return `${negative ? '-' : ''}${whole.toString()}.${paddedFraction}`;
 }

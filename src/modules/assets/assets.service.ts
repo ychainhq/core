@@ -69,4 +69,9 @@ export const assetsService = {
     if (!row) throw new NotFoundError('Asset', id);
     return mapAsset(row);
   },
+
+  async findByContractAddress(chainId: string, contractAddress: string): Promise<Asset | null> {
+    const assets = await this.list({ chain: chainId, type: 'token' });
+    return assets.find(asset => asset.specs?.contract_address === contractAddress) ?? null;
+  },
 };

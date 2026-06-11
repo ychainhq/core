@@ -1663,7 +1663,7 @@ chain_events (
 
 Nowy chain = nowy indexer binary. Różnice:
 - `eth-indexer`: `eth_getBlockByNumber` + `eth_getLogs` (ERC-20 Transfer events)
-- `tron-indexer`: TronGrid API lub własny full node
+- `tron-indexer`: lokalny/self-hosted TRON FullNode/SolidityNode HTTP API. TronGrid i hosted third-party indexery są wykluczone z runtime.
 
 Tabela `chain_events` obsługuje wszystkie chainy przez `chain_id` + `contract_address`.
 
@@ -1727,7 +1727,7 @@ interface StateLocker          // UTXO lock (BTC) | nonce reservation (ETH/TRON)
 | Aspekt | BTC | ETH/USDC | TRON/USDT |
 |--------|-----|----------|-----------|
 | Model konta | UTXO | Account + nonce | Account + energy |
-| Monitorowanie | btc-indexer (bloki) | eth-indexer (getLogs) | tron-indexer (TronGrid) |
+| Monitorowanie | btc-indexer (bloki) | eth-indexer (getLogs) | tron-indexer (local FullNode/SolidityNode logs) |
 | TX format | PSBT → raw hex | EIP-1559 type 2 | TRC-20 trigger |
 | Coin selection | UTXO (cached_utxos) | Brak (account balance) | Brak (account balance) |
 | Node state | Stateless (v3) | Stateless z natury | Stateless z natury |

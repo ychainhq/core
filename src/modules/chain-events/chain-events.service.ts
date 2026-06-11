@@ -11,13 +11,15 @@ export interface ChainEvent {
   spent_vout: number | null;
   address: string | null;
   amount_raw: string | null;
+  contract_address: string | null;
+  log_index: number | null;
   block_height: number | null;
   block_hash: string | null;
   confirmations: number;
   created_at: string;
 }
 
-const PENDING_TYPES = `event_type IN ('utxo_created', 'utxo_spent')`;
+const PENDING_TYPES = `event_type IN ('utxo_created', 'utxo_spent', 'deposit_created')`;
 
 export const chainEventsService = {
   /**

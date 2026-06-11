@@ -24,7 +24,7 @@
 - **chain_events** — tabela zdarzeń on-chain wypełniana przez indexery (btc/eth/tron). Engine NIE odpytuje chain nodes o depozyty — tylko przetwarza `chain_events`.
 - **btc-indexer** — `packages/btc-indexer`. Skanuje bloki Bitcoin, pisze do `chain_events`. Zero wiedzy o tenantach.
 - **eth-indexer** — `packages/eth-indexer`. Skanuje bloki EVM + logi ERC-20 Transfer.
-- **tron-indexer** — `packages/tron-indexer`. Skanuje TRON przez TronGrid REST API.
+- **tron-indexer** — `packages/tron-indexer`. Skanuje TRON przez lokalny/self-hosted FullNode/SolidityNode HTTP API; bez TronGrid i bez third-party hosted indexerów.
 - **chain_nodes** — rejestr Bitcoin Core i innych node'ów. Stateless (brak FWallet). Role: `full` / `broadcast_only`.
 - **engine_instances** — rejestr instancji engine'u w klastrze. Leader election via DB lease (FAZA 4).
 - **ClusterService** — zarządza rejestracją i leader election. `CLUSTER_ENABLED=true` + `ENGINE_URL` + `CLUSTER_PEER_URLS` aktywuje klaster.

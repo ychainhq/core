@@ -49,6 +49,13 @@ const configSchema = z.object({
   // Ethereum chain adapter (optional — enable when ETH node is available)
   ETH_NODE_URL: z.string().url().optional(),
   ETH_NODE_AUTH: z.string().optional(),  // 'user:password' for basic auth
+  // TRON chain adapter (local/self-hosted node only; no TronGrid)
+  TRON_NODE_URL: z.string().url().optional(),
+  TRON_SOLIDITY_NODE_URL: z.string().url().optional(),
+  TRON_NETWORK: z.string().default('private'),
+  TRON_USDT_CONTRACT_ADDRESS: z.string().optional(),
+  TRON_DEFAULT_CONFIRMATIONS: z.coerce.number().int().min(0).default(1),
+  TRON_FINALITY_CONFIRMATIONS: z.coerce.number().int().min(1).default(20),
   // Engine cluster (FAZA 4)
   CLUSTER_ENABLED: z.string().transform(v => v === 'true').default('false'),
   CLUSTER_PEER_URLS: z.string().optional(),  // comma-separated peer engine URLs
