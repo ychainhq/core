@@ -106,6 +106,10 @@ export class TronAdapter implements IChainAdapter {
     return { address, confirmed: total, unconfirmed: '0', total };
   }
 
+  async getTrc20Balance(address: string, contractAddress: string): Promise<string> {
+    return this.rpc.getTrc20Balance(address, contractAddress);
+  }
+
   getUtxosForAddress(_address: string, _minConfirmations: number, _tenantId: string): Promise<Utxo[]> {
     return Promise.resolve([]);
   }

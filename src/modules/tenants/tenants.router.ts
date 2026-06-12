@@ -42,6 +42,9 @@ const configSchema = z.object({
   customerSessionTtlSeconds: z.coerce.number().int().min(60).max(86400).optional(),
   btcHotAddress: z.string().min(1).optional(),
   btcColdAddress: z.string().min(1).optional(),
+  tronXpub: z.string().min(1).nullable().optional(),
+  tronConfirmationsRequired: z.coerce.number().int().min(0).optional(),
+  tronSweepThresholdSun: z.string().regex(/^\d+$/, 'Must be a numeric string').nullable().optional(),
 });
 
 const listQuerySchema = z.object({

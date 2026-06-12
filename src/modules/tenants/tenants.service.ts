@@ -32,6 +32,10 @@ export interface TenantConfig {
   customer_session_ttl_seconds: number;
   /** HMAC-SHA256 secret used to sign/verify X-Actor-Token JWTs issued by the tenant. */
   actor_token_secret: string | null;
+  tron_xpub: string | null;
+  tron_next_derivation_index: number;
+  tron_confirmations_required: number;
+  tron_sweep_threshold_sun: string | null;
   updated_at: number;
 }
 
@@ -54,6 +58,10 @@ function mapConfig(row: any): TenantConfig {
     updated_at: toUnixTs(row.updated_at),
     customer_session_ttl_seconds: row.customer_session_ttl_seconds ?? 3600,
     actor_token_secret: row.actor_token_secret ?? null,
+    tron_xpub: row.tron_xpub ?? null,
+    tron_next_derivation_index: row.tron_next_derivation_index ?? 0,
+    tron_confirmations_required: row.tron_confirmations_required ?? 1,
+    tron_sweep_threshold_sun: row.tron_sweep_threshold_sun ?? null,
   };
 }
 
@@ -334,6 +342,9 @@ export const tenantsService = {
       btcHotAddress?: string;
       btcHotPubkeyHex?: string;
       btcColdAddress?: string;
+      tronXpub?: string | null;
+      tronConfirmationsRequired?: number;
+      tronSweepThresholdSun?: string | null;
     }
   ): Promise<TenantConfig> {
     const db = getDbClient();
@@ -377,6 +388,9 @@ export const tenantsService = {
       if (input.btcSweepThresholdSats !== undefined) { sets.push('btc_sweep_threshold_sats = ?'); params.push(input.btcSweepThresholdSats); }
       if (input.customerSessionTtlSeconds !== undefined) { sets.push('customer_session_ttl_seconds = ?'); params.push(input.customerSessionTtlSeconds); }
       if ('actorTokenSecret' in input) { sets.push('actor_token_secret = ?'); params.push(input.actorTokenSecret ?? null); }
+      if ('tronXpub' in input) { sets.push('tron_xpub = ?'); params.push(input.tronXpub ?? null); }
+      if (input.tronConfirmationsRequired !== undefined) { sets.push('tron_confirmations_required = ?'); params.push(input.tronConfirmationsRequired); }
+      if ('tronSweepThresholdSun' in input) { sets.push('tron_sweep_threshold_sun = ?'); params.push(input.tronSweepThresholdSun ?? null); }
 
       if (sets.length > 0) {
         sets.push('updated_at = ?');
@@ -419,6 +433,39 @@ export const tenantsService = {
       [tenantId]
     );
     return row?.btc_confirmations_required ?? config.BTC_DEFAULT_CONFIRMATIONS;
+  },
+
+  async getTronConfirmationsRequired(tenantId: string): Promise<number> {
+    const db = getDbClient();
+    const row = await db.get<{ tron_confirmations_required: number }>(
+      'SELECT tron_confirmations_required FROM tenant_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
+    return row?.tron_confirmations_required ?? config.TRON_DEFAULT_CONFIRMATIONS;
+  },
+
+  async getTronXpub(tenantId: string): Promise<string | null> {
+    const db = getDbClient();
+    const row = await db.get<{ tron_xpub: string | null }>(
+      'SELECT tron_xpub FROM tenant_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
+    return row?.tron_xpub ?? null;
+  },
+
+  async allocateTronDerivationIndex(tenantId: string): Promise<number> {
+    const db = getDbClient();
+    const row = await db.get<{ tron_next_derivation_index: number }>(
+      'SELECT tron_next_derivation_index FROM tenant_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
+    if (!row) throw new NotFoundError('TenantConfig', tenantId);
+    const index = row.tron_next_derivation_index;
+    await db.run(
+      'UPDATE tenant_configs SET tron_next_derivation_index = tron_next_derivation_index + 1, updated_at = ? WHERE tenant_id = ?',
+      [new Date().toISOString(), tenantId]
+    );
+    return index;
   },
 
   async generateApiKey(tenantId: string, name: string): Promise<{ keyId: string; rawKey: string }> {

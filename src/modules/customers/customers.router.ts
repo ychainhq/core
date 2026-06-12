@@ -241,14 +241,24 @@ customersRouter.get('/:customerId/addresses', async (req: Request, res: Response
 });
 
 // POST /v1/customers/:customerId/deposit-address
+// Optional query param: ?chain=bitcoin (default) | tron
 customersRouter.post('/:customerId/deposit-address', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const filter = getAccessFilter(req, 'write');
     await customersService.getById(tenantId(req), req.params['customerId']!, filter);
-    const result = await depositAddressService.generateForCustomer(
-      tenantId(req),
-      req.params['customerId']!
-    );
+    const chain = (req.query['chain'] as string | undefined) ?? 'bitcoin';
+    let result;
+    if (chain === 'tron') {
+      result = await depositAddressService.generateTronForCustomer(
+        tenantId(req),
+        req.params['customerId']!
+      );
+    } else {
+      result = await depositAddressService.generateForCustomer(
+        tenantId(req),
+        req.params['customerId']!
+      );
+    }
     res.status(201).json({ data: result });
   } catch (err) { next(err); }
 });

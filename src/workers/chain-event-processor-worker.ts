@@ -271,7 +271,7 @@ export class ChainEventProcessorWorker {
 
   private async getConfirmationsRequired(chainId: string, tenantId: string): Promise<number> {
     if (chainId === 'bitcoin') return tenantsService.getConfirmationsRequired(tenantId);
-    if (chainId === 'tron') return config.TRON_DEFAULT_CONFIRMATIONS;
+    if (chainId === 'tron') return tenantsService.getTronConfirmationsRequired(tenantId);
     return 1;
   }
 
