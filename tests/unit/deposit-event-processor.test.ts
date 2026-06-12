@@ -52,7 +52,16 @@ jest.mock('../../src/modules/webhooks/webhooks.service', () => ({
   webhooksService: { queueEventOnce: jest.fn() },
 }));
 jest.mock('../../src/modules/tenants/tenants.service', () => ({
-  tenantsService: { getConfirmationsRequired: jest.fn() },
+  tenantsService: {
+    getConfirmationsRequired: jest.fn(),
+    getTronConfirmationsRequired: jest.fn(),
+  },
+}));
+jest.mock('../../src/modules/assets/assets.service', () => ({
+  assetsService: {
+    findByContractAddress: jest.fn(),
+    getByChainAndSymbol: jest.fn(),
+  },
 }));
 
 import { ChainEventProcessorWorker } from '../../src/workers/chain-event-processor-worker';
@@ -63,6 +72,7 @@ import { ledgerService } from '../../src/modules/ledger/ledger.service';
 import { utxoLockService } from '../../src/shared/utxo-lock/utxo-lock.service';
 import { ticklerService } from '../../src/shared/tickler/tickler.service';
 import { tenantsService } from '../../src/modules/tenants/tenants.service';
+import { assetsService } from '../../src/modules/assets/assets.service';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -114,8 +124,13 @@ beforeEach(() => {
   // Address resolution: returns valid context
   (addressesService.resolveDepositContext as jest.Mock).mockResolvedValue(ADDR_CTX);
 
+  // Asset resolution: BTC native asset (no contract_address on bitcoin events)
+  (assetsService.findByContractAddress as jest.Mock).mockResolvedValue(null);
+  (assetsService.getByChainAndSymbol as jest.Mock).mockResolvedValue({ id: 'bitcoin:BTC', decimals: 8 });
+
   // Tenant confirmation threshold: 1 block
   (tenantsService.getConfirmationsRequired as jest.Mock).mockResolvedValue(1);
+  (tenantsService.getTronConfirmationsRequired as jest.Mock).mockResolvedValue(1);
 
   // Deposits
   (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult());
