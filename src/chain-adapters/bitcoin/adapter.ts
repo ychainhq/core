@@ -14,6 +14,7 @@ import { config } from '../../config/index';
 import { logger } from '../../shared/logging/index';
 import { ValidationError } from '../../shared/errors/index';
 import { estimateTxVsize } from './tx-sizer';
+import { NodeSelector } from '../node-selector';
 
 const FALLBACK_FEE_RATE_SAT_VB = 5; // used when Bitcoin Core estimatesmartfee is unavailable
 
@@ -39,8 +40,8 @@ export class BitcoinAdapter implements IChainAdapter {
   private readonly network: string;
   private readonly feeRateCache = new Map<string, { feeRate: number; expiresAt: number }>();
 
-  constructor() {
-    this.rpc = new BitcoinRpcClient();
+  constructor(nodeSelector: NodeSelector) {
+    this.rpc = new BitcoinRpcClient(nodeSelector);
     this.network = config.BITCOIN_NETWORK;
   }
 

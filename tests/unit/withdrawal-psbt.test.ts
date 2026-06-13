@@ -6,8 +6,12 @@
 
 import { BitcoinAdapter } from '../../src/chain-adapters/bitcoin/adapter';
 import { BitcoinRpcClient } from '../../src/chain-adapters/bitcoin/rpc-client';
+import { NodeSelector } from '../../src/chain-adapters/node-selector';
 
 jest.mock('../../src/chain-adapters/bitcoin/rpc-client');
+jest.mock('../../src/chain-adapters/node-selector', () => ({
+  NodeSelector: jest.fn().mockImplementation(() => ({ chainId: 'bitcoin', getNodes: jest.fn() })),
+}));
 
 const MockedRpcClient = BitcoinRpcClient as jest.MockedClass<typeof BitcoinRpcClient>;
 
@@ -31,7 +35,7 @@ describe('BitcoinAdapter.buildWithdrawalPsbt', () => {
       utxoUpdatePsbt: mockUtxoUpdatePsbt,
     } as any));
 
-    adapter = new BitcoinAdapter();
+    adapter = new BitcoinAdapter(new NodeSelector('bitcoin', null));
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -269,7 +273,7 @@ describe('BitcoinAdapter.buildSweepPsbt', () => {
       utxoUpdatePsbt: mockUpdate,
     } as any));
 
-    adapter = new BitcoinAdapter();
+    adapter = new BitcoinAdapter(new NodeSelector('bitcoin', null));
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -342,7 +346,7 @@ describe('BitcoinAdapter.estimateFeeRateSatVb', () => {
       utxoUpdatePsbt: jest.fn(),
     } as any));
 
-    adapter = new BitcoinAdapter(); // fresh instance = empty cache per test
+    adapter = new BitcoinAdapter(new NodeSelector('bitcoin', null)); // fresh instance = empty cache per test
 
     // Mock at adapter level to skip the BTC/kB → sat/vbyte conversion in estimateSmartFee
     spyEstimateSmartFee = jest

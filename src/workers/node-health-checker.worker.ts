@@ -42,7 +42,7 @@ export class NodeHealthCheckerWorker {
     if (nodes.length === 0) return;
 
     logger.debug('Checking health of chain nodes', { count: nodes.length });
-    await Promise.allSettled(nodes.map(node => this.checkNode(node.id, node.rpcUrl, node.rpcUser, node.chainId)));
+    await Promise.allSettled(nodes.map(node => this.checkNode(node.id, node.rpcUrl, node.rpcUser ?? '', node.chainId)));
   }
 
   private async checkNode(id: string, rpcUrl: string, rpcUser: string, chainId: string): Promise<void> {

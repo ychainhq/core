@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { ApiError } from '../../shared/errors/index';
 import { TronRpcClient } from './rpc-client';
+import { NodeSelector } from '../node-selector';
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
@@ -18,8 +19,8 @@ export class TronAdapter implements IChainAdapter {
   public readonly chain = 'tron';
   private readonly rpc: TronRpcClient;
 
-  constructor(nodeUrl: string) {
-    this.rpc = new TronRpcClient(nodeUrl);
+  constructor(nodeSelector: NodeSelector) {
+    this.rpc = new TronRpcClient(nodeSelector);
   }
 
   async getBlockchainInfo(): Promise<BlockchainInfo> {

@@ -5,6 +5,7 @@ import { ledgerService } from '../ledger/ledger.service';
 import { depositsService } from '../deposits/deposits.service';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
+import { btcNodeSelector } from '../../chain-adapters/registry';
 import { logger } from '../../shared/logging/index';
 import { toUnixTs } from '../../shared/time/index';
 import { satoshiToBtc } from '../../shared/money/index';
@@ -110,7 +111,7 @@ export const withdrawalsService = {
     }
 
     // External path — validate BTC address before reserving
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
     if (!adapter.isValidAddress(input.toAddress)) {
       throw new ValidationError(`Invalid bitcoin address: ${input.toAddress}`);
     }
@@ -410,7 +411,7 @@ export const withdrawalsService = {
       );
     }
 
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
     let txHash: string;
     try {
       const finalizedResult = await adapter.finalizePsbt(signedPsbt);

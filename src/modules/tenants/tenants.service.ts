@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { getDbClient } from '../../db/client';
 import { NotFoundError, ConflictError, ValidationError } from '../../shared/errors/index';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
+import { btcNodeSelector } from '../../chain-adapters/registry';
 import { logger } from '../../shared/logging/index';
 import { config } from '../../config/index';
 import { toUnixTs } from '../../shared/time/index';
@@ -172,7 +173,7 @@ export const tenantsService = {
     tenantId: string,
     opts: TreasuryWalletOptions
   ): Promise<void> {
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
     if (!adapter.isValidAddress(opts.address)) {
       throw new ValidationError(`Invalid bitcoin address: ${opts.address}`);
     }
@@ -186,7 +187,7 @@ export const tenantsService = {
    * the respective address is provided.
    */
   async provisionBtcLWallets(tenantId: string, asset: BtcAssetConfig): Promise<void> {
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
 
     // Validate addresses upfront before any DB writes
     if (asset.hotAddress && !adapter.isValidAddress(asset.hotAddress)) {

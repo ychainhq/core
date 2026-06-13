@@ -1538,15 +1538,60 @@ v3 wprowadza:
 
 **Kluczowa zmiana v3:** Bitcoin Core nodes są stateless z perspektywy engine — brak FWallet management (`importaddress`, `listunspent`, `createwallet`). Wszystkie operacje są bezstanowe.
 
-### 13.3 Selekcja node'a
+### 13.3 Selekcja node'a — N-node dynamic selection
+
+**Architektura:** `NodeSelector` (`chain-adapters/node-selector.ts`) jest jedynym punktem dostępu do listy nodów dla adapterów. Działa dla BTC i TRON.
 
 ```
-resolveNode(tenantId, purpose):
-  1. Sprawdź tenant_chain_bindings WHERE tenant_id = ? AND chain_id = ?
-  2. Jeśli binding istnieje → użyj preferred_node_id (jeśli status=healthy)
-  3. Jeśli brak bindingu → użyj platform node (tenant_id IS NULL, MIN(priority), status=healthy)
-  4. Jeśli żaden dostępny → 503 NODE_UNAVAILABLE
+NodeSelector.getNodes(chainId):
+  1. Sprawdź cache (TTL 10s) — jeśli ważny, zwróć cached
+  2. Wywołaj chainNodesService.getHealthyNodes(chainId)
+     → WHERE is_enabled=1 AND status IN ('healthy','unknown') ORDER BY priority ASC
+  3. Jeśli wynik niepusty → mapuj na SelectedNode[] (url, user, password, timeoutMs, ...)
+  4. Jeśli wynik pusty → użyj fallback (BITCOIN_RPC_URL / TRON_NODE_URL z env)
+  5. Jeśli DB rzuca → loguj warning, użyj fallback
+  6. Jeśli ani DB, ani fallback → zwróć []
 ```
+
+**Failover (BTC):**
+```
+BitcoinRpcClient.call(method, params):
+  nodes = await nodeSelector.getNodes()
+  if nodes.empty → throw ApiError(503, 'BITCOIN_RPC_UNAVAILABLE')
+  for each node (priority order):
+    try callOnNode(node, ...):
+      retry loop: max node.maxAttempts × node.retryDelayMs
+      on connection failure → throw BITCOIN_RPC_UNAVAILABLE
+      on HTTP non-200 → throw BITCOIN_NODE_HTTP_ERROR
+      on JSON parse error → throw BITCOIN_RPC_PARSE_ERROR
+    catch BITCOIN_RPC_UNAVAILABLE | BITCOIN_NODE_HTTP_ERROR | BITCOIN_RPC_PARSE_ERROR:
+      log warning, try next node
+    catch other ApiError (TX_NOT_FOUND, TX_REJECTED, BITCOIN_RPC_ERROR):
+      propagate immediately — it's a valid RPC response, not a node failure
+  all nodes failed → throw last error
+```
+
+**Failover (TRON):**
+```
+TronRpcClient.post(path, body):
+  nodes = await nodeSelector.getNodes()
+  if nodes.empty → throw ApiError(503, 'TRON_NO_NODES')
+  for each node (priority order):
+    try postOnNode(node, ...):
+      retry loop: max node.maxAttempts × node.retryDelayMs
+      on fetch throw / HTTP non-2xx → throw
+    catch any error:
+      log warning, try next node
+    (TRON API protocol errors live in JSON body — never throw here)
+  all nodes failed → throw last error
+```
+
+**Kluczowe właściwości:**
+- `BITCOIN_RPC_URL` (z env) jest **fallbackiem** gdy `chain_nodes` jest puste — nie jest już jedynym źródłem konfiguracji node'a.
+- `TRON_NODE_URL` (z env) jest **fallbackiem** dla TRON — adapter jest zawsze zarejestrowany bez warunku na env var.
+- Brak TRON nodów → `TRON_NO_NODES` z czytelnym komunikatem zamiast NPE.
+- Password refs (`env:VAR_NAME`) rozwiązywane inline — bez dodatkowego DB round-trip.
+- Cache 10s redukuje obciążenie DB podczas bursty RPC.
 
 ### 13.4 Model danych
 
@@ -1740,6 +1785,87 @@ interface StateLocker          // UTXO lock (BTC) | nonce reservation (ETH/TRON)
 - Auth, idempotency, multi-tenant middleware
 - Customer API, RBAC
 - `chain_nodes`, `chain_events` — już chain-agnostic (chain_id column)
+
+---
+
+## Appendix D: Architektura kluczy TRON
+
+TRON ma trzy kategorie kluczy o całkowicie rozłącznych rolach. Silnik nie widzi żadnego z nich.
+
+### D.1 Mapa kluczy
+
+```
+TRON Node (lokalny/self-hosted)
+  └── localwitness (SR key)
+        Rola: podpisywanie bloków na poziomie protokołu TRON (Super Representative)
+        Lokalizacja: config-node1.conf wewnątrz kontenera Docker noda
+        Genesis dev key: da146374a75310b9666e834ee4ad0866d6f4035967bfc76217c5a495fff9f0d5
+        Engine: NIGDY nie widzi, nie przechowuje, nie przekazuje tego klucza
+
+Engine (chain-api)
+  └── Wywołuje TRON FullNode API (POST /wallet/triggersmartcontract)
+  └── Otrzymuje: { txID, raw_data, raw_data_hex } — budowanie raw_data = rola FullNode
+  └── Przekazuje unsignedPayload do external signer przez signer protocol
+
+External Signer (OSS lub Enterprise)
+  ├── Withdrawal key — TRON_SIGNER_FINGERPRINT
+  │     Rola: podpisywanie wypłat klientów (hot wallet)
+  │     Typ: bezpośredni EC private key (secp256k1)
+  │
+  └── Sweep HD xprv — TRON_SIGNER_FINGERPRINT_HD
+        Rola: podpisywanie sweep per-depozyt
+        Typ: BIP32 HD xprv, SLIP44 coin_type=195 (TRON)
+        Derywacja: m/0/N gdzie N = numer adresu depozytowego
+```
+
+### D.2 Jak budowane jest `raw_data` transakcji TRON
+
+Engine **nie buduje `raw_data` ręcznie**. Sekwencja:
+
+1. Engine wywołuje `POST /wallet/triggersmartcontract` na lokalnym TRON FullNode.
+2. FullNode zwraca:
+   ```json
+   {
+     "txID": "<sha256(raw_data)>",
+     "raw_data": { "contract": [...], "ref_block_bytes": "...", "expiration": ... },
+     "raw_data_hex": "..."
+   }
+   ```
+3. Engine bierze `txID` i `raw_data_hex` i pakuje je jako `unsignedPayload` do envelope `payloadFormat=tron_raw_tx`.
+4. Envelope trafia do signing task w external signer protocol — signer podpisuje `txID`.
+
+FullNode jest jedynym autorytatywnym budowniczym `raw_data`. Zmiana formatu `raw_data` nie wymaga żadnych zmian w engine.
+
+### D.3 Proces podpisywania w signerze
+
+```
+Input:  txID (32 bytes = sha256 of raw_data)
+Key:    secp256k1 private key (withdrawal) lub HD child key (sweep m/0/N)
+Op:     signRecoverable(txIdBytes, privKey)
+Output: 65 bytes → 130 hex chars
+        [ 64 bytes signature | 1 byte recovery ID ]
+```
+
+TRON wymaga EC recoverable signature (nie standard ECDSA DER). Recovery ID umożliwia weryfikację klucza publicznego bez osobnego jego przesyłania.
+
+### D.4 Warstwy weryfikacji w signerze
+
+Signer weryfikuje każde zadanie podpisania w trzech warstwach zanim użyje klucza:
+
+| # | Co weryfikuje | Metoda |
+|---|--------------|--------|
+| 1 | Polityka biznesowa | `assertTronTxTaskValid`: allowlist sieci i kontraktów TRC-20, limity kwoty i energy/bandwidth fee, poprawność ścieżki derywacji BIP32 |
+| 2 | Integralność payloadu | `sha256(unsignedPayload) === unsignedPayloadHash` — signer recalculates, porównuje z hashem z task envelope |
+| 3 | Format txID | `txIdBytes.length === 32` — txID musi być 32-bajtowym hashem |
+
+Odrzucenie na dowolnej warstwie → task odrzucony (`reject`), brak podpisu.
+
+### D.5 Reguły architektoniczne
+
+- Engine nie przyjmuje, nie przechowuje ani nie loguje żadnego klucza prywatnego TRON.
+- SR key (localwitness) nigdy nie trafia do engine ani do external signer protocol.
+- Zmiana providera kluczy (np. z pliku lokalnego na Vault) wymaga zmiany tylko w adapterze signera — zero zmian w engine.
+- `payloadFormat=tron_raw_tx` jest częścią `packages/external-signer-protocol` — oba signery (OSS i Enterprise) obsługują go identycznie.
 
 ---
 

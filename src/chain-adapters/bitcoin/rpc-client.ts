@@ -1,6 +1,6 @@
-import { config } from '../../config/index';
 import { logger } from '../../shared/logging/index';
 import { ApiError } from '../../shared/errors/index';
+import { NodeSelector, SelectedNode } from '../node-selector';
 
 interface JsonRpcRequest {
   jsonrpc: '1.1';
@@ -18,61 +18,84 @@ interface JsonRpcResponse<T = unknown> {
   id: string;
 }
 
+// Error codes that indicate a node-level failure (vs. a valid Bitcoin Core RPC response error).
+// Only these codes trigger failover to the next healthy node.
+const NODE_FAILURE_CODES = new Set(['BITCOIN_RPC_UNAVAILABLE', 'BITCOIN_NODE_HTTP_ERROR', 'BITCOIN_RPC_PARSE_ERROR']);
+
 export class BitcoinRpcClient {
-  private readonly baseUrl: string;
-  private readonly auth: string;
   private requestId = 0;
 
-  constructor() {
-    this.baseUrl = config.BITCOIN_RPC_URL;
-    this.auth = Buffer.from(
-      `${config.BITCOIN_RPC_USER}:${config.BITCOIN_RPC_PASSWORD}`
-    ).toString('base64');
-  }
-
-  private getUrl(walletName?: string): string {
-    if (walletName) {
-      return `${this.baseUrl}/wallet/${encodeURIComponent(walletName)}`;
-    }
-    return this.baseUrl;
-  }
+  constructor(private readonly nodeSelector: NodeSelector) {}
 
   async call<T = unknown>(method: string, params: unknown[] = [], walletName?: string): Promise<T> {
+    const nodes = await this.nodeSelector.getNodes();
+    if (nodes.length === 0) {
+      throw new ApiError(503, 'BITCOIN_RPC_UNAVAILABLE', 'No Bitcoin nodes configured');
+    }
+
+    let lastError: unknown;
+    for (const node of nodes) {
+      try {
+        return await this.callOnNode<T>(node, method, params, walletName);
+      } catch (err) {
+        const isNodeFailure = !(err instanceof ApiError) || NODE_FAILURE_CODES.has(err.code);
+        if (isNodeFailure) {
+          lastError = err;
+          logger.warn('Bitcoin node unavailable, trying next', {
+            url: node.url,
+            method,
+            err: String(err),
+          });
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastError ?? new ApiError(503, 'BITCOIN_RPC_UNAVAILABLE', 'All Bitcoin nodes failed');
+  }
+
+  private async callOnNode<T>(
+    node: SelectedNode,
+    method: string,
+    params: unknown[],
+    walletName?: string,
+  ): Promise<T> {
     const id = `rpc_${++this.requestId}`;
-    const url = this.getUrl(walletName);
+    const baseUrl = walletName
+      ? `${node.url}/wallet/${encodeURIComponent(walletName)}`
+      : node.url;
 
-    const body: JsonRpcRequest = {
-      jsonrpc: '1.1',
-      id,
-      method,
-      params,
-    };
+    const body: JsonRpcRequest = { jsonrpc: '1.1', id, method, params };
+    const auth =
+      node.user != null && node.password != null
+        ? Buffer.from(`${node.user}:${node.password}`).toString('base64')
+        : null;
 
-    logger.debug('Bitcoin RPC call', { method, params: params.length, wallet: walletName });
+    logger.debug('Bitcoin RPC call', { method, params: params.length, wallet: walletName, url: node.url });
 
     let response: Response;
     let attempts = 0;
-    const maxAttempts = config.BITCOIN_RPC_MAX_ATTEMPTS;
 
     while (true) {
       try {
-        response = await fetch(url, {
+        response = await fetch(baseUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Basic ${this.auth}`,
+            ...(auth ? { Authorization: `Basic ${auth}` } : {}),
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(config.BITCOIN_RPC_TIMEOUT_MS),
+          signal: AbortSignal.timeout(node.timeoutMs),
         });
         break;
       } catch (err) {
         attempts++;
-        if (attempts >= maxAttempts) {
+        if (attempts >= node.maxAttempts) {
           throw new ApiError(503, 'BITCOIN_RPC_UNAVAILABLE', `Bitcoin Core RPC unavailable: ${String(err)}`);
         }
-        logger.warn('Bitcoin RPC connection failed, retrying', { attempt: attempts, error: String(err) });
-        const delayMs = config.BITCOIN_RPC_RETRY_DELAY_MS * attempts;
+        logger.warn('Bitcoin RPC connection failed, retrying', { attempt: attempts, url: node.url, error: String(err) });
+        const delayMs = node.retryDelayMs * attempts;
         if (delayMs > 0) {
           await new Promise((r) => setTimeout(r, delayMs));
         }
@@ -80,12 +103,12 @@ export class BitcoinRpcClient {
     }
 
     if (!response.ok && response.status !== 500) {
-      throw new ApiError(503, 'BITCOIN_RPC_ERROR', `Bitcoin Core RPC HTTP error: ${response.status}`);
+      throw new ApiError(503, 'BITCOIN_NODE_HTTP_ERROR', `Bitcoin Core RPC HTTP error: ${response.status}`);
     }
 
     let data: JsonRpcResponse<T>;
     try {
-      data = await response.json() as JsonRpcResponse<T>;
+      data = (await response.json()) as JsonRpcResponse<T>;
     } catch {
       throw new ApiError(503, 'BITCOIN_RPC_PARSE_ERROR', 'Failed to parse Bitcoin Core RPC response');
     }
@@ -162,15 +185,14 @@ export class BitcoinRpcClient {
 
   async importDescriptors(
     descriptors: Array<{ desc: string; timestamp: number | 'now'; label?: string; internal?: boolean }>,
-    walletName?: string
+    walletName?: string,
   ): Promise<void> {
-    // Resolve checksums for all descriptors that don't already have one
     const withChecksums = await Promise.all(
       descriptors.map(async (d) => {
         if (d.desc.includes('#')) return d;
         const info = await this.getDescriptorInfo(d.desc);
         return { ...d, desc: info.descriptor };
-      })
+      }),
     );
     const results: Array<{ success: boolean; error?: { code: number; message: string } }> =
       await this.call('importdescriptors', [withChecksums], walletName);
@@ -210,11 +232,7 @@ export class BitcoinRpcClient {
     bip32Derivs = false,
     walletName?: string,
   ): Promise<any> {
-    return this.call(
-      'walletcreatefundedpsbt',
-      [inputs, outputs, locktime, options, bip32Derivs],
-      walletName,
-    );
+    return this.call('walletcreatefundedpsbt', [inputs, outputs, locktime, options, bip32Derivs], walletName);
   }
 
   async finalizePsbt(psbt: string, extract = true): Promise<any> {
@@ -231,5 +249,17 @@ export class BitcoinRpcClient {
 
   async getMempoolEntry(txHash: string): Promise<any> {
     return this.call('getmempoolentry', [txHash]);
+  }
+
+  async loadOrCreateWallet(walletName: string): Promise<void> {
+    try {
+      await this.call('loadwallet', [walletName]);
+    } catch (err) {
+      // Wallet might already be loaded (-35) or not exist yet (-18)
+      const code = (err as any)?.response?.error?.code ?? (err as any)?.code;
+      if (code === -35) return; // already loaded
+      if (code !== -18) throw err; // unexpected error
+      await this.call('createwallet', [walletName, false, false, '', false, true]);
+    }
   }
 }

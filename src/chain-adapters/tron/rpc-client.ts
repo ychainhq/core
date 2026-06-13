@@ -1,3 +1,7 @@
+import { ApiError } from '../../shared/errors/index';
+import { logger } from '../../shared/logging/index';
+import { NodeSelector, SelectedNode } from '../node-selector';
+
 export interface TronBlockResponse {
   blockID: string;
   block_header: {
@@ -26,31 +30,70 @@ export interface TronUnsignedTransaction {
 }
 
 // ABI function selectors (keccak256 of signature, first 4 bytes)
-const SELECTOR_BALANCE_OF   = '70a08231'; // balanceOf(address)
-const SELECTOR_TRANSFER     = 'a9059cbb'; // transfer(address,uint256)
+const SELECTOR_BALANCE_OF = '70a08231'; // balanceOf(address)
+const SELECTOR_TRANSFER = 'a9059cbb'; // transfer(address,uint256)
 
 export class TronRpcClient {
-  private readonly baseUrl: string;
-
-  constructor(nodeUrl: string) {
-    this.baseUrl = nodeUrl.replace(/\/$/, '');
-  }
+  constructor(private readonly nodeSelector: NodeSelector) {}
 
   private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      throw new Error(`TRON node HTTP ${res.status} for ${path}`);
+    const nodes = await this.nodeSelector.getNodes();
+    if (nodes.length === 0) {
+      throw new ApiError(503, 'TRON_NO_NODES', 'No TRON nodes configured');
     }
 
-    return res.json() as Promise<T>;
+    let lastError: unknown;
+    for (const node of nodes) {
+      try {
+        return await this.postOnNode<T>(node, path, body);
+      } catch (err) {
+        lastError = err;
+        logger.warn('TRON node failed, trying next', {
+          url: node.url,
+          path,
+          err: String(err),
+        });
+      }
+    }
+
+    throw lastError ?? new ApiError(503, 'TRON_RPC_UNAVAILABLE', 'All TRON nodes failed');
+  }
+
+  private async postOnNode<T>(node: SelectedNode, path: string, body: Record<string, unknown>): Promise<T> {
+    const url = `${node.url.replace(/\/$/, '')}${path}`;
+    let attempts = 0;
+
+    while (true) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(node.timeoutMs),
+        });
+
+        if (!res.ok) {
+          throw new Error(`TRON node HTTP ${res.status} for ${path}`);
+        }
+
+        return res.json() as Promise<T>;
+      } catch (err) {
+        attempts++;
+        if (attempts >= node.maxAttempts) throw err;
+        logger.warn('TRON node connection failed, retrying', {
+          attempt: attempts,
+          url: node.url,
+          error: String(err),
+        });
+        const delayMs = node.retryDelayMs * attempts;
+        if (delayMs > 0) {
+          await new Promise((r) => setTimeout(r, delayMs));
+        }
+      }
+    }
   }
 
   getNowBlock(): Promise<TronBlockResponse> {
@@ -72,7 +115,9 @@ export class TronRpcClient {
     return this.post<{ balance?: number }>('/wallet/getaccount', { address, visible: true });
   }
 
-  broadcastTransaction(transaction: unknown): Promise<{ result?: boolean; txid?: string; code?: string; message?: string }> {
+  broadcastTransaction(
+    transaction: unknown,
+  ): Promise<{ result?: boolean; txid?: string; code?: string; message?: string }> {
     return this.post('/wallet/broadcasttransaction', transaction as Record<string, unknown>);
   }
 
@@ -91,7 +136,7 @@ export class TronRpcClient {
         function_selector: 'balanceOf(address)',
         parameter,
         visible: true,
-      }
+      },
     );
     const raw = result.constant_result?.[0];
     if (!raw || raw.length < 64) return '0';
@@ -115,23 +160,21 @@ export class TronRpcClient {
     const amountHex = BigInt(amountSun).toString(16).padStart(64, '0');
     const parameter = toHex20.padStart(64, '0') + amountHex;
 
-    const result = await this.post<{ transaction?: TronUnsignedTransaction; result?: { result: boolean; message?: string } }>(
-      '/wallet/triggersmartcontract',
-      {
-        owner_address: fromAddress,
-        contract_address: contractAddress,
-        function_selector: 'transfer(address,uint256)',
-        parameter,
-        fee_limit: feeLimitSun,
-        call_value: 0,
-        visible: true,
-      }
-    );
+    const result = await this.post<{
+      transaction?: TronUnsignedTransaction;
+      result?: { result: boolean; message?: string };
+    }>('/wallet/triggersmartcontract', {
+      owner_address: fromAddress,
+      contract_address: contractAddress,
+      function_selector: 'transfer(address,uint256)',
+      parameter,
+      fee_limit: feeLimitSun,
+      call_value: 0,
+      visible: true,
+    });
 
     if (!result.result?.result) {
-      throw new Error(
-        `TRON triggersmartcontract failed: ${result.result?.message ?? 'unknown error'}`
-      );
+      throw new Error(`TRON triggersmartcontract failed: ${result.result?.message ?? 'unknown error'}`);
     }
 
     if (!result.transaction?.txID) {

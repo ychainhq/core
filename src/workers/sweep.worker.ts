@@ -1,5 +1,6 @@
 import { getDbClient } from '../db/client';
 import { BitcoinAdapter, DUST_THRESHOLD_SATS } from '../chain-adapters/bitcoin/adapter';
+import { btcNodeSelector } from '../chain-adapters/registry';
 import { enrichSweepPsbt } from '../chain-adapters/bitcoin/psbt-enricher';
 import { estimateTxVsize } from '../chain-adapters/bitcoin/tx-sizer';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
@@ -166,7 +167,7 @@ export class SweepWorker {
       utxoCount: utxos.length,
     });
 
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
     const feeRateSatVb = await adapter.estimateFeeRateSatVb({
       targetBlocks: ctx.feeTargetBlocks,
     });

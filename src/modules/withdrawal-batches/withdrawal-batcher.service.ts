@@ -21,6 +21,7 @@ import { signerPolicyService } from '../external-signers/signer-policy.service';
 import { signingTasksService } from '../signing-tasks/signing-tasks.service';
 import { withdrawalsService } from '../withdrawals/withdrawals.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
+import { btcNodeSelector } from '../../chain-adapters/registry';
 import { estimateTxVsize } from '../../chain-adapters/bitcoin/tx-sizer';
 
 // BTC dust threshold for P2WPKH outputs (546 sats)
@@ -242,7 +243,7 @@ export const withdrawalBatcherService = {
     }
 
     // Estimate fee rate — caching, fallback and clamping handled inside adapter
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
     const feeRateSatVb = await adapter.estimateFeeRateSatVb({
       targetBlocks: config.btc_target_blocks,
       maxSatVb:     config.btc_max_fee_rate_sat_vb,
@@ -564,7 +565,7 @@ export const withdrawalBatcherService = {
       throw new ValidationError('Signing task has no signed payload');
     }
 
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
     const db = getDbClient();
     const now = new Date().toISOString();
 
@@ -729,7 +730,7 @@ export const withdrawalBatcherService = {
     `, [newBatchId, now, batchId]);
 
     // Build replacement PSBT
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
 
     let psbtBase64: string;
     let actualFeeSats: string;
@@ -892,7 +893,7 @@ export const withdrawalBatcherService = {
     }
 
     // Build CPFP PSBT: spend change → same change address
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
     let psbtBase64: string;
 
     try {

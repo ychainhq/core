@@ -1,5 +1,6 @@
 import { getDbClient } from '../db/client';
 import { BitcoinAdapter } from '../chain-adapters/bitcoin/adapter';
+import { btcNodeSelector } from '../chain-adapters/registry';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
 import { utxoLockService } from '../shared/utxo-lock/utxo-lock.service';
 import { ledgerService } from '../modules/ledger/ledger.service';
@@ -75,7 +76,7 @@ export class SweepConfirmationWorker {
     amountRaw: string,
     feeRaw: string | null,
   ): Promise<void> {
-    const adapter = new BitcoinAdapter();
+    const adapter = new BitcoinAdapter(btcNodeSelector);
 
     let txStatus: Awaited<ReturnType<BitcoinAdapter['getTransactionStatus']>>;
     try {

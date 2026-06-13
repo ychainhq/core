@@ -6,7 +6,8 @@
 - **Framework:** Express 4
 - **Baza danych (produkcja):** PostgreSQL 16+ — Docker `chainapi-postgres`, port 5433. `DATABASE_URL=postgres://chainapi:chainapi_dev@localhost:5433/chainapi`. Konfiguracja przez `DB_TYPE=postgres` w `.env`.
 - **Baza danych (testy):** SQLite in-memory (`:memory:`) — używane wyłącznie w testach integracyjnych przez `bootstrapApp()`. Testy NIE dotykają Postgresa.
-- **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — **stateless** (bez FWallet), brak kluczy prywatnych. Fee estimation przez `BitcoinAdapter.estimateFeeRateSatVb()`. Vsize przez `chain-adapters/bitcoin/tx-sizer.ts`.
+- **Bitcoin:** Bitcoin Core JSON-RPC (`BitcoinRpcClient`) — **stateless** (bez FWallet), brak kluczy prywatnych. Fee estimation przez `BitcoinAdapter.estimateFeeRateSatVb()`. Vsize przez `chain-adapters/bitcoin/tx-sizer.ts`. N-node broadcast przez `NodeSelector`.
+- **TRON:** TRON FullNode HTTP API (`TronRpcClient`) — N-node broadcast przez `NodeSelector`. Zawsze zarejestrowany w AdapterRegistry; brak TRON_NODE_URL i brak chain_nodes → RPC calls rzucają `ApiError(503, 'TRON_NO_NODES')`.
 - **Block indexer:** `packages/btc-indexer` — osobny proces skanujący bloki; engine konsumuje zdarzenia z tabeli `chain_events`
 - **External signers:** provider-neutral protocol. Engine nie zalezy od OSS/Enterprise implementacji ani od Vault/AWS/Azure/GCP/HSM; zna tylko enrollment, heartbeat, signing tasks, signer responses i fingerprinty.
 - **MCP:** `@modelcontextprotocol/sdk` — silnik wystawia narzędzia MCP na `/mcp/tenant`, `/mcp/customer`, `/mcp/admin`
@@ -573,6 +574,47 @@ Przykłady **dozwolone**: `const FALLBACK_FEE_RATE_SAT_VB = 5`, `config.btc_fee_
 - Tickler call ZAWSZE po udanej mutacji (nie przed), aby entity_id był znany.
 - **`deposits.upsert()` zwraca `{ deposit, isNew, previousStatus }`** — używaj tych flag zamiast dodatkowych SELECT do określenia czy depozyt jest nowy i jaki był poprzedni status.
 - **Statusy depozytu to wyłącznie `detected` i `confirmed`** — nie używaj `pending_confirmation` ani `finalized` w nowym kodzie.
+
+### N-node dynamic adapter selection (BTC + TRON)
+
+- **`NodeSelector`** (`chain-adapters/node-selector.ts`) — jedyny punkt dostępu do listy nodów. Odpytuje `chainNodesService.getHealthyNodes(chainId)` przy każdym wywołaniu RPC z TTL cache 10s. Gdy DB nie ma wpisów dla danego chain → fallback na `BITCOIN_RPC_URL` / `TRON_NODE_URL` z env. Gdy ani DB, ani env → pusta lista → `ApiError(503)`.
+- **`BitcoinRpcClient`** i **`TronRpcClient`** przyjmują `NodeSelector` w konstruktorze — nie czytają bezpośrednio z `config`. Konstruktory adapterów (`BitcoinAdapter`, `TronAdapter`) też przyjmują `NodeSelector`.
+- **Failover BTC:** connection error / HTTP non-200 / JSON parse error → next node. Bitcoin Core RPC błąd (właściwa odpowiedź JSON z `error`) → propaguj natychmiast, nie failoveruj.
+- **Failover TRON:** fetch throw / HTTP non-2xx → next node. TRON protocol error (`result: false` w JSON 200) → propaguj natychmiast (nie jest błędem nodea).
+- **`TRON adapter zawsze zarejestrowany`** — nie jest już warunkowy na `TRON_NODE_URL`. Jeśli nie ma nodów, RPC calls rzucają `TRON_NO_NODES`. Pozwala to na podpinanie nodów TRON przez `chain_nodes` API bez restartu.
+- **Per-node retry:** każdy node ma własne `max_attempts` i `retry_delay_ms` z `chain_nodes`. Retry przed failoverem do następnego nodea.
+- **Credentials per node:** `rpc_password_ref = 'env:VAR_NAME'` rozwiązywane inline w `NodeSelector` przy każdym cyklu cache — bez dodatkowego DB round-trip.
+
+### Architektura kluczy TRON
+
+TRON ma trzy odrębne klucze o różnych rolach — ważne żeby nie mylić ich zakresów:
+
+| Klucz | Rola | Gdzie żyje | Engine widzi? |
+|-------|------|-----------|---------------|
+| SR key (`localwitness`) | Podpisywanie bloków na poziomie protokołu TRON | `config-node1.conf` w nodzie TRON | Nigdy |
+| Withdrawal key | Hot wallet: wypłaty klientów, bezpośredni klucz | External signer, fingerprint `TRON_SIGNER_FINGERPRINT` | Nigdy |
+| Sweep HD xprv | Klucze sweep per-depozyt: BIP32 `m/0/N`, SLIP44 coin 195 | External signer, fingerprint `TRON_SIGNER_FINGERPRINT_HD` | Nigdy |
+
+**SR key / localwitness** — genesis dev key (`da146374a75310b9666e834ee4ad0866d6f4035967bfc76217c5a495fff9f0d5`), skonfigurowany tylko w `config-node1.conf` TRON noda. Dotyczy produkcji bloków przez Super Representative. Engine nigdy nie widzi, nie przechowuje ani nie przekazuje tego klucza.
+
+**Jak budowane jest `raw_data` transakcji TRON:**
+Engine nie buduje `raw_data` ręcznie. Engine wywołuje `POST /wallet/triggersmartcontract` na lokalnym TRON FullNode, który zwraca:
+```json
+{ "txID": "<sha256 of raw_data>", "raw_data": {...}, "raw_data_hex": "..." }
+```
+To TRON FullNode jest autorytatywny w kwestii formatu i zawartości `raw_data`. Engine bierze `txID` i `raw_data_hex` i przekazuje je jako `unsignedPayload` do external signera przez signer protocol.
+
+**Co signer podpisuje:** `txID` (sha256 raw_data) → `signRecoverable(txIdBytes, privKey)` → 65 bajtów (64B podpis + 1B recovery ID) → 130 hex chars. TRON wymaga tego formatu EC recoverable signature dla weryfikacji na chain.
+
+**Warstwy weryfikacji w signerze (3):**
+1. `assertTronTxTaskValid` — allowlist sieci i kontraktów, limity kwoty/fee, poprawność ścieżki derywacji
+2. `sha256(unsignedPayload) === unsignedPayloadHash` — integralność payloadu (signer recalculates)
+3. `txIdBytes.length === 32` — format txID
+
+**Reguły:**
+- Engine nie przyjmuje i nie przechowuje żadnego z powyższych kluczy.
+- `rpc_password_ref` w chain_nodes dla nodów TRON: format `env:VAR_NAME` — kredencjale nigdy plaintext w DB.
+- TRON node credentials (jeśli HTTP API wymaga auth) — `rpc_user` + `rpc_password_ref` jak dla BTC nodów.
 
 ### Enkapsulacja fee estimation (Bitcoin)
 

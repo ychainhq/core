@@ -10,8 +10,12 @@
 
 import { BitcoinAdapter } from '../../src/chain-adapters/bitcoin/adapter';
 import { BitcoinRpcClient } from '../../src/chain-adapters/bitcoin/rpc-client';
+import { NodeSelector } from '../../src/chain-adapters/node-selector';
 
 jest.mock('../../src/chain-adapters/bitcoin/rpc-client');
+jest.mock('../../src/chain-adapters/node-selector', () => ({
+  NodeSelector: jest.fn().mockImplementation(() => ({ chainId: 'bitcoin', getNodes: jest.fn() })),
+}));
 
 const MockedRpcClient = BitcoinRpcClient as jest.MockedClass<typeof BitcoinRpcClient>;
 
@@ -35,7 +39,7 @@ describe('BitcoinAdapter.importSolvableAddressForTenant — wpkh descriptor', ()
       call: jest.fn().mockResolvedValue(undefined),
     } as any));
 
-    adapter = new BitcoinAdapter();
+    adapter = new BitcoinAdapter(new NodeSelector('bitcoin', null));
   });
 
   afterEach(() => {

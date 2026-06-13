@@ -1,5 +1,6 @@
 import { getDbClient } from '../db/client';
 import { TronRpcClient } from '../chain-adapters/tron/rpc-client';
+import { NodeSelector } from '../chain-adapters/node-selector';
 import { sweepsService } from '../modules/sweeps/sweeps.service';
 import { externalSignersService } from '../modules/external-signers/external-signers.service';
 import { signerPolicyService } from '../modules/external-signers/signer-policy.service';
@@ -130,7 +131,10 @@ export class TronSweepWorker {
 
     if (depositAddrs.length === 0) return;
 
-    const rpc = new TronRpcClient(config.TRON_NODE_URL!);
+    const tronFallback = config.TRON_NODE_URL
+      ? { url: config.TRON_NODE_URL, timeoutMs: 15_000, maxAttempts: 3, retryDelayMs: 1_000 }
+      : null;
+    const rpc = new TronRpcClient(new NodeSelector('tron', tronFallback));
     const contractAddress = config.TRON_USDT_CONTRACT_ADDRESS!;
     const threshold = BigInt(sweepThresholdSun);
 
