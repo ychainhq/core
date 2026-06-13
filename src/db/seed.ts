@@ -118,6 +118,60 @@ export async function runSeed(): Promise<void> {
     logger.info('BTC xpub already set for tenant_default, skipping');
   }
 
+  // 2c. Generate TRON xpub for tenant_default if not yet set
+  //     SLIP44 coin type 195; always use bitcoin.networks.bitcoin for BIP32 prefix (TRON convention)
+  const tronCfgRows = await db.all<{ tron_xpub: string | null }>(
+    'SELECT tron_xpub FROM tenant_configs WHERE tenant_id = ?', ['tenant_default']
+  );
+  const tronCfgRow = tronCfgRows[0];
+
+  if (!tronCfgRow?.tron_xpub) {
+    try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
+    const bip32Tron = BIP32Factory(ecc);
+
+    const tronEntropy = crypto.randomBytes(32);
+    const tronRoot = bip32Tron.fromSeed(tronEntropy, bitcoin.networks.bitcoin);
+    const tronAccountNode = tronRoot.derivePath("m/44'/195'/0'");
+    const tronXpub = tronAccountNode.neutered().toBase58();
+    const tronXprv = tronAccountNode.toBase58();
+
+    await db.run(
+      "UPDATE tenant_configs SET tron_xpub = ?, updated_at = ? WHERE tenant_id = ?",
+      [tronXpub, now, 'tenant_default']
+    );
+
+    logger.info('TRON xpub generated for tenant_default', { derivationPath: "m/44'/195'/0'" });
+
+    console.log('');
+    console.log('======================================================');
+    console.log('GENERATED TRON DEV XPUB (stored in DB for tenant_default):');
+    console.log('');
+    console.log(`  TRON_DEV_XPUB=${tronXpub}`);
+    console.log('');
+    console.log('  TRON account private key — for signing daemon / private-net tests:');
+    console.log(`  TRON_DEV_XPRV=${tronXprv}`);
+    console.log('');
+    console.log("  Derivation path: m/44'/195'/0'");
+    console.log('======================================================');
+    console.log('');
+
+    if (config.BITCOIN_NETWORK !== 'mainnet') {
+      const envPath = path.resolve(__dirname, '../../.env');
+      if (fs.existsSync(envPath)) {
+        let envContent = fs.readFileSync(envPath, 'utf8');
+        if (/^TRON_DEV_XPRV=/m.test(envContent)) {
+          envContent = envContent.replace(/^TRON_DEV_XPRV=.*/m, `TRON_DEV_XPRV=${tronXprv}`);
+        } else {
+          envContent = envContent.trimEnd() + `\nTRON_DEV_XPRV=${tronXprv}\n`;
+        }
+        fs.writeFileSync(envPath, envContent);
+        logger.info('TRON account xprv written to engine/.env');
+      }
+    }
+  } else {
+    logger.info('TRON xpub already set for tenant_default, skipping');
+  }
+
   // 3. Upsert bitcoin chain
   const chainRows = await db.all('SELECT id FROM chains WHERE id = ?', ['bitcoin']);
   if (chainRows.length === 0) {

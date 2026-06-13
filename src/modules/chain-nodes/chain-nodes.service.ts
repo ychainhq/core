@@ -14,8 +14,8 @@ export interface ChainNode {
   tenant_id: string | null;
   label: string;
   rpc_url: string;
-  rpc_user: string;
-  rpc_password_ref: string;
+  rpc_user: string | null;
+  rpc_password_ref: string | null;
   network: string;
   role: ChainNodeRole;
   priority: number;
@@ -38,8 +38,8 @@ export interface CreateChainNodeInput {
   tenantId?: string | null;
   label: string;
   rpcUrl: string;
-  rpcUser: string;
-  rpcPasswordRef: string;
+  rpcUser?: string | null;
+  rpcPasswordRef?: string | null;
   network?: string;
   role?: ChainNodeRole;
   priority?: number;
@@ -96,8 +96,9 @@ export const chainNodesService = {
     const id = `node_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
-    // Validate rpcPasswordRef format
-    if (!input.rpcPasswordRef.startsWith('env:') && !input.rpcPasswordRef.startsWith('aes256:')) {
+    // Validate rpcPasswordRef format — only when provided (TRON nodes have no auth)
+    if (input.rpcPasswordRef != null &&
+        !input.rpcPasswordRef.startsWith('env:') && !input.rpcPasswordRef.startsWith('aes256:')) {
       throw new ValidationError('rpcPasswordRef must start with "env:" or "aes256:"');
     }
 
@@ -109,7 +110,7 @@ export const chainNodesService = {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'unknown', ?, ?, ?)
     `, [
       id, input.chainId, input.tenantId ?? null, input.label,
-      input.rpcUrl, input.rpcUser, input.rpcPasswordRef,
+      input.rpcUrl, input.rpcUser ?? null, input.rpcPasswordRef ?? null,
       input.network ?? 'mainnet',
       input.role ?? 'full',
       input.priority ?? 100,
@@ -238,14 +239,15 @@ export const chainNodesService = {
     `, [status, blockHeight, now, status, now, error, now, id]);
   },
 
-  async resolvePassword(id: string): Promise<string> {
+  async resolvePassword(id: string): Promise<string | null> {
     const db = getDbClient();
-    const row = await db.get<{ rpc_password_ref: string }>(
+    const row = await db.get<{ rpc_password_ref: string | null }>(
       'SELECT rpc_password_ref FROM chain_nodes WHERE id = ?',
       [id]
     );
     if (!row) throw new NotFoundError(`Chain node not found: ${id}`);
     const ref = row.rpc_password_ref;
+    if (ref == null) return null;  // TRON or other open-HTTP chains
     if (ref.startsWith('env:')) {
       const varName = ref.slice(4);
       const val = process.env[varName];

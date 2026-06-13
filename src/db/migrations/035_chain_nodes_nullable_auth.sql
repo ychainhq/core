@@ -1,0 +1,52 @@
+-- Migration 035: Make chain_nodes.rpc_user and rpc_password_ref nullable
+--
+-- Motivation: TRON FullNodes use an open HTTP API — no Basic Auth required.
+-- Bitcoin Core nodes continue to require rpc_user + rpc_password_ref (env:VAR).
+-- This change makes the chain_nodes schema chain-agnostic (v3 principle).
+--
+-- Note: 'private' network type for TRON is handled at the application layer
+-- (Zod enum in chain-nodes.router.ts). The DB stores network as plain TEXT,
+-- so no schema change is needed for that.
+
+-- === PostgreSQL ===
+-- PG_ONLY: ALTER TABLE chain_nodes ALTER COLUMN rpc_user DROP NOT NULL;
+-- PG_ONLY: ALTER TABLE chain_nodes ALTER COLUMN rpc_password_ref DROP NOT NULL;
+
+-- === SQLite (tests) ===
+-- Each line below has the "-- SQLITE_ONLY: " prefix stripped by the SQLite
+-- migration runner, producing valid multi-statement SQL executed via db.exec().
+-- PG runner strips these lines entirely.
+-- SQLITE_ONLY: PRAGMA foreign_keys = OFF;
+-- SQLITE_ONLY: DROP TABLE IF EXISTS chain_nodes_new;
+-- SQLITE_ONLY: CREATE TABLE chain_nodes_new (
+-- SQLITE_ONLY:   id                  TEXT PRIMARY KEY,
+-- SQLITE_ONLY:   chain_id            TEXT NOT NULL REFERENCES chains(id),
+-- SQLITE_ONLY:   tenant_id           TEXT REFERENCES tenants(id),
+-- SQLITE_ONLY:   label               TEXT NOT NULL,
+-- SQLITE_ONLY:   rpc_url             TEXT NOT NULL,
+-- SQLITE_ONLY:   rpc_user            TEXT,
+-- SQLITE_ONLY:   rpc_password_ref    TEXT,
+-- SQLITE_ONLY:   network             TEXT NOT NULL DEFAULT 'mainnet',
+-- SQLITE_ONLY:   role                TEXT NOT NULL DEFAULT 'full',
+-- SQLITE_ONLY:   priority            INTEGER NOT NULL DEFAULT 100,
+-- SQLITE_ONLY:   timeout_ms          INTEGER NOT NULL DEFAULT 10000,
+-- SQLITE_ONLY:   max_attempts        INTEGER NOT NULL DEFAULT 3,
+-- SQLITE_ONLY:   retry_delay_ms      INTEGER NOT NULL DEFAULT 1000,
+-- SQLITE_ONLY:   is_enabled          INTEGER NOT NULL DEFAULT 1,
+-- SQLITE_ONLY:   status              TEXT NOT NULL DEFAULT 'unknown',
+-- SQLITE_ONLY:   block_height        INTEGER,
+-- SQLITE_ONLY:   last_checked_at     TEXT,
+-- SQLITE_ONLY:   last_healthy_at     TEXT,
+-- SQLITE_ONLY:   last_error          TEXT,
+-- SQLITE_ONLY:   metadata            TEXT,
+-- SQLITE_ONLY:   created_at          TEXT NOT NULL,
+-- SQLITE_ONLY:   updated_at          TEXT NOT NULL
+-- SQLITE_ONLY: );
+-- SQLITE_ONLY: INSERT INTO chain_nodes_new SELECT id, chain_id, tenant_id, label, rpc_url, rpc_user, rpc_password_ref, network, role, priority, timeout_ms, max_attempts, retry_delay_ms, is_enabled, status, block_height, last_checked_at, last_healthy_at, last_error, metadata, created_at, updated_at FROM chain_nodes;
+-- SQLITE_ONLY: DROP TABLE chain_nodes;
+-- SQLITE_ONLY: ALTER TABLE chain_nodes_new RENAME TO chain_nodes;
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_chain_nodes_chain_role ON chain_nodes(chain_id, role, is_enabled);
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_chain_nodes_tenant ON chain_nodes(tenant_id) WHERE tenant_id IS NOT NULL;
+-- SQLITE_ONLY: CREATE INDEX IF NOT EXISTS idx_chain_nodes_priority ON chain_nodes(chain_id, priority) WHERE is_enabled = 1;
+-- SQLITE_ONLY: CREATE UNIQUE INDEX IF NOT EXISTS idx_chain_nodes_url ON chain_nodes(chain_id, rpc_url, COALESCE(tenant_id, ''));
+-- SQLITE_ONLY: PRAGMA foreign_keys = ON;
