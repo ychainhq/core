@@ -378,6 +378,7 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | GET | `/v1/chains/bitcoin/addresses/:address/utxos` | ✅ | ✅ | ✅ `chainapi_list_address_utxos` |
 | GET | `/v1/wallets/:walletId/utxos` | ✅ | ✅ | ✅ `chainapi_list_wallet_utxos` |
 | GET | `/v1/chains/bitcoin/fees` | ✅ | ✅ | ✅ `chainapi_get_bitcoin_fees` |
+| GET | `/v1/chains/tron/fees` | ✅ | ✅ | ✅ `chainapi_get_tron_fees` |
 
 ### Transactions (Bitcoin-specific)
 

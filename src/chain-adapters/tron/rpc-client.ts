@@ -1,6 +1,7 @@
 import { ApiError } from '../../shared/errors/index';
 import { logger } from '../../shared/logging/index';
 import { NodeSelector, SelectedNode } from '../node-selector';
+import { TronChainParams, TronAccountResource } from './tron-types';
 
 export interface TronBlockResponse {
   blockID: string;
@@ -182,6 +183,119 @@ export class TronRpcClient {
     }
 
     return result.transaction;
+  }
+
+  /**
+   * Fetch current TRON chain parameters.
+   * Relevant keys: getEnergyFee (sun/energy unit), getTransactionFee (sun/byte for bandwidth).
+   */
+  async getChainParameters(): Promise<TronChainParams> {
+    const result = await this.post<{ chainParameter?: Array<{ key: string; value: number }> }>(
+      '/wallet/getchainparameters',
+      {},
+    );
+    const params = result.chainParameter ?? [];
+    const energyFeeEntry = params.find((p) => p.key === 'getEnergyFee');
+    const bandwidthFeeEntry = params.find((p) => p.key === 'getTransactionFee');
+    return {
+      energyPriceSun: energyFeeEntry?.value ?? 420,
+      bandwidthPriceSun: bandwidthFeeEntry?.value ?? 1000,
+    };
+  }
+
+  /**
+   * Fetch resource state for an account: bandwidth (free + staked) and energy (staked).
+   */
+  async getAccountResource(address: string): Promise<TronAccountResource> {
+    const result = await this.post<{
+      freeNetLimit?: number;
+      freeNetUsed?: number;
+      NetLimit?: number;
+      NetUsed?: number;
+      EnergyLimit?: number;
+      EnergyUsed?: number;
+    }>('/wallet/getaccountresource', { address, visible: true });
+    return {
+      freeNetLimit: result.freeNetLimit ?? 1500,
+      freeNetUsed: result.freeNetUsed ?? 0,
+      netLimit: result.NetLimit ?? 0,
+      netUsed: result.NetUsed ?? 0,
+      energyLimit: result.EnergyLimit ?? 0,
+      energyUsed: result.EnergyUsed ?? 0,
+    };
+  }
+
+  /**
+   * Simulate a TRC-20 transfer without broadcasting (triggerconstantcontract).
+   * Returns energy_used for accurate fee estimation and raw tx size in bytes.
+   * The returned transaction object is identical to triggersmartcontract output —
+   * callers may pass it directly to the signer to avoid a second RPC round-trip.
+   */
+  async simulateTrc20Transfer(params: {
+    ownerAddress: string;
+    contractAddress: string;
+    toAddress: string;
+    amount: bigint;
+    feeLimit: number;
+  }): Promise<{ energyUsed: number; txSizeBytes: number; transaction: TronUnsignedTransaction }> {
+    const { ownerAddress, contractAddress, toAddress, amount, feeLimit } = params;
+    const toHex20 = tronBase58ToHex20(toAddress);
+    const amountHex = amount.toString(16).padStart(64, '0');
+    const parameter = toHex20.padStart(64, '0') + amountHex;
+
+    const result = await this.post<{
+      transaction?: TronUnsignedTransaction;
+      energy_used?: number;
+      result?: { result: boolean; message?: string };
+    }>('/wallet/triggerconstantcontract', {
+      owner_address: ownerAddress,
+      contract_address: contractAddress,
+      function_selector: 'transfer(address,uint256)',
+      parameter,
+      fee_limit: feeLimit,
+      call_value: 0,
+      visible: true,
+    });
+
+    if (!result.transaction?.txID) {
+      throw new Error('TRON triggerconstantcontract: missing transaction in simulation response');
+    }
+
+    const raw_data_hex = result.transaction.raw_data_hex ?? '';
+    const txSizeBytes = raw_data_hex.length > 0 ? Math.ceil(raw_data_hex.length / 2) : 285;
+
+    return {
+      energyUsed: result.energy_used ?? 65000,
+      txSizeBytes,
+      transaction: result.transaction,
+    };
+  }
+
+  /**
+   * Build an unsigned TRX (native) transfer transaction via /wallet/createtransaction.
+   */
+  async createUnsignedTrxTransfer(params: {
+    fromAddress: string;
+    toAddress: string;
+    amountSun: string;
+  }): Promise<TronUnsignedTransaction> {
+    const { fromAddress, toAddress, amountSun } = params;
+
+    const result = await this.post<TronUnsignedTransaction & { Error?: string }>('/wallet/createtransaction', {
+      owner_address: fromAddress,
+      to_address: toAddress,
+      amount: Number(amountSun),
+      visible: true,
+    });
+
+    if (result.Error) {
+      throw new Error(`TRON createtransaction failed: ${result.Error}`);
+    }
+    if (!result.txID) {
+      throw new Error('TRON createtransaction: missing txID in response');
+    }
+
+    return result;
   }
 }
 

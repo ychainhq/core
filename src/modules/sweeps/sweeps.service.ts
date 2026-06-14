@@ -174,14 +174,20 @@ export const sweepsService = {
       );
     }
 
-    const adapter = adapterRegistry.get('bitcoin');
+    const adapter = adapterRegistry.get(sweep.chain_id);
     let txHash: string;
     try {
-      const finalizedResult = await adapter.finalizePsbt(signedPsbt);
-      if (!finalizedResult.complete) {
-        throw new Error('PSBT is not fully signed — missing signatures');
+      if (sweep.chain_id === 'bitcoin') {
+        // BTC: finalize PSBT then broadcast hex
+        const finalizedResult = await adapter.finalizePsbt(signedPsbt);
+        if (!finalizedResult.complete) {
+          throw new Error('PSBT is not fully signed — missing signatures');
+        }
+        txHash = await adapter.sendRawTransaction(finalizedResult.hex);
+      } else {
+        // TRON (and future chains): signed payload is directly broadcastable
+        txHash = await adapter.sendRawTransaction(signedPsbt);
       }
-      txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
       await sweepsService.updateStatus(sweepId, 'failed', { error: String(err) });
       throw err;
@@ -213,7 +219,7 @@ export const sweepsService = {
       newValue: updated,
     });
 
-    logger.info('Sweep auto-finalized via signing task', { sweepId, txHash, tenantId });
+    logger.info('Sweep auto-finalized via signing task', { sweepId, txHash, chainId: sweep.chain_id, tenantId });
     return updated;
   },
 
@@ -224,14 +230,20 @@ export const sweepsService = {
       throw new ValidationError(`Sweep is in status '${sweep.status}', expected 'pending_signature'`);
     }
 
-    const adapter = adapterRegistry.get('bitcoin');
+    const adapter = adapterRegistry.get(sweep.chain_id);
     let txHash: string;
     try {
-      const finalizedResult = await adapter.finalizePsbt(signedPsbt);
-      if (!finalizedResult.complete) {
-        throw new Error('PSBT is not fully signed — missing signatures');
+      if (sweep.chain_id === 'bitcoin') {
+        // BTC: finalize PSBT then broadcast hex
+        const finalizedResult = await adapter.finalizePsbt(signedPsbt);
+        if (!finalizedResult.complete) {
+          throw new Error('PSBT is not fully signed — missing signatures');
+        }
+        txHash = await adapter.sendRawTransaction(finalizedResult.hex);
+      } else {
+        // TRON (and future chains): signed payload is directly broadcastable
+        txHash = await adapter.sendRawTransaction(signedPsbt);
       }
-      txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
       await sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
       throw new ValidationError(`Failed to broadcast sweep: ${err.message ?? err}`);

@@ -15,6 +15,7 @@ import { monitorsRouter } from './modules/monitors/monitors.router';
 import { balancesRouter, walletBalancesRouter } from './modules/balances/balances.router';
 import { utxosRouter, walletUtxosRouter } from './modules/bitcoin/utxos.router';
 import { feesRouter } from './modules/bitcoin/fees.router';
+import { tronFeesRouter } from './modules/tron/tron-fees.router';
 import { prepareRouter } from './modules/bitcoin/prepare.router';
 import { transactionsRouter } from './modules/transactions/transactions.router';
 import { paymentRequestsRouter } from './modules/payment-requests/payment-requests.router';
@@ -145,6 +146,9 @@ export function createApp(): express.Application {
 
   // ---- Bitcoin fees ----
   app.use('/v1/chains/bitcoin/fees', feesRouter);
+
+  // ---- TRON fees ----
+  app.use('/v1/chains/tron/fees', tronFeesRouter);
 
   // ---- Bitcoin transaction prepare/finalize (order matters: before generic /broadcast) ----
   app.use('/v1/chains/bitcoin/transactions', prepareRouter);

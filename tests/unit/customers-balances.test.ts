@@ -33,22 +33,27 @@ describe('customersService.getBalances — aggregation by asset_id', () => {
     const customer = await customersService.create(TENANT, { reference: 'unit-bal-zero' });
     const balances = await customersService.getBalances(TENANT, customer.id);
 
-    expect(balances.length).toBe(1);
-    const btc = balances[0]!;
-    expect(btc.asset_id).toBe('bitcoin:BTC');
-    expect(btc.pending).toBe('0');
-    expect(btc.settled).toBe('0');
-    expect(btc.total).toBe('0');
+    // 3 assets provisioned: bitcoin:BTC, tron:USDT, tron:TRX — all zero
+    expect(balances.length).toBe(3);
+    const assetIds = balances.map((b) => b.asset_id);
+    expect(assetIds).toContain('bitcoin:BTC');
+    expect(assetIds).toContain('tron:USDT');
+    expect(assetIds).toContain('tron:TRX');
+    for (const b of balances) {
+      expect(b.pending).toBe('0');
+      expect(b.settled).toBe('0');
+      expect(b.total).toBe('0');
+    }
   });
 
   it('sums pending and settled across both accounts for the same asset', async () => {
     const customer = await customersService.create(TENANT, { reference: 'unit-bal-sum' });
 
     const pendingAcc = getDb()
-      .prepare("SELECT id FROM ledger_accounts WHERE customer_id = ? AND account_type = 'customer_pending'")
+      .prepare("SELECT id FROM ledger_accounts WHERE customer_id = ? AND account_type = 'customer_pending' AND asset_id = 'bitcoin:BTC'")
       .get(customer.id) as { id: string };
     const availableAcc = getDb()
-      .prepare("SELECT id FROM ledger_accounts WHERE customer_id = ? AND account_type = 'customer_available'")
+      .prepare("SELECT id FROM ledger_accounts WHERE customer_id = ? AND account_type = 'customer_available' AND asset_id = 'bitcoin:BTC'")
       .get(customer.id) as { id: string };
 
     // Simulate an inbound pending deposit: 50 000 sats into the pending account
@@ -68,9 +73,9 @@ describe('customersService.getBalances — aggregation by asset_id', () => {
     });
 
     const balances = await customersService.getBalances(TENANT, customer.id);
-    expect(balances.length).toBe(1);
 
-    const btc = balances[0]!;
+    const btc = balances.find((b) => b.asset_id === 'bitcoin:BTC')!;
+    expect(btc).toBeDefined();
     expect(btc.asset_id).toBe('bitcoin:BTC');
     // pending comes from the pending account, settled from the available account
     expect(BigInt(btc.pending) + BigInt(btc.settled)).toBe(BigInt(btc.total));

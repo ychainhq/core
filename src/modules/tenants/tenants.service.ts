@@ -95,16 +95,21 @@ interface TreasuryWalletOptions {
   walletName: string;
   accountType: 'tenant_hot_control' | 'tenant_cold_control';
   accountName: string;
+  chainId?: string;
+  assetId?: string;
 }
 
 async function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOptions): Promise<void> {
   const db = getDbClient();
-  const chainId = 'bitcoin';
-  const assetId = 'bitcoin:BTC';
+  const chainId = opts.chainId ?? 'bitcoin';
+  const assetId = opts.assetId ?? 'bitcoin:BTC';
   const now = new Date().toISOString();
 
+  // For multi-chain: find wallet by role+chain to allow separate BTC vs TRON hot wallets.
+  // If chain-specific wallet doesn't exist, fall back to role-only lookup so BTC hot wallet
+  // created before TRON support is reused as the container for TRON addresses.
   let wallet = await db.get(
-    'SELECT * FROM wallets WHERE tenant_id = ? AND wallet_role = ?',
+    'SELECT * FROM wallets WHERE tenant_id = ? AND wallet_role = ? LIMIT 1',
     [tenantId, opts.role]
   ) as any;
 
@@ -121,6 +126,21 @@ async function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOp
       accountType: opts.accountType,
       name: opts.accountName,
     });
+  } else {
+    // Wallet already exists — ensure a ledger account for this chain/asset exists
+    const existingLedgerAccount = await db.get(
+      'SELECT id FROM ledger_accounts WHERE tenant_id = ? AND wallet_id = ? AND chain_id = ? AND asset_id = ?',
+      [tenantId, wallet.id, chainId, assetId]
+    );
+    if (!existingLedgerAccount) {
+      await ledgerService.createAccount(tenantId, {
+        walletId: wallet.id,
+        chainId,
+        assetId,
+        accountType: opts.accountType,
+        name: opts.accountName,
+      });
+    }
   }
 
   const existingAddr = await db.get<{ id: string; status: string }>(
@@ -133,15 +153,20 @@ async function upsertTreasuryWalletRows(tenantId: string, opts: TreasuryWalletOp
       await db.run("UPDATE addresses SET status = 'active', updated_at = ? WHERE id = ?",
         [now, existingAddr.id]);
     }
-    await db.run("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active' AND id != ?",
-      [now, wallet.id, existingAddr.id]);
+    // Replace only other active addresses on the SAME chain
+    await db.run(
+      "UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND chain_id = ? AND status = 'active' AND id != ?",
+      [now, wallet.id, chainId, existingAddr.id]
+    );
   } else {
-    await db.run("UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND status = 'active'",
-      [now, wallet.id]);
+    await db.run(
+      "UPDATE addresses SET status = 'replaced', updated_at = ? WHERE wallet_id = ? AND chain_id = ? AND status = 'active'",
+      [now, wallet.id, chainId]
+    );
     await addressesService.addToWallet(tenantId, wallet.id, {
-      chain: 'bitcoin',
+      chain: chainId as any,
       address: opts.address,
-      label: opts.role,
+      label: `${opts.role}_${chainId}`,
       addressRole: opts.addressRole,
     });
   }
@@ -179,6 +204,51 @@ export const tenantsService = {
     }
 
     await upsertTreasuryWalletRows(tenantId, opts);
+  },
+
+  /**
+   * Provision TRON hot wallet for the tenant. Idempotent.
+   * Creates/updates the TRON active address in the tenant_hot wallet and provisions
+   * TRON operational ledger accounts (sweep_in_transit, network_fee_expense).
+   */
+  async upsertTronTreasuryWallet(tenantId: string, hotAddress: string): Promise<void> {
+    const { adapterRegistry: reg } = await import('../../chain-adapters/registry');
+    const tronAdapter = reg.get('tron');
+    if (!tronAdapter.isValidAddress(hotAddress)) {
+      throw new ValidationError(`Invalid TRON address: ${hotAddress}`);
+    }
+
+    await upsertTreasuryWalletRows(tenantId, {
+      role: 'tenant_hot',
+      address: hotAddress,
+      addressRole: 'treasury_hot',
+      walletName: 'Tenant Hot Wallet (TRON)',
+      accountType: 'tenant_hot_control',
+      accountName: 'Tenant Hot Control (TRON)',
+      chainId: 'tron',
+      assetId: 'tron:TRX',
+    });
+
+    // Ensure TRON operational accounts exist
+    const db = getDbClient();
+    const tronAccounts: Array<{ accountType: string; name: string; assetId: string }> = [
+      { accountType: 'sweep_in_transit',   name: 'Sweep In Transit (TRON)',    assetId: 'tron:TRX' },
+      { accountType: 'network_fee_expense', name: 'Network Fee Expense (TRON)', assetId: 'tron:TRX' },
+    ];
+    for (const acct of tronAccounts) {
+      const existing = await db.get(
+        'SELECT id FROM ledger_accounts WHERE tenant_id = ? AND chain_id = ? AND asset_id = ? AND account_type = ?',
+        [tenantId, 'tron', acct.assetId, acct.accountType]
+      );
+      if (!existing) {
+        await ledgerService.createAccount(tenantId, {
+          chainId: 'tron',
+          assetId: acct.assetId,
+          accountType: acct.accountType as any,
+          name: acct.name,
+        });
+      }
+    }
   },
 
   /**
@@ -346,6 +416,7 @@ export const tenantsService = {
       tronXpub?: string | null;
       tronConfirmationsRequired?: number;
       tronSweepThresholdSun?: string | null;
+      tronHotAddress?: string;
     }
   ): Promise<TenantConfig> {
     const db = getDbClient();
@@ -421,6 +492,10 @@ export const tenantsService = {
         accountType: 'tenant_cold_control',
         accountName: 'Tenant Cold Control (BTC)',
       });
+    }
+
+    if (input.tronHotAddress) {
+      await tenantsService.upsertTronTreasuryWallet(tenantId, input.tronHotAddress);
     }
 
     const row = await db.get('SELECT * FROM tenant_configs WHERE tenant_id = ?', [tenantId]);

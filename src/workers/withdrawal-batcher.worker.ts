@@ -48,7 +48,11 @@ export class WithdrawalBatcherWorker {
   }
 
   async run(): Promise<void> {
-    // Find tenants with queued BTC withdrawals
+    await this.runBtc();
+    await this.runTron();
+  }
+
+  private async runBtc(): Promise<void> {
     const db = getDbClient();
     const tenantsWithQueued = await db.all<{ tenant_id: string }>(`
       SELECT DISTINCT tenant_id
@@ -58,7 +62,7 @@ export class WithdrawalBatcherWorker {
 
     if (tenantsWithQueued.length === 0) return;
 
-    logger.debug('WithdrawalBatcherWorker: processing tenants', { count: tenantsWithQueued.length });
+    logger.debug('WithdrawalBatcherWorker: processing BTC tenants', { count: tenantsWithQueued.length });
 
     const startedAt = Date.now();
     const perTenantCount = new Map<string, number>();
@@ -84,7 +88,7 @@ export class WithdrawalBatcherWorker {
             totalCreated++;
             perTenantCount.set(tenant_id, tenantCreated + 1);
             madeProgress = true;
-            logger.info('WithdrawalBatcherWorker: batch created', {
+            logger.info('WithdrawalBatcherWorker: BTC batch created', {
               tenantId: tenant_id,
               batchId: batch.id,
               outputsCount: batch.outputs_count,
@@ -101,11 +105,55 @@ export class WithdrawalBatcherWorker {
             });
           }
         } catch (err) {
-          logger.warn('WithdrawalBatcherWorker: batch build failed', {
+          logger.warn('WithdrawalBatcherWorker: BTC batch build failed', {
             tenantId: tenant_id,
             error: String(err),
           });
         }
+      }
+    }
+  }
+
+  private async runTron(): Promise<void> {
+    const db = getDbClient();
+    const tenantsWithQueued = await db.all<{ tenant_id: string; asset_id: string }>(`
+      SELECT DISTINCT tenant_id, asset_id
+      FROM customer_withdrawals
+      WHERE status = 'queued' AND chain_id = 'tron'
+    `);
+
+    if (tenantsWithQueued.length === 0) return;
+
+    logger.debug('WithdrawalBatcherWorker: processing TRON tenants', { count: tenantsWithQueued.length });
+
+    for (const { tenant_id, asset_id } of tenantsWithQueued) {
+      if (asset_id !== 'tron:USDT' && asset_id !== 'tron:TRX') continue;
+      try {
+        const batch = await withdrawalBatcherService.buildTronBatchForTenant(tenant_id, asset_id);
+        if (batch) {
+          logger.info('WithdrawalBatcherWorker: TRON batch created', {
+            tenantId: tenant_id,
+            assetId: asset_id,
+            batchId: batch.id,
+          });
+          ticklerService.record({
+            tenantId: tenant_id,
+            category: 'withdrawal_batch',
+            subcategory: 'created',
+            entityId: batch.id,
+            actorLogin: 'system:withdrawal-batcher',
+            field1: '1',
+            field2: batch.status,
+            field3: asset_id,
+            newValue: batch,
+          });
+        }
+      } catch (err) {
+        logger.warn('WithdrawalBatcherWorker: TRON batch build failed', {
+          tenantId: tenant_id,
+          assetId: asset_id,
+          error: String(err),
+        });
       }
     }
   }

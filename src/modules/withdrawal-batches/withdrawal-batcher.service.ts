@@ -21,8 +21,11 @@ import { signerPolicyService } from '../external-signers/signer-policy.service';
 import { signingTasksService } from '../signing-tasks/signing-tasks.service';
 import { withdrawalsService } from '../withdrawals/withdrawals.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
-import { btcNodeSelector } from '../../chain-adapters/registry';
+import { adapterRegistry, btcNodeSelector } from '../../chain-adapters/registry';
 import { estimateTxVsize } from '../../chain-adapters/bitcoin/tx-sizer';
+import { tenantsService } from '../tenants/tenants.service';
+import { tronFeeService } from '../tron/tron-fee.service';
+import { config } from '../../config/index';
 
 // BTC dust threshold for P2WPKH outputs (546 sats)
 const DUST_THRESHOLD_SATS = 546n;
@@ -418,6 +421,129 @@ export const withdrawalBatcherService = {
       batchId, tenantId, outputsCount: validWithdrawals.length,
       totalSats: totalOutput.toString(), signingTaskId: signingTask.id
     });
+
+    return withdrawalBatcherService.getBatchById(tenantId, batchId);
+  },
+
+  /**
+   * TRON withdrawal processor — Strategy Pattern (account model, no UTXOs).
+   * Processes one queued TRON withdrawal per call; returns null if nothing to process.
+   * Called by the batcher worker once per configured interval for each TRON asset.
+   */
+  async buildTronBatchForTenant(tenantId: string, assetId: 'tron:USDT' | 'tron:TRX'): Promise<WithdrawalBatch | null> {
+    const db = getDbClient();
+
+    // Pick the oldest queued TRON withdrawal for this asset
+    const wd = await db.get<{ id: string; amount_raw: string; to_address: string; asset_id: string }>(`
+      SELECT id, amount_raw, to_address, asset_id
+      FROM customer_withdrawals
+      WHERE tenant_id = ? AND status = 'queued' AND chain_id = 'tron' AND asset_id = ?
+      ORDER BY created_at ASC
+      LIMIT 1
+    `, [tenantId, assetId]);
+
+    if (!wd) return null;
+
+    // Find TRON hot wallet address
+    const hotAddrRow = await db.get<{ address: string }>(`
+      SELECT a.address
+      FROM addresses a
+      JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
+        AND a.chain_id = 'tron' AND a.status = 'active'
+      LIMIT 1
+    `, [tenantId]);
+
+    if (!hotAddrRow) {
+      logger.warn('No TRON hot wallet address configured for tenant', { tenantId, assetId });
+      return null;
+    }
+
+    // Build unsigned TRON tx
+    const tronAdapter = adapterRegistry.get('tron') as import('../../chain-adapters/tron/adapter').TronAdapter;
+    const contractAddress = assetId === 'tron:USDT' ? config.TRON_USDT_CONTRACT_ADDRESS : undefined;
+
+    // Dynamic fee estimation — determines actual fee cost and safe fee_limit cap
+    const feeEstimate = await tronFeeService.estimateFee({
+      tenantId,
+      assetId: assetId as 'tron:TRX' | 'tron:USDT',
+      toAddress: wd.to_address,
+      amountRaw: wd.amount_raw,
+      contractAddress,
+    }).catch((err) => {
+      logger.warn('TRON fee estimation failed, using zero-cost fallback', { tenantId, error: String(err) });
+      return tronFeeService._zeroFeeEstimate(assetId);
+    });
+
+    let unsignedTx: { unsignedPayload: string; txID: string };
+    try {
+      unsignedTx = await tronAdapter.buildUnsignedWithdrawalTx({
+        fromAddress: hotAddrRow.address,
+        toAddress: wd.to_address,
+        assetId,
+        amountRaw: wd.amount_raw,
+        feeLimitSun: feeEstimate.recommendedFeeLimitSun || 10_000_000,
+        contractAddress,
+      });
+    } catch (err) {
+      logger.error('Failed to build unsigned TRON withdrawal tx', { tenantId, withdrawalId: wd.id, assetId, error: String(err) });
+      return null;
+    }
+
+    const batchId = `wdb_${crypto.randomBytes(8).toString('hex')}`;
+    const now = new Date().toISOString();
+
+    await db.run(`
+      INSERT INTO withdrawal_batches (
+        id, tenant_id, chain_id, asset_id,
+        status, outputs_count, total_output_raw, fee_rate_sat_vb,
+        rbf_enabled, decision_mode, attempt_count, created_at, updated_at
+      ) VALUES (?, ?, 'tron', ?, 'pending_signature', 1, ?, NULL, 0, 'auto', 0, ?, ?)
+    `, [batchId, tenantId, assetId, wd.amount_raw, now, now]);
+
+    await db.run(`
+      INSERT INTO withdrawal_batch_items (batch_id, withdrawal_id, amount_raw, to_address)
+      VALUES (?, ?, ?, ?)
+    `, [batchId, wd.id, wd.amount_raw, wd.to_address]);
+
+    await withdrawalsService.markBatched([wd.id]);
+
+    const selectedSigner = await externalSignersService.selectSigner(tenantId, 'tron', assetId, 'tron_raw_tx');
+
+    const policyDecision = await signerPolicyService.evaluateDecision(
+      tenantId,
+      selectedSigner?.id ?? null,
+      'tron',
+      assetId,
+      wd.amount_raw,
+      0,
+      1
+    );
+
+    const signingTask = await signingTasksService.create({
+      tenantId,
+      signerId: selectedSigner?.id ?? null,
+      requestType: 'tron_withdrawal',
+      chainId: 'tron',
+      assetId,
+      withdrawalBatchId: batchId,
+      amountRaw: wd.amount_raw,
+      feeRaw: feeEstimate.estimatedFeeSun,
+      feeRateSatVb: '0',
+      outputsCount: 1,
+      payloadFormat: 'tron_raw_tx',
+      unsignedPayload: unsignedTx.unsignedPayload,
+      decisionMode: policyDecision.mode,
+      decisionReason: policyDecision.reason,
+    });
+
+    await db.run(`
+      UPDATE withdrawal_batches
+      SET signing_task_id = ?, signer_id = ?, decision_mode = ?, updated_at = ?
+      WHERE id = ?
+    `, [signingTask.id, selectedSigner?.id ?? null, policyDecision.mode, now, batchId]);
+
+    logger.info('TRON withdrawal batch created', { batchId, tenantId, assetId, withdrawalId: wd.id, signingTaskId: signingTask.id });
 
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },

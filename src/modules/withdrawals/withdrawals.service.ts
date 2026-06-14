@@ -5,7 +5,7 @@ import { ledgerService } from '../ledger/ledger.service';
 import { depositsService } from '../deposits/deposits.service';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { BitcoinAdapter } from '../../chain-adapters/bitcoin/adapter';
-import { btcNodeSelector } from '../../chain-adapters/registry';
+import { adapterRegistry, btcNodeSelector } from '../../chain-adapters/registry';
 import { logger } from '../../shared/logging/index';
 import { toUnixTs } from '../../shared/time/index';
 import { satoshiToBtc } from '../../shared/money/index';
@@ -58,9 +58,13 @@ export const withdrawalsService = {
       amountSats: string;
       idempotencyKey?: string;
       forceExternal?: boolean;
+      chainId?: string;
+      assetId?: string;
     }
   ): Promise<CustomerWithdrawal> {
     const db = getDbClient();
+    const chainId = input.chainId ?? 'bitcoin';
+    const assetId = input.assetId ?? 'bitcoin:BTC';
 
     // Idempotency check
     if (input.idempotencyKey) {
@@ -71,7 +75,6 @@ export const withdrawalsService = {
       if (existing) return mapWithdrawal(existing);
     }
 
-    const assetId = 'bitcoin:BTC';
     const amountBigInt = BigInt(input.amountSats);
     if (amountBigInt <= 0n) {
       throw new ValidationError('amountSats must be greater than zero');
@@ -80,23 +83,22 @@ export const withdrawalsService = {
     // Check sender balance
     const senderAccount = await ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId);
     if (!senderAccount) {
-      throw new UnprocessableEntityError('No BTC ledger account found for this customer');
+      throw new UnprocessableEntityError(`No ${assetId} ledger account found for this customer`);
     }
     const balance = await ledgerService.getBalance(senderAccount.id);
     if (BigInt(balance.settled) < amountBigInt) {
       throw new UnprocessableEntityError(
-        `Insufficient balance: available ${balance.settled} sats, requested ${input.amountSats} sats`
+        `Insufficient balance: available ${balance.settled}, requested ${input.amountSats}`
       );
     }
 
     // On-platform detection: is toAddress a registered customer deposit address for this tenant?
     const platformAddr = input.forceExternal ? undefined : await db.get<{ customer_id: string }>(
-      "SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND address_role = 'customer_deposit' LIMIT 1",
-      [input.toAddress, tenantId]
+      "SELECT customer_id FROM addresses WHERE address = ? AND tenant_id = ? AND chain_id = ? AND address_role = 'customer_deposit' LIMIT 1",
+      [input.toAddress, tenantId, chainId]
     );
 
     if (platformAddr) {
-      
       const result = withdrawalsService._executeInternalTransfer({
         tenantId,
         senderCustomerId: customerId,
@@ -105,15 +107,19 @@ export const withdrawalsService = {
         amountBigInt,
         toAddress: input.toAddress,
         idempotencyKey: input.idempotencyKey,
+        chainId,
+        assetId,
       });
       logger.info('Customer withdrawal executed for internal transfer', { tenantId, customerId, recipientCustomerId: platformAddr.customer_id, toAddress: input.toAddress, amountSats: amountBigInt });
       return result;
     }
 
-    // External path — validate BTC address before reserving
-    const adapter = new BitcoinAdapter(btcNodeSelector);
+    // External path — validate address for the given chain
+    const adapter = chainId === 'bitcoin'
+      ? new BitcoinAdapter(btcNodeSelector)
+      : adapterRegistry.get(chainId);
     if (!adapter.isValidAddress(input.toAddress)) {
-      throw new ValidationError(`Invalid bitcoin address: ${input.toAddress}`);
+      throw new ValidationError(`Invalid ${chainId} address: ${input.toAddress}`);
     }
 
     // Persist withdrawal record
@@ -124,15 +130,16 @@ export const withdrawalsService = {
       INSERT INTO customer_withdrawals
         (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
          status, idempotency_key, withdrawal_type, recipient_customer_id, created_at, updated_at)
-      VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, NULL, NULL, 'queued', ?, 'external', NULL, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'queued', ?, 'external', NULL, ?, ?)
     `, [
       id, tenantId, customerId,
+      chainId, assetId,
       input.toAddress, input.amountSats,
       input.idempotencyKey ?? null,
       now, now,
     ]);
 
-    // Reserve customer balance immediately — prevents double-spend while PSBT awaits signing
+    // Reserve customer balance immediately — prevents double-spend while batch awaits signing
     await ledgerService.addEntry({
       ledgerAccountId: senderAccount.id,
       type: 'withdrawal_reserve',
@@ -143,8 +150,7 @@ export const withdrawalsService = {
 
     const withdrawal = await withdrawalsService.getByIdInternal(id);
 
-    // Fire lightweight lifecycle webhook. Signing-specific events are emitted
-    // after the batcher creates a PSBT/signing task.
+    // Fire lightweight lifecycle webhook
     webhooksService.queueEvent(
       'withdrawal.queued',
       {
@@ -153,13 +159,15 @@ export const withdrawalsService = {
         customerId,
         toAddress: input.toAddress,
         amountSats: input.amountSats,
+        chainId,
+        assetId,
       },
-      'bitcoin',
+      chainId,
       undefined,
       tenantId
     );
 
-    logger.info('Customer withdrawal queued', { id, tenantId, customerId, amountSats: input.amountSats });
+    logger.info('Customer withdrawal queued', { id, tenantId, customerId, chainId, assetId, amountSats: input.amountSats });
     return withdrawal;
   },
 
@@ -172,9 +180,16 @@ export const withdrawalsService = {
       amountBigInt: bigint;
       toAddress: string;
       idempotencyKey?: string;
+      chainId?: string;
+      assetId?: string;
     }
   ): Promise<CustomerWithdrawal> {
-    const { tenantId, senderCustomerId, recipientCustomerId, senderAccount, amountBigInt, toAddress, idempotencyKey } = opts;
+    const {
+      tenantId, senderCustomerId, recipientCustomerId, senderAccount,
+      amountBigInt, toAddress, idempotencyKey,
+    } = opts;
+    const chainId = opts.chainId ?? 'bitcoin';
+    const assetId = opts.assetId ?? 'bitcoin:BTC';
 
     if (senderCustomerId === recipientCustomerId) {
       throw new ValidationError('Cannot transfer to your own deposit address');
@@ -191,23 +206,30 @@ export const withdrawalsService = {
       throw new UnprocessableEntityError('Recipient customer is not active');
     }
 
-    // Verify recipient has a BTC ledger account
-    const recipientAccount = await ledgerService.findAccountByCustomerAndAsset(tenantId, recipientCustomerId, 'bitcoin:BTC');
+    // Verify recipient has a matching ledger account
+    const recipientAccount = await ledgerService.findAccountByCustomerAndAsset(tenantId, recipientCustomerId, assetId);
     if (!recipientAccount) {
-      throw new UnprocessableEntityError('Recipient has no BTC ledger account');
+      throw new UnprocessableEntityError(`Recipient has no ${assetId} ledger account`);
     }
 
     const id = `wd_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
+
+    // amountDisplay: BTC uses 8 decimals, TRON assets use 6
+    const TRON_DECIMALS = 6n;
+    const amountDisplay = chainId === 'bitcoin'
+      ? satoshiToBtc(amountBigInt)
+      : `${amountBigInt / (10n ** TRON_DECIMALS)}.${String(amountBigInt % (10n ** TRON_DECIMALS)).padStart(6, '0')}`;
 
     const deposit = await db.transaction(async (tx) => {
       await tx.run(`
         INSERT INTO customer_withdrawals
           (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
            status, idempotency_key, withdrawal_type, recipient_customer_id, created_at, updated_at)
-        VALUES (?, ?, ?, 'bitcoin', 'bitcoin:BTC', ?, ?, '0', NULL, 'confirmed', ?, 'internal', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, '0', NULL, 'confirmed', ?, 'internal', ?, ?, ?)
       `, [
         id, tenantId, senderCustomerId,
+        chainId, assetId,
         toAddress, amountBigInt.toString(),
         idempotencyKey ?? null,
         recipientCustomerId,
@@ -217,7 +239,7 @@ export const withdrawalsService = {
       await ledgerService.transfer({
         fromLedgerAccountId: senderAccount.id,
         toLedgerAccountId: recipientAccount.id,
-        assetId: 'bitcoin:BTC',
+        assetId,
         amountRaw: amountBigInt.toString(),
         reference: id,
         isPending: false,
@@ -226,11 +248,11 @@ export const withdrawalsService = {
       const { deposit: internalDeposit } = await depositsService.upsert({
         tenantId,
         customerId: recipientCustomerId,
-        chainId: 'bitcoin',
-        assetId: 'bitcoin:BTC',
+        chainId,
+        assetId,
         address: toAddress,
         amountRaw: amountBigInt.toString(),
-        amountDisplay: satoshiToBtc(amountBigInt),
+        amountDisplay,
         txHash: `internal:${id}`,
         confirmations: 1,
         status: 'confirmed',
@@ -275,14 +297,16 @@ export const withdrawalsService = {
         senderCustomerId,
         recipientCustomerId,
         toAddress,
-        amountSats: amountBigInt.toString(),
+        amountRaw: amountBigInt.toString(),
+        chainId,
+        assetId,
       },
-      'bitcoin',
+      chainId,
       undefined,
       tenantId
     );
 
-    logger.info('Internal transfer completed', { id, tenantId, senderCustomerId, recipientCustomerId, amountSats: amountBigInt.toString() });
+    logger.info('Internal transfer completed', { id, tenantId, senderCustomerId, recipientCustomerId, chainId, assetId, amountRaw: amountBigInt.toString() });
     return withdrawal;
   },
 

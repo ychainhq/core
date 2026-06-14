@@ -71,16 +71,21 @@ sweepsRouter.post('/:sweepId/submit-signed', async (req: Request, res: Response,
       throw new ValidationError(`Sweep is in status '${sweep.status}', expected 'pending_signature'`);
     }
 
-    // Finalize and broadcast via Bitcoin adapter
-    const adapter = adapterRegistry.get('bitcoin');
+    // Finalize and broadcast — chain-aware
+    const adapter = adapterRegistry.get(sweep.chain_id);
 
     let txHash: string;
     try {
-      const finalizedResult = await adapter.finalizePsbt(body.signedPsbt);
-      if (!finalizedResult.complete) {
-        throw new Error('PSBT is not fully signed — missing signatures');
+      if (sweep.chain_id === 'bitcoin') {
+        const finalizedResult = await adapter.finalizePsbt(body.signedPsbt);
+        if (!finalizedResult.complete) {
+          throw new Error('PSBT is not fully signed — missing signatures');
+        }
+        txHash = await adapter.sendRawTransaction(finalizedResult.hex);
+      } else {
+        // TRON and future chains: signed payload is directly broadcastable
+        txHash = await adapter.sendRawTransaction(body.signedPsbt);
       }
-      txHash = await (adapter as any).sendRawTransaction(finalizedResult.hex);
     } catch (err: any) {
       await sweepsService.updateStatus(sweep.id, 'failed', { error: String(err) });
       await utxoLockService.releaseLocksForSweep(tenantId(req), sweep.id).catch((e) =>

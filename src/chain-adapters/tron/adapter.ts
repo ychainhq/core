@@ -10,8 +10,15 @@ import {
   MempoolAcceptResult,
 } from '../types';
 import { ApiError } from '../../shared/errors/index';
-import { TronRpcClient } from './rpc-client';
+import { TronRpcClient, TronUnsignedTransaction } from './rpc-client';
 import { NodeSelector } from '../node-selector';
+import { TronFeeEstimate } from './tron-types';
+import { tronFeeService } from '../../modules/tron/tron-fee.service';
+
+export interface TronUnsignedWithdrawalTx {
+  unsignedPayload: string;
+  txID: string;
+}
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
@@ -116,7 +123,23 @@ export class TronAdapter implements IChainAdapter {
   }
 
   estimateSmartFee(targetBlocks: number): Promise<FeeEstimate> {
+    // TRON does not use a fee-rate model — costs depend on bandwidth/energy resources.
+    // Use estimateTronFee() for accurate per-tx estimation.
     return Promise.resolve({ targetBlocks, feeRate: 0, mode: 'resource_model' });
+  }
+
+  /**
+   * Estimate TRON fee for a specific transaction.
+   * Delegates to tronFeeService which owns cache and computation logic.
+   */
+  estimateTronFee(params: {
+    fromAddress: string;
+    assetId: 'tron:TRX' | 'tron:USDT';
+    toAddress: string;
+    amountRaw: string;
+    contractAddress?: string;
+  }): Promise<TronFeeEstimate> {
+    return tronFeeService.estimateFeeForAddress(params);
   }
 
   testMempoolAccept(rawTx: string): Promise<MempoolAcceptResult> {
@@ -150,6 +173,50 @@ export class TronAdapter implements IChainAdapter {
 
   isValidAddress(address: string): boolean {
     return isValidTronAddress(address);
+  }
+
+  /**
+   * Build an unsigned TRON withdrawal transaction.
+   * For TRC-20 tokens (assetId = 'tron:USDT'): calls triggersmartcontract.
+   * For native TRX (assetId = 'tron:TRX'): calls createtransaction.
+   * Returns `{ unsignedPayload: raw_data_hex, txID }` for the external signer.
+   */
+  async buildUnsignedWithdrawalTx(params: {
+    fromAddress: string;
+    toAddress: string;
+    assetId: string;
+    amountRaw: string;
+    feeLimitSun: number;
+    contractAddress?: string;
+  }): Promise<TronUnsignedWithdrawalTx> {
+    const { fromAddress, toAddress, assetId, amountRaw, feeLimitSun, contractAddress } = params;
+
+    let tx: TronUnsignedTransaction;
+
+    if (assetId === 'tron:TRX') {
+      tx = await this.rpc.createUnsignedTrxTransfer({
+        fromAddress,
+        toAddress,
+        amountSun: amountRaw,
+      });
+    } else {
+      // TRC-20 (e.g. tron:USDT)
+      if (!contractAddress) {
+        throw new ApiError(400, 'MISSING_CONTRACT_ADDRESS', `Contract address required for asset ${assetId}`);
+      }
+      tx = await this.rpc.createUnsignedTrc20Transfer({
+        fromAddress,
+        toAddress,
+        contractAddress,
+        amountSun: amountRaw,
+        feeLimitSun,
+      });
+    }
+
+    return {
+      unsignedPayload: tx.raw_data_hex,
+      txID: tx.txID,
+    };
   }
 }
 

@@ -32,6 +32,7 @@ import { externalSignersService } from '../../modules/external-signers/external-
 import { signerPolicyService } from '../../modules/external-signers/signer-policy.service';
 import { signingTasksService } from '../../modules/signing-tasks/signing-tasks.service';
 import { ticklerService } from '../../shared/tickler/tickler.service';
+import { tronFeeService } from '../../modules/tron/tron-fee.service';
 
 const paging = {
   limit: z.number().int().min(1).max(100).optional(),
@@ -611,6 +612,49 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
     inputSchema: {},
     annotations: readOnly,
   }, async () => safeTool(async () => ({ data: await bitcoinTransactionsService.getFees() })));
+
+  server.registerTool('chainapi_get_tron_fees', {
+    description: 'Get TRON fee estimate. Without params: returns general energy/bandwidth prices and typical transfer costs. With assetId + amount: returns a specific estimate for that transfer using the tenant hot wallet staking state.',
+    inputSchema: {
+      assetId: z.enum(['tron:TRX', 'tron:USDT']).optional(),
+      amount:  z.string().optional(),
+    },
+    annotations: readOnly,
+  }, async ({ assetId, amount }: any) => safeTool(async () => {
+    if (assetId && amount) {
+      const contractAddress = assetId === 'tron:USDT'
+        ? (process.env['TRON_USDT_CONTRACT_ADDRESS'] ?? undefined)
+        : undefined;
+      const estimate = await tronFeeService.estimateFee({
+        tenantId,
+        assetId,
+        toAddress: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+        amountRaw: amount,
+        contractAddress,
+      });
+      return {
+        data: {
+          chain: 'tron',
+          assetId,
+          estimatedFeeSun: estimate.estimatedFeeSun,
+          estimatedFeeTrx: (Number(estimate.estimatedFeeSun) / 1_000_000).toFixed(6),
+          breakdown: {
+            bandwidthNeeded: estimate.bandwidthNeeded,
+            bandwidthFree: estimate.bandwidthFreeRemaining,
+            bandwidthCostSun: estimate.bandwidthCostSun,
+            energyNeeded: estimate.energyNeeded,
+            energyFree: estimate.energyFreeRemaining,
+            energyCostSun: estimate.energyCostSun,
+            energyPriceSun: estimate.energyPriceSun,
+            bandwidthPriceSun: estimate.bandwidthPriceSun,
+          },
+          feeLimitSun: estimate.recommendedFeeLimitSun,
+          hotWalletHasEnoughResources: estimate.hotWalletHasEnoughResources,
+        },
+      };
+    }
+    return { data: { chain: 'tron', ...(await tronFeeService.getGeneralFeeParams()) } };
+  }));
 
   server.registerTool('chainapi_create_payment_request', {
     description: 'Create a payment request. Supports idempotencyKey.',

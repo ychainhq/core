@@ -7,14 +7,15 @@ import { signerPolicyService } from '../modules/external-signers/signer-policy.s
 import { signingTasksService } from '../modules/signing-tasks/signing-tasks.service';
 import { ticklerService } from '../shared/tickler/tickler.service';
 import { webhooksService } from '../modules/webhooks/webhooks.service';
+import { tronFeeService } from '../modules/tron/tron-fee.service';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 
 const INTERVAL_MS = 60_000;
 const TRON_USDT_ASSET_ID = 'tron:USDT';
 
-// Default fee limit for TRC-20 transfers (40 TRX in sun)
-const DEFAULT_TRON_SWEEP_FEE_LIMIT_SUN = 40_000_000;
+// Minimum fee_limit when estimation is unavailable (10 TRX)
+const FALLBACK_FEE_LIMIT_SUN = 10_000_000;
 
 interface TenantSweepRow {
   tenant_id: string;
@@ -185,7 +186,19 @@ export class TronSweepWorker {
     const balance = await rpc.getTrc20Balance(address, contractAddress);
     if (BigInt(balance) < threshold) return;
 
-    const feeLimitSun = DEFAULT_TRON_SWEEP_FEE_LIMIT_SUN;
+    // Dynamic fee estimation for this specific sweep tx
+    const feeEstimate = await tronFeeService.estimateFeeForAddress({
+      fromAddress: address,
+      assetId: TRON_USDT_ASSET_ID,
+      toAddress,
+      amountRaw: balance,
+      contractAddress,
+    }).catch((err) => {
+      logger.warn('TronSweepWorker: fee estimation failed, using fallback', { tenantId, address, error: String(err) });
+      return tronFeeService._zeroFeeEstimate(TRON_USDT_ASSET_ID);
+    });
+
+    const feeLimitSun = feeEstimate.recommendedFeeLimitSun || FALLBACK_FEE_LIMIT_SUN;
     const rawTx = await rpc.createUnsignedTrc20Transfer({
       fromAddress: address,
       toAddress,
@@ -213,7 +226,7 @@ export class TronSweepWorker {
       fromAddresses: [address],
       toAddress,
       amountRaw: balance,
-      feeRaw: feeLimitSun.toString(),
+      feeRaw: feeEstimate.estimatedFeeSun, // actual predicted cost, not the cap
     });
 
     const selectedSigner = await externalSignersService.selectSigner(
@@ -237,7 +250,7 @@ export class TronSweepWorker {
       assetId: TRON_USDT_ASSET_ID,
       sweepId: sweep.id,
       amountRaw: balance,
-      feeRaw: feeLimitSun.toString(),
+      feeRaw: feeEstimate.estimatedFeeSun, // actual predicted cost, not the cap
       payloadFormat: 'tron_raw_tx',
       unsignedPayload,
       decisionMode: policyDecision.mode,
@@ -265,7 +278,7 @@ export class TronSweepWorker {
         fromAddresses: [address],
         toAddress,
         amountRaw: balance,
-        feeRaw: feeLimitSun.toString(),
+        feeRaw: feeEstimate.estimatedFeeSun,
         submitUrl: `/v1/sweeps/${sweep.id}/submit-signed`,
       },
       'tron',

@@ -26,6 +26,8 @@ const withdrawalSchema = z.object({
   amountSats: z.string().regex(/^\d+$/, 'amountSats must be a positive integer string'),
   idempotencyKey: z.string().optional(),
   forceExternal: z.boolean().optional(),
+  chainId: z.string().optional(),
+  assetId: z.string().optional(),
 });
 
 function ctx(req: Request): { tenantId: string; customerId: string } {
@@ -99,11 +101,18 @@ meRouter.get('/addresses', async (req: Request, res: Response, next: NextFunctio
   }
 });
 
-// POST /v1/me/deposit-address
+const depositAddressQuerySchema = z.object({
+  chain: z.enum(['bitcoin', 'tron']).default('bitcoin'),
+});
+
+// POST /v1/me/deposit-address?chain=bitcoin|tron
 meRouter.post('/deposit-address', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { tenantId, customerId } = ctx(req);
-    const result = await depositAddressService.generateForCustomer(tenantId, customerId);
+    const { chain } = depositAddressQuerySchema.parse(req.query);
+    const result = chain === 'tron'
+      ? await depositAddressService.generateTronForCustomer(tenantId, customerId)
+      : await depositAddressService.generateForCustomer(tenantId, customerId);
     ticklerService.record({
       tenantId,
       category: 'address',
@@ -111,6 +120,7 @@ meRouter.post('/deposit-address', async (req: Request, res: Response, next: Next
       entityId: result.address,
       actorLogin: `customer:${customerId}`,
       field1: customerId,
+      field2: chain,
       newValue: result,
     });
     res.status(201).json({ data: result });
@@ -129,6 +139,8 @@ meRouter.post('/withdrawals', async (req: Request, res: Response, next: NextFunc
       amountSats: body.amountSats,
       idempotencyKey: body.idempotencyKey,
       forceExternal: body.forceExternal,
+      chainId: body.chainId,
+      assetId: body.assetId,
     });
     // Internal transfers tickle themselves inside the service to avoid duplicate audit entries
     if (withdrawal.withdrawal_type !== 'internal') {

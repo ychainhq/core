@@ -75,23 +75,28 @@ export const customersService = {
       ]
     );
 
-    // Auto-provision per-customer ledger accounts for BTC (MVP: always bitcoin:BTC)
-    const chainId = 'bitcoin';
-    const assetId = 'bitcoin:BTC';
-    await ledgerService.createAccount(tenantId, {
-      customerId: id,
-      chainId,
-      assetId,
-      accountType: 'customer_available',
-      name: 'Available Balance (BTC)',
-    });
-    await ledgerService.createAccount(tenantId, {
-      customerId: id,
-      chainId,
-      assetId,
-      accountType: 'customer_pending',
-      name: 'Pending Balance (BTC)',
-    });
+    // Auto-provision per-customer ledger accounts for all supported chains
+    const CUSTOMER_ACCOUNTS: Array<{ chainId: string; assetId: string; label: string }> = [
+      { chainId: 'bitcoin', assetId: 'bitcoin:BTC', label: 'BTC' },
+      { chainId: 'tron',    assetId: 'tron:USDT',   label: 'USDT' },
+      { chainId: 'tron',    assetId: 'tron:TRX',    label: 'TRX' },
+    ];
+    for (const acct of CUSTOMER_ACCOUNTS) {
+      await ledgerService.createAccount(tenantId, {
+        customerId: id,
+        chainId: acct.chainId,
+        assetId: acct.assetId,
+        accountType: 'customer_available',
+        name: `Available Balance (${acct.label})`,
+      });
+      await ledgerService.createAccount(tenantId, {
+        customerId: id,
+        chainId: acct.chainId,
+        assetId: acct.assetId,
+        accountType: 'customer_pending',
+        name: `Pending Balance (${acct.label})`,
+      });
+    }
 
     // Auto-provision AML/KYC and Data Governance records with sensible defaults
     await customersAmlKycService.provision(tenantId, id);

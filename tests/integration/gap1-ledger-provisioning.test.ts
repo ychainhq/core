@@ -120,25 +120,31 @@ describe('GAP 1 — Customer ledger account auto-provisioning', () => {
     const customerAccounts = ledgerRes.body.data.filter(
       (a: any) => a.customer_id === customerId
     );
-    expect(customerAccounts.length).toBe(2);
+    // 3 chains × 2 account types (available + pending) = 6 accounts (BTC, USDT, TRX)
+    expect(customerAccounts.length).toBe(6);
 
     const types = customerAccounts.map((a: any) => a.account_type);
     expect(types).toContain('customer_available');
     expect(types).toContain('customer_pending');
+    const assetIds = customerAccounts.map((a: any) => a.asset_id);
+    expect(assetIds).toContain('bitcoin:BTC');
+    expect(assetIds).toContain('tron:USDT');
+    expect(assetIds).toContain('tron:TRX');
   });
 
   it('each customer gets separate ledger accounts', async () => {
     const c1 = await request(app).post('/v1/customers').set(auth).send({ reference: 'cust-sep-1' });
     const c2 = await request(app).post('/v1/customers').set(auth).send({ reference: 'cust-sep-2' });
 
-    const ledgerRes = await request(app).get('/v1/ledger/accounts').set(auth);
+    const ledgerRes = await request(app).get('/v1/ledger/accounts?limit=100').set(auth);
     const accts = ledgerRes.body.data;
 
     const c1Accts = accts.filter((a: any) => a.customer_id === c1.body.data.id);
     const c2Accts = accts.filter((a: any) => a.customer_id === c2.body.data.id);
 
-    expect(c1Accts.length).toBe(2);
-    expect(c2Accts.length).toBe(2);
+    // 3 chains × 2 account types = 6 accounts per customer
+    expect(c1Accts.length).toBe(6);
+    expect(c2Accts.length).toBe(6);
     // Accounts belong to different customers
     const c1Ids = c1Accts.map((a: any) => a.id);
     const c2Ids = c2Accts.map((a: any) => a.id);

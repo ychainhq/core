@@ -1908,3 +1908,76 @@ PostgreSQL odblokowuje:
 - **RTO:** ~2-5 minut (kopia pliku + restart procesu, manual failover)
 - Nie ma automatic failover — wymaga operatora
 - Dobra odpowiedź dla beta / wczesne enterprise; niewystarczające dla krytycznej infrastruktury
+
+## Appendix E: Model fee TRON — estymacja i pokrycie kosztów
+
+### E.1 Dwa niezależne składniki fee
+
+TRON ma dwa całkowicie oddzielne zasoby, które niezależnie determinują koszt transakcji:
+
+| Składnik | Kto ponosi | Kiedy kosztuje | Jak zerować |
+|----------|-----------|---------------|-------------|
+| **Bandwidth** (bytes × `getTransactionFee`) | Każda transakcja | Gdy przekracza darmowy dzienny limit (1 500 BP/dzień free) lub staked bandwidth | Stakingiem TRX |
+| **Energy** (`energy_used × getEnergyFee`) | Tylko smart contracts (TRC-20) | Gdy hot wallet ma mniej staked energy niż `energy_used` przez operację | Stakingiem TRX pod energy |
+
+Oba cenniki pobierane przez `POST /wallet/getchainparameters` (klucze: `getEnergyFee`, `getTransactionFee`). Aktualny stan zasobów hot wallet przez `POST /wallet/getaccountresource`.
+
+### E.2 fee_limit vs. estimatedFeeSun — kluczowe rozróżnienie
+
+```
+triggersmartcontract:
+  fee_limit:    maksymalne TRX jakie MOŻE zostać spalone (safety cap; nie musi być wydane)
+  actual_fee:   faktycznie spalona kwota (zwracana przez broadcast, nie znana z góry)
+
+engine stores:
+  feeRaw:       estimatedFeeSun (przewidywana kwota; może być 0 jeśli zasoby pokryją wszystko)
+  feeLimitSun:  recommendedFeeLimitSun (parametr do triggersmartcontract; energy × price × 1.5)
+```
+
+Poprzedni kod nieprawidłowo ustawiał `feeRaw = TRON_DEFAULT_FEE_LIMIT_SUN` (cap jako fee). Po poprawie `feeRaw` zawiera rzeczywistą estymację kosztu.
+
+### E.3 Algorytm estymacji (`tron-fee.service.ts`)
+
+```
+1. Pobierz chainParams z TTL cache 60s (getchainparameters)
+2. Pobierz accountResource hot wallet z TTL cache 15s per address (getaccountresource)
+3. Symuluj tx przez triggerconstantcontract (suchy przebieg, zero kosztów) → energyUsed, txSizeBytes
+   Fallback gdy symulacja niedostępna: TYPICAL_USDT_ENERGY=65_000, FALLBACK_TRC20_TX_SIZE_BYTES=285
+
+4. Oblicz:
+   remainingBP   = max(0, freeNetLimit-freeNetUsed) + max(0, netLimit-netUsed)
+   bandwidthCost = max(0, txSizeBytes - remainingBP) × bandwidthPriceSun
+
+   remainingEnergy = max(0, energyLimit-energyUsed)
+   energyCost    = max(0, energyUsed - remainingEnergy) × energyPriceSun
+
+   estimatedFeeSun         = bandwidthCost + energyCost
+   recommendedFeeLimitSun  = max(energyUsed × energyPrice × 1.5, 10_000_000)
+   hotWalletHasEnoughResources = (estimatedFeeSun == 0)
+```
+
+### E.4 Pokrycie fee w zależności od assetId
+
+| assetId | Fee w | Tryby pokrycia | Uwagi |
+|---------|-------|---------------|-------|
+| `tron:TRX` | TRX (ta sama waluta co transfer) | `tenant_pays`, `sender_pays`, `recipient_pays` | Wszystkie 3 tryby możliwe, bo asset == fee asset |
+| `tron:USDT` | TRX (inny asset!) | Zawsze `tenant_pays` | Tryby sender/recipient wymagałyby oracle TRX/USDT; hot wallet zawsze pokrywa TRX za energy |
+
+Pole `withdrawal_fee_coverage` w `tenant_withdrawal_batch_configs` jest honorowane dla `tron:TRX`. Dla `tron:USDT` batcher zawsze stosuje logikę `tenant_pays` niezależnie od konfiguracji.
+
+### E.5 Punkty dostępu do fee TRON
+
+| Warstwa | Gdzie | Opis |
+|---------|-------|------|
+| REST API | `GET /v1/chains/tron/fees` | Ogólne parametry (bez query) lub pełna estymacja (z `assetId`+`amount`) |
+| MCP tool | `chainapi_get_tron_fees` | Wrapper nad REST — dla AI asystentów |
+| Batcher | `tronFeeService.estimateFee({tenantId, ...})` | Rozwiązuje hot wallet z DB, estymuje per withdrawal |
+| Sweep worker | `tronFeeService.estimateFeeForAddress({fromAddress, ...})` | Estymacja dla konkretnego adresu depozytowego |
+| Adapter | `tronAdapter.estimateTronFee(params)` | Wrapper publiczny dla przyszłych callerów |
+
+### E.6 Fallback gdy TRON node niedostępny
+
+Każdy caller opakowuje `estimateFee()` w `.catch()` z fallbackiem `_zeroFeeEstimate()`:
+- `estimatedFeeSun = '0'` — brak kosztu zapisywany w `feeRaw`
+- `recommendedFeeLimitSun = 10_000_000` — bezpieczne 10 TRX jako `fee_limit` cap
+- `hotWalletHasEnoughResources = true` — flaga optymistyczna (brak danych ≠ brak zasobów)
