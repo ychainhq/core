@@ -33,6 +33,7 @@ import { signerPolicyService } from '../../modules/external-signers/signer-polic
 import { signingTasksService } from '../../modules/signing-tasks/signing-tasks.service';
 import { ticklerService } from '../../shared/tickler/tickler.service';
 import { tronFeeService } from '../../modules/tron/tron-fee.service';
+import { withdrawalBatcherService } from '../../modules/withdrawal-batches/withdrawal-batcher.service';
 
 const paging = {
   limit: z.number().int().min(1).max(100).optional(),
@@ -614,13 +615,17 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }, async () => safeTool(async () => ({ data: await bitcoinTransactionsService.getFees() })));
 
   server.registerTool('chainapi_get_tron_fees', {
-    description: 'Get TRON fee estimate. Without params: returns general energy/bandwidth prices and typical transfer costs. With assetId + amount: returns a specific estimate for that transfer using the tenant hot wallet staking state.',
+    description: 'Get TRON fee estimate and tenant USDT withdrawal fee config. Without params: returns general energy/bandwidth prices, typical transfer costs, and the configured tronUsdtWithdrawalFee. With assetId + amount: returns a specific estimate for that transfer using the tenant hot wallet staking state.',
     inputSchema: {
       assetId: z.enum(['tron:TRX', 'tron:USDT']).optional(),
       amount:  z.string().optional(),
     },
     annotations: readOnly,
   }, async ({ assetId, amount }: any) => safeTool(async () => {
+    const batchConfig = await withdrawalBatcherService.getBatchConfig(tenantId);
+    const tronUsdtWithdrawalFee = batchConfig.tron_usdt_withdrawal_fee ?? '0';
+    const feeCoverage = batchConfig.withdrawal_fee_coverage;
+
     if (assetId && amount) {
       const contractAddress = assetId === 'tron:USDT'
         ? (process.env['TRON_USDT_CONTRACT_ADDRESS'] ?? undefined)
@@ -650,10 +655,47 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
           },
           feeLimitSun: estimate.recommendedFeeLimitSun,
           hotWalletHasEnoughResources: estimate.hotWalletHasEnoughResources,
+          tronUsdtWithdrawalFee,
+          feeCoverage,
         },
       };
     }
-    return { data: { chain: 'tron', ...(await tronFeeService.getGeneralFeeParams()) } };
+    return { data: { chain: 'tron', ...(await tronFeeService.getGeneralFeeParams()), tronUsdtWithdrawalFee, feeCoverage } };
+  }));
+
+  server.registerTool('chainapi_get_withdrawal_batch_config', {
+    description: 'Get the tenant withdrawal batch configuration including fee coverage mode and TRON USDT withdrawal fee.',
+    inputSchema: {},
+    annotations: readOnly,
+  }, async () => safeTool(async () => ({ data: await withdrawalBatcherService.getBatchConfig(tenantId) })));
+
+  server.registerTool('chainapi_update_withdrawal_batch_config', {
+    description: 'Update the tenant withdrawal batch configuration. Key TRON fields: tronUsdtWithdrawalFee (micro-USDT, e.g. "1000000" = 1 USDT) and withdrawalFeeCoverage (tenant_pays | sender_pays | recipient_pays).',
+    inputSchema: {
+      withdrawalFeeCoverage: z.enum(['tenant_pays', 'sender_pays', 'recipient_pays']).optional(),
+      tronUsdtWithdrawalFee: z.string().regex(/^\d+$/).optional(),
+      btcBatchingEnabled: z.boolean().optional(),
+      btcTargetBlocks: z.number().int().min(1).max(1008).optional(),
+      btcMaxFeeRateSatVb: z.number().int().positive().optional(),
+      btcRbfEnabled: z.boolean().optional(),
+    },
+    annotations: write,
+  }, async (input: any) => safeTool(async () => {
+    const map: Record<string, string> = {
+      withdrawalFeeCoverage: 'withdrawal_fee_coverage',
+      tronUsdtWithdrawalFee: 'tron_usdt_withdrawal_fee',
+      btcBatchingEnabled: 'btc_batching_enabled',
+      btcTargetBlocks: 'btc_target_blocks',
+      btcMaxFeeRateSatVb: 'btc_max_fee_rate_sat_vb',
+      btcRbfEnabled: 'btc_rbf_enabled',
+    };
+    const updates: Record<string, unknown> = {};
+    for (const [camel, snake] of Object.entries(map)) {
+      const val = input[camel];
+      if (val !== undefined) updates[snake] = typeof val === 'boolean' ? (val ? 1 : 0) : val;
+    }
+    const updated = await withdrawalBatcherService.upsertBatchConfig(tenantId, updates as any);
+    return { data: updated };
   }));
 
   server.registerTool('chainapi_create_payment_request', {

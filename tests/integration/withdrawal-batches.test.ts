@@ -133,6 +133,44 @@ describe('Tenant Withdrawal Batch Config', () => {
 
     expect(res.status).toBe(400);
   });
+
+  test('GET /v1/tenant/withdrawal-batch-config — includes tron_usdt_withdrawal_fee default', async () => {
+    const res = await request(app)
+      .get('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.tron_usdt_withdrawal_fee).toBe('0');
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — updates tronUsdtWithdrawalFee', async () => {
+    const res = await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ tronUsdtWithdrawalFee: '1000000' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.tron_usdt_withdrawal_fee).toBe('1000000');
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — rejects non-integer tronUsdtWithdrawalFee', async () => {
+    const res = await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ tronUsdtWithdrawalFee: '1.5' });
+
+    expect(res.status).toBe(400);
+  });
+
+  test('PATCH /v1/tenant/withdrawal-batch-config — resets tronUsdtWithdrawalFee to zero', async () => {
+    const res = await request(app)
+      .patch('/v1/tenant/withdrawal-batch-config')
+      .set(AUTH)
+      .send({ tronUsdtWithdrawalFee: '0' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.tron_usdt_withdrawal_fee).toBe('0');
+  });
 });
 
 describe('Withdrawal Batches — List and Get', () => {

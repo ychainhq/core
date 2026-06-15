@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { tronFeeService } from './tron-fee.service';
+import { withdrawalBatcherService } from '../withdrawal-batches/withdrawal-batcher.service';
 
 function tenantId(req: Request): string {
   return (req as any).tenantId as string;
@@ -20,8 +21,12 @@ tronFeesRouter.get('/', async (req: Request, res: Response, next: NextFunction) 
   try {
     const query = querySchema.parse(req.query);
 
+    const tid = tenantId(req);
+    const batchConfig = await withdrawalBatcherService.getBatchConfig(tid);
+    const tronUsdtWithdrawalFee = batchConfig.tron_usdt_withdrawal_fee ?? '0';
+    const feeCoverage = batchConfig.withdrawal_fee_coverage;
+
     if (query.assetId && query.amount) {
-      const tid = tenantId(req);
       const contractAddress = query.assetId === 'tron:USDT'
         ? (process.env['TRON_USDT_CONTRACT_ADDRESS'] ?? undefined)
         : undefined;
@@ -38,6 +43,7 @@ tronFeesRouter.get('/', async (req: Request, res: Response, next: NextFunction) 
         data: {
           chain: 'tron',
           assetId: query.assetId,
+          // TRX gas cost — always paid by hot wallet from its TRX balance
           estimatedFeeSun: estimate.estimatedFeeSun,
           estimatedFeeTrx: (Number(estimate.estimatedFeeSun) / 1_000_000).toFixed(6),
           breakdown: {
@@ -52,12 +58,15 @@ tronFeesRouter.get('/', async (req: Request, res: Response, next: NextFunction) 
           },
           feeLimitSun: estimate.recommendedFeeLimitSun,
           hotWalletHasEnoughResources: estimate.hotWalletHasEnoughResources,
+          // Customer-facing USDT withdrawal fee (separate from TRX gas)
+          tronUsdtWithdrawalFee,
+          feeCoverage,
           timestamp: new Date().toISOString(),
         },
       });
     } else {
       const params = await tronFeeService.getGeneralFeeParams();
-      res.json({ data: { chain: 'tron', ...params } });
+      res.json({ data: { chain: 'tron', ...params, tronUsdtWithdrawalFee, feeCoverage } });
     }
   } catch (err) {
     next(err);

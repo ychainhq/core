@@ -76,6 +76,16 @@ describe('GET /v1/chains/tron/fees — no params', () => {
     expect(mockTronFeeService.estimateFee).not.toHaveBeenCalled();
   });
 
+  it('includes tronUsdtWithdrawalFee and feeCoverage in general response', async () => {
+    const res = await request(app)
+      .get('/v1/chains/tron/fees')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.tronUsdtWithdrawalFee).toBe('0');
+    expect(res.body.data.feeCoverage).toBe('tenant_pays');
+  });
+
   it('returns 401 without auth', async () => {
     const res = await request(app).get('/v1/chains/tron/fees');
     expect(res.status).toBe(401);
@@ -101,6 +111,8 @@ describe('GET /v1/chains/tron/fees — with assetId + amount', () => {
     });
     expect(d.feeLimitSun).toBeDefined();
     expect(d.hotWalletHasEnoughResources).toBeDefined();
+    expect(d.tronUsdtWithdrawalFee).toBe('0');
+    expect(d.feeCoverage).toBe('tenant_pays');
     expect(mockTronFeeService.estimateFee).toHaveBeenCalledTimes(1);
   });
 

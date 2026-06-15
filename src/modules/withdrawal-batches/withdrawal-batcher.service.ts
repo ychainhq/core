@@ -82,6 +82,7 @@ interface BatchConfig {
   btc_cpfp_enabled: number;
   btc_batch_retry_max_attempts: number;
   withdrawal_fee_coverage: 'tenant_pays' | 'sender_pays' | 'recipient_pays';
+  tron_usdt_withdrawal_fee: string;
 }
 
 function getDefaultConfig(): BatchConfig {
@@ -107,6 +108,7 @@ function getDefaultConfig(): BatchConfig {
     btc_cpfp_enabled: 0,
     btc_batch_retry_max_attempts: 3,
     withdrawal_fee_coverage: 'tenant_pays',
+    tron_usdt_withdrawal_fee: '0',
   };
 }
 
@@ -444,6 +446,40 @@ export const withdrawalBatcherService = {
 
     if (!wd) return null;
 
+    // Resolve batch config for fee coverage settings
+    const batchConfig = await withdrawalBatcherService.getBatchConfig(tenantId);
+    const coverage = batchConfig.withdrawal_fee_coverage;
+
+    // ── USDT fee coverage logic ───────────────────────────────────────────────
+    // For tron:USDT the customer-facing fee is expressed in USDT (micro-units),
+    // separate from the TRX gas cost which is always paid by the hot wallet.
+    //
+    //   tenant_pays:    no USDT fee charged; platform absorbs all gas in TRX
+    //   sender_pays:    fixed USDT fee charged; sender already had it reserved at creation;
+    //                   on-chain amount is unchanged (recipient gets full amount_raw)
+    //   recipient_pays: fixed USDT fee charged; on-chain amount = amount_raw - fee;
+    //                   recipient gets less USDT
+    //
+    // For tron:TRX all three modes work naturally (same asset as fee),
+    // applying the fee to the on-chain amount is handled per-mode below.
+    let usdtFee = 0n;
+    let onChainAmountRaw = wd.amount_raw;
+
+    if (assetId === 'tron:USDT' && coverage !== 'tenant_pays') {
+      usdtFee = BigInt(batchConfig.tron_usdt_withdrawal_fee ?? '0');
+      if (coverage === 'recipient_pays' && usdtFee > 0n) {
+        const net = BigInt(wd.amount_raw) - usdtFee;
+        if (net <= 0n) {
+          logger.warn('TRON USDT withdrawal fee exceeds amount — skipping', {
+            tenantId, withdrawalId: wd.id, amountRaw: wd.amount_raw, fee: usdtFee.toString(),
+          });
+          return null;
+        }
+        onChainAmountRaw = net.toString();
+      }
+      // sender_pays: onChainAmountRaw stays = wd.amount_raw (fee already reserved from sender)
+    }
+
     // Find TRON hot wallet address
     const hotAddrRow = await db.get<{ address: string }>(`
       SELECT a.address
@@ -463,12 +499,12 @@ export const withdrawalBatcherService = {
     const tronAdapter = adapterRegistry.get('tron') as import('../../chain-adapters/tron/adapter').TronAdapter;
     const contractAddress = assetId === 'tron:USDT' ? config.TRON_USDT_CONTRACT_ADDRESS : undefined;
 
-    // Dynamic fee estimation — determines actual fee cost and safe fee_limit cap
+    // Dynamic fee estimation — determines TRX gas cost and safe fee_limit cap
     const feeEstimate = await tronFeeService.estimateFee({
       tenantId,
       assetId: assetId as 'tron:TRX' | 'tron:USDT',
       toAddress: wd.to_address,
-      amountRaw: wd.amount_raw,
+      amountRaw: onChainAmountRaw,
       contractAddress,
     }).catch((err) => {
       logger.warn('TRON fee estimation failed, using zero-cost fallback', { tenantId, error: String(err) });
@@ -481,7 +517,7 @@ export const withdrawalBatcherService = {
         fromAddress: hotAddrRow.address,
         toAddress: wd.to_address,
         assetId,
-        amountRaw: wd.amount_raw,
+        amountRaw: onChainAmountRaw,
         feeLimitSun: feeEstimate.recommendedFeeLimitSun || 10_000_000,
         contractAddress,
       });
@@ -489,6 +525,13 @@ export const withdrawalBatcherService = {
       logger.error('Failed to build unsigned TRON withdrawal tx', { tenantId, withdrawalId: wd.id, assetId, error: String(err) });
       return null;
     }
+
+    // fee_raw on the batch = customer-facing fee in the withdrawal asset:
+    //   USDT: micro-USDT (what was charged to/reserved from the customer)
+    //   TRX:  sun (estimated TRX gas cost, same asset as the transfer)
+    const batchFeeRaw = assetId === 'tron:USDT'
+      ? usdtFee.toString()
+      : feeEstimate.estimatedFeeSun;
 
     const batchId = `wdb_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
@@ -528,7 +571,7 @@ export const withdrawalBatcherService = {
       assetId,
       withdrawalBatchId: batchId,
       amountRaw: wd.amount_raw,
-      feeRaw: feeEstimate.estimatedFeeSun,
+      feeRaw: batchFeeRaw,
       feeRateSatVb: '0',
       outputsCount: 1,
       payloadFormat: 'tron_raw_tx',
@@ -539,11 +582,14 @@ export const withdrawalBatcherService = {
 
     await db.run(`
       UPDATE withdrawal_batches
-      SET signing_task_id = ?, signer_id = ?, decision_mode = ?, updated_at = ?
+      SET signing_task_id = ?, signer_id = ?, decision_mode = ?, fee_raw = ?, updated_at = ?
       WHERE id = ?
-    `, [signingTask.id, selectedSigner?.id ?? null, policyDecision.mode, now, batchId]);
+    `, [signingTask.id, selectedSigner?.id ?? null, policyDecision.mode, batchFeeRaw, now, batchId]);
 
-    logger.info('TRON withdrawal batch created', { batchId, tenantId, assetId, withdrawalId: wd.id, signingTaskId: signingTask.id });
+    logger.info('TRON withdrawal batch created', {
+      batchId, tenantId, assetId, withdrawalId: wd.id, signingTaskId: signingTask.id,
+      coverage, usdtFee: usdtFee.toString(), onChainAmountRaw,
+    });
 
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },

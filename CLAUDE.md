@@ -489,8 +489,8 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | POST | `/v1/withdrawal-batches/:batchId/cancel` | ✅ | ✅ | ❌ |
 | POST | `/v1/withdrawal-batches/:batchId/rbf-bump` | ✅ | ✅ | ❌ |
 | POST | `/v1/withdrawal-batches/:batchId/cpfp` | ✅ | ✅ | ❌ |
-| GET | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ❌ |
-| PATCH | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ❌ |
+| GET | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ✅ `chainapi_get_withdrawal_batch_config` |
+| PATCH | `/v1/tenant/withdrawal-batch-config` | ✅ | ✅ | ✅ `chainapi_update_withdrawal_batch_config` |
 
 ### Webhooks
 

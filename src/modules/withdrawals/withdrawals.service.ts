@@ -10,6 +10,7 @@ import { logger } from '../../shared/logging/index';
 import { toUnixTs } from '../../shared/time/index';
 import { satoshiToBtc } from '../../shared/money/index';
 import { ticklerService } from '../../shared/tickler/tickler.service';
+import { withdrawalBatcherService } from '../withdrawal-batches/withdrawal-batcher.service';
 
 export interface CustomerWithdrawal {
   id: string;
@@ -80,15 +81,27 @@ export const withdrawalsService = {
       throw new ValidationError('amountSats must be greater than zero');
     }
 
+    // For USDT sender_pays: resolve the fixed withdrawal fee from batch config
+    // and include it in the balance check and ledger reserve.
+    // For all other modes (tenant_pays, recipient_pays) and non-USDT assets: fee = 0.
+    let usdtWithdrawalFeeMicroUnits = 0n;
+    if (assetId === 'tron:USDT') {
+      const batchConfig = await withdrawalBatcherService.getBatchConfig(tenantId);
+      if (batchConfig.withdrawal_fee_coverage === 'sender_pays') {
+        usdtWithdrawalFeeMicroUnits = BigInt(batchConfig.tron_usdt_withdrawal_fee ?? '0');
+      }
+    }
+
     // Check sender balance
     const senderAccount = await ledgerService.findAccountByCustomerAndAsset(tenantId, customerId, assetId);
     if (!senderAccount) {
       throw new UnprocessableEntityError(`No ${assetId} ledger account found for this customer`);
     }
     const balance = await ledgerService.getBalance(senderAccount.id);
-    if (BigInt(balance.settled) < amountBigInt) {
+    const totalRequired = amountBigInt + usdtWithdrawalFeeMicroUnits;
+    if (BigInt(balance.settled) < totalRequired) {
       throw new UnprocessableEntityError(
-        `Insufficient balance: available ${balance.settled}, requested ${input.amountSats}`
+        `Insufficient balance: available ${balance.settled}, required ${totalRequired.toString()} (amount ${input.amountSats}${usdtWithdrawalFeeMicroUnits > 0n ? ` + fee ${usdtWithdrawalFeeMicroUnits}` : ''})`
       );
     }
 
@@ -126,24 +139,32 @@ export const withdrawalsService = {
     const id = `wd_${crypto.randomBytes(8).toString('hex')}`;
     const now = new Date().toISOString();
 
+    // fee_raw at creation time = fixed USDT fee for sender_pays (micro-USDT).
+    // For all other modes it's null — batcher fills it in when building the batch.
+    const feeRawAtCreation = usdtWithdrawalFeeMicroUnits > 0n
+      ? usdtWithdrawalFeeMicroUnits.toString()
+      : null;
+
     await db.run(`
       INSERT INTO customer_withdrawals
         (id, tenant_id, customer_id, chain_id, asset_id, to_address, amount_raw, fee_raw, psbt,
          status, idempotency_key, withdrawal_type, recipient_customer_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'queued', ?, 'external', NULL, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'queued', ?, 'external', NULL, ?, ?)
     `, [
       id, tenantId, customerId,
       chainId, assetId,
-      input.toAddress, input.amountSats,
+      input.toAddress, input.amountSats, feeRawAtCreation,
       input.idempotencyKey ?? null,
       now, now,
     ]);
 
-    // Reserve customer balance immediately — prevents double-spend while batch awaits signing
+    // Reserve customer balance immediately — prevents double-spend while batch awaits signing.
+    // For sender_pays USDT: reserve includes the fixed withdrawal fee.
+    const reserveAmount = amountBigInt + usdtWithdrawalFeeMicroUnits;
     await ledgerService.addEntry({
       ledgerAccountId: senderAccount.id,
       type: 'withdrawal_reserve',
-      amountRaw: (-amountBigInt).toString(),
+      amountRaw: (-reserveAmount).toString(),
       referenceType: 'customer_withdrawal',
       referenceId: id,
     });

@@ -236,6 +236,7 @@ const configPatchSchema = z.object({
   btcCpfpEnabled: z.boolean().optional(),
   btcBatchRetryMaxAttempts: z.number().int().min(0).max(10).optional(),
   withdrawalFeeCoverage: z.enum(['tenant_pays', 'sender_pays', 'recipient_pays']).optional(),
+  tronUsdtWithdrawalFee: z.string().regex(/^\d+$/, 'must be a non-negative integer string (micro-USDT)').optional(),
 }).strict();
 
 withdrawalBatchConfigRouter.patch('/', async (req: Request, res: Response, next: NextFunction) => {
@@ -264,6 +265,7 @@ withdrawalBatchConfigRouter.patch('/', async (req: Request, res: Response, next:
       btcCpfpEnabled: 'btc_cpfp_enabled',
       btcBatchRetryMaxAttempts: 'btc_batch_retry_max_attempts',
       withdrawalFeeCoverage: 'withdrawal_fee_coverage',
+      tronUsdtWithdrawalFee: 'tron_usdt_withdrawal_fee',
     };
 
     for (const [camel, snake] of Object.entries(map)) {
