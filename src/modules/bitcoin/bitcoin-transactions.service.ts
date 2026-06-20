@@ -350,7 +350,7 @@ export const bitcoinTransactionsService = {
       'SELECT DISTINCT chain_id FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active'],
     );
 
-    const balances: Record<string, Record<string, string>> = {};
+    const balances: Record<string, Record<string, unknown>> = {};
 
     for (const { chain_id } of chainIds) {
       if (chain_id === 'bitcoin') {
@@ -373,6 +373,8 @@ export const bitcoinTransactionsService = {
           confirmed_display:   formatAssetDisplay(tron.trxSun, 6, 'TRX'),
           unconfirmed_display: formatAssetDisplay('0', 6, 'TRX'),
           total_display:       formatAssetDisplay(tron.trxSun, 6, 'TRX'),
+          stale:               tron.stale,
+          cache_updated_at:    tron.cacheUpdatedAt,
         };
         balances['tron:USDT'] = {
           confirmed:           tron.usdtSun,
@@ -381,6 +383,8 @@ export const bitcoinTransactionsService = {
           confirmed_display:   formatAssetDisplay(tron.usdtSun, 6, 'USDT'),
           unconfirmed_display: formatAssetDisplay('0', 6, 'USDT'),
           total_display:       formatAssetDisplay(tron.usdtSun, 6, 'USDT'),
+          stale:               tron.stale,
+          cache_updated_at:    tron.cacheUpdatedAt,
         };
       }
     }

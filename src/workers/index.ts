@@ -23,7 +23,6 @@ const signingTaskExpiry = new SigningTaskExpiryWorker();
 const retention = new RetentionWorker();
 const nodeHealthChecker = new NodeHealthCheckerWorker();
 const clusterHeartbeat = new ClusterHeartbeatWorker();
-
 export function startWorkers(): void {
   if (!config.WORKERS_ENABLED) {
     logger.info('Workers disabled (WORKERS_ENABLED=false)');

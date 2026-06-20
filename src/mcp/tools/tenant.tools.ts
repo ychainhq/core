@@ -33,6 +33,8 @@ import { signerPolicyService } from '../../modules/external-signers/signer-polic
 import { signingTasksService } from '../../modules/signing-tasks/signing-tasks.service';
 import { ticklerService } from '../../shared/tickler/tickler.service';
 import { tronFeeService } from '../../modules/tron/tron-fee.service';
+import { TronAdapter } from '../../chain-adapters/tron/adapter';
+import { getDbClient } from '../../db/client';
 import { withdrawalBatcherService } from '../../modules/withdrawal-batches/withdrawal-batcher.service';
 
 const paging = {
@@ -589,16 +591,36 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }, async ({ address }: any) => safeTool(async () => ({ data: await addressesService.resolveCustomerDeposit(tenantId, address) })));
 
   server.registerTool('chainapi_get_wallet_balances', {
-    description: 'Get on-chain balances for a wallet. Returns balances keyed by asset_id (e.g. "bitcoin:BTC", "tron:TRX", "tron:USDT"). Each entry has confirmed, unconfirmed, total (raw in smallest unit) and _display variants (formatted with symbol).',
+    description: 'Get on-chain balances for a wallet. Returns balances keyed by asset_id (e.g. "bitcoin:BTC", "tron:TRX", "tron:USDT"). Each entry has confirmed, unconfirmed, total (raw in smallest unit) and _display variants. TRON entries also include cache_updated_at (epoch ms) and stale (true when cache is >10 min old — use chainapi_tron_refresh_address_balance to update).',
     inputSchema: { walletId: z.string().min(1) },
     annotations: readOnly,
   }, async ({ walletId }: any) => safeTool(async () => ({ data: await bitcoinTransactionsService.getWalletBalances(tenantId, walletId) })));
 
   server.registerTool('chainapi_get_address_balances', {
-    description: 'Get on-chain balance for an address. For bitcoin: returns UTXO-based BTC balance. For tron without asset: returns TRX balance. For tron with asset=USDT: returns TRC-20 USDT balance. Response includes confirmed, unconfirmed, total (raw in smallest unit) and _display variants.',
+    description: 'Get on-chain balance for an address. For bitcoin: returns UTXO-based BTC balance. For tron without asset: returns TRX balance (from tron_account_balances cache if available). For tron with asset=USDT: returns TRC-20 USDT balance. Response includes confirmed, unconfirmed, total (raw in smallest unit) and _display variants.',
     inputSchema: { chain: z.string().min(1), address: z.string().min(1), asset: z.string().optional() },
     annotations: readOnly,
   }, async ({ chain, address, asset }: any) => safeTool(async () => ({ data: await bitcoinTransactionsService.getAddressBalance(tenantId, chain, address, asset) })));
+
+  server.registerTool('chainapi_tron_refresh_address_balance', {
+    description: 'Trigger an async balance cache refresh for a single TRON address. Returns immediately; the tron_account_balances cache is updated in the background. Use after broadcasting a TRON transaction to get fresh balance data on the next wallet balance query.',
+    inputSchema: { address: z.string().min(1) },
+    annotations: { readOnlyHint: false, idempotentHint: true },
+  }, async ({ address }: any) => safeTool(async () => {
+    const db = getDbClient();
+    const adapter = adapterRegistry.get('tron') as TronAdapter;
+    const usdtContractAddress = config.TRON_USDT_CONTRACT_ADDRESS ?? '';
+    setImmediate(async () => {
+      try {
+        const bal = await adapter.getAccountBalance(address, usdtContractAddress);
+        const now = Date.now();
+        const sql = `INSERT INTO tron_account_balances (address, asset_id, balance_raw, block_number, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (address, asset_id) DO UPDATE SET balance_raw=excluded.balance_raw, block_number=excluded.block_number, updated_at=excluded.updated_at`;
+        await db.run(sql, [address, 'tron:TRX',  bal.trxSun,  0, now]);
+        await db.run(sql, [address, 'tron:USDT', bal.usdtSun, 0, now]);
+      } catch { /* ignore — background task */ }
+    });
+    return { data: { address, status: 'refresh_queued' } };
+  }));
 
   server.registerTool('chainapi_list_address_utxos', {
     description: 'List BTC UTXOs for an address.',

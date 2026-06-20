@@ -370,6 +370,7 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | GET | `/v1/chains/:chain/addresses/:address/balances` | ✅ | ✅ | ✅ `chainapi_get_address_balances` |
 | GET | `/v1/chains/:chain/addresses/:address/balances/:asset` | ✅ | ⚠️ | ❌ |
 | GET | `/v1/wallets/:walletId/balances` | ✅ | ✅ | ✅ `chainapi_get_wallet_balances` |
+| POST | `/v1/chains/tron/addresses/:address/balance-refresh` | ✅ | ❌ | ✅ `chainapi_tron_refresh_address_balance` |
 
 ### UTXOs & Fees
 
@@ -775,6 +776,7 @@ Każdy serwis jest **jedynym właścicielem** swoich tabel. SQL (INSERT/UPDATE/D
 | `idempotency.service` | `idempotency_keys` |
 | `chain-nodes.service` (v3) | `chain_nodes`, `tenant_chain_bindings` |
 | `chain-events.service` (v3) | `chain_events` — tylko UPDATE processed=TRUE; INSERT należy do indexerów |
+| `tron-balance-refresh.worker` + `tron-indexer` | `tron_account_balances` — INSERT/UPDATE; SELECT należy wyłącznie do `tronBalancesService` |
 | `cluster.service` (FAZA 4) | `engine_instances` |
 
 **Reguły:**

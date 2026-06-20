@@ -7,6 +7,7 @@ import { tronBalancesService } from '../tron/tron-balances.service';
 import { adapterRegistry } from '../../chain-adapters/registry';
 import { TronAdapter } from '../../chain-adapters/tron/adapter';
 import { config } from '../../config/index';
+import { logger } from '../../shared/logging/index';
 
 export const balancesRouter = Router({ mergeParams: true });
 export const walletBalancesRouter = Router({ mergeParams: true });
@@ -156,6 +157,8 @@ walletBalancesRouter.get('/', async (req: Request, res: Response, next: NextFunc
           unconfirmed_display: formatAssetDisplay('0', 6, 'TRX'),
           total:               tron.trxSun,
           total_display:       formatAssetDisplay(tron.trxSun, 6, 'TRX'),
+          stale:               tron.stale,
+          cache_updated_at:    tron.cacheUpdatedAt,
         };
         balances['tron:USDT'] = {
           confirmed:           tron.usdtSun,
@@ -164,11 +167,50 @@ walletBalancesRouter.get('/', async (req: Request, res: Response, next: NextFunc
           unconfirmed_display: formatAssetDisplay('0', 6, 'USDT'),
           total:               tron.usdtSun,
           total_display:       formatAssetDisplay(tron.usdtSun, 6, 'USDT'),
+          stale:               tron.stale,
+          cache_updated_at:    tron.cacheUpdatedAt,
         };
       }
     }
 
     res.json({ data: { walletId, balances } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /v1/chains/tron/addresses/:address/balance-refresh
+// Triggers an async balance cache refresh for a single TRON address. Returns 202 immediately.
+export const tronAddressBalanceRefreshRouter = Router({ mergeParams: true });
+
+tronAddressBalanceRefreshRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { address } = req.params as { address: string };
+    const usdtContractAddress = config.TRON_USDT_CONTRACT_ADDRESS ?? '';
+
+    const adapter = adapterRegistry.get('tron') as TronAdapter;
+    const db = getDbClient();
+
+    setImmediate(async () => {
+      try {
+        const bal = await adapter.getAccountBalance(address, usdtContractAddress);
+        const now = Date.now();
+        const upsertSql = `
+          INSERT INTO tron_account_balances (address, asset_id, balance_raw, block_number, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (address, asset_id) DO UPDATE SET
+            balance_raw  = excluded.balance_raw,
+            block_number = excluded.block_number,
+            updated_at   = excluded.updated_at
+        `;
+        await db.run(upsertSql, [address, 'tron:TRX',  bal.trxSun,  0, now]);
+        await db.run(upsertSql, [address, 'tron:USDT', bal.usdtSun, 0, now]);
+      } catch (err) {
+        logger.warn('balance-refresh: failed to refresh TRON address', { address, error: String(err) });
+      }
+    });
+
+    res.status(202).json({ data: { address, status: 'refresh_queued' } });
   } catch (err) {
     next(err);
   }

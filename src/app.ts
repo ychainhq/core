@@ -12,7 +12,7 @@ import { assetsRouter } from './modules/assets/assets.router';
 import { walletsRouter } from './modules/wallets/wallets.router';
 import { addressesRouter, validateAddressRouter, resolveAddressRouter } from './modules/addresses/addresses.router';
 import { monitorsRouter } from './modules/monitors/monitors.router';
-import { balancesRouter, walletBalancesRouter } from './modules/balances/balances.router';
+import { balancesRouter, walletBalancesRouter, tronAddressBalanceRefreshRouter } from './modules/balances/balances.router';
 import { utxosRouter, walletUtxosRouter } from './modules/bitcoin/utxos.router';
 import { feesRouter } from './modules/bitcoin/fees.router';
 import { tronFeesRouter } from './modules/tron/tron-fees.router';
@@ -159,6 +159,7 @@ export function createApp(): express.Application {
   // ---- Address balances ----
   // Must be after /validate and /utxos to avoid conflicts
   app.use('/v1/chains/:chain/addresses/:address/balances', balancesRouter);
+  app.use('/v1/chains/tron/addresses/:address/balance-refresh', tronAddressBalanceRefreshRouter);
 
   // ---- Address deposits ----
   app.use('/v1/chains/:chain/addresses/:address/deposits', addressDepositsRouter);
