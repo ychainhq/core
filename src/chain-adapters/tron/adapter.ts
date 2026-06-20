@@ -118,6 +118,22 @@ export class TronAdapter implements IChainAdapter {
     return this.rpc.getTrc20Balance(address, contractAddress);
   }
 
+  /**
+   * Get TRX and USDT balance for a single address in one call.
+   * Returns raw amounts in smallest units (sun for both TRX and USDT).
+   * If usdtContractAddress is empty, usdtSun is returned as '0'.
+   */
+  async getAccountBalance(address: string, usdtContractAddress: string): Promise<{ trxSun: string; usdtSun: string }> {
+    const usdtPromise = usdtContractAddress
+      ? this.rpc.getTrc20Balance(address, usdtContractAddress)
+      : Promise.resolve('0');
+    const [account, usdtSun] = await Promise.all([this.rpc.getAccount(address), usdtPromise]);
+    return {
+      trxSun: String(account.balance ?? 0),
+      usdtSun,
+    };
+  }
+
   getUtxosForAddress(_address: string, _minConfirmations: number, _tenantId: string): Promise<Utxo[]> {
     return Promise.resolve([]);
   }

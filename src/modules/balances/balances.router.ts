@@ -1,8 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getDbClient } from '../../db/client';
 import { NotFoundError } from '../../shared/errors/index';
-import { satoshiToBtc, addSatoshi } from '../../shared/money/index';
+import { formatAssetDisplay } from '../../shared/money/index';
 import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
+import { tronBalancesService } from '../tron/tron-balances.service';
+import { adapterRegistry } from '../../chain-adapters/registry';
+import { TronAdapter } from '../../chain-adapters/tron/adapter';
+import { config } from '../../config/index';
 
 export const balancesRouter = Router({ mergeParams: true });
 export const walletBalancesRouter = Router({ mergeParams: true });
@@ -11,17 +15,35 @@ export const walletBalancesRouter = Router({ mergeParams: true });
 balancesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { chain, address } = req.params as { chain: string; address: string };
+
+    if (chain === 'tron') {
+      const bal = await adapterRegistry.get('tron').getAddressBalance(address, req.tenantId!);
+      res.json({
+        data: {
+          address, chain,
+          asset:               'tron:TRX',
+          confirmed:           bal.confirmed,
+          confirmed_display:   formatAssetDisplay(bal.confirmed, 6, 'TRX'),
+          unconfirmed:         bal.unconfirmed,
+          unconfirmed_display: formatAssetDisplay(bal.unconfirmed, 6, 'TRX'),
+          total:               bal.total,
+          total_display:       formatAssetDisplay(bal.total, 6, 'TRX'),
+        },
+      });
+      return;
+    }
+
     const bal = await utxoLockService.getAddressBalance(req.tenantId!, chain, address);
     res.json({
       data: {
         address, chain,
+        asset:               'bitcoin:BTC',
         confirmed:           bal.confirmed,
-        confirmed_display:   satoshiToBtc(bal.confirmed),
+        confirmed_display:   formatAssetDisplay(bal.confirmed, 8, 'BTC'),
         unconfirmed:         bal.unconfirmed,
-        unconfirmed_display: satoshiToBtc(bal.unconfirmed),
+        unconfirmed_display: formatAssetDisplay(bal.unconfirmed, 8, 'BTC'),
         total:               bal.total,
-        total_display:       satoshiToBtc(bal.total),
-        asset: `${chain}:${chain === 'bitcoin' ? 'BTC' : 'ETH'}`,
+        total_display:       formatAssetDisplay(bal.total, 8, 'BTC'),
       },
     });
   } catch (err) {
@@ -34,22 +56,63 @@ balancesRouter.get('/:asset', async (req: Request, res: Response, next: NextFunc
   try {
     const { chain, address, asset } = req.params as { chain: string; address: string; asset: string };
     const db = getDbClient();
-    const assetRow = await db.get(
+    const assetRow = await db.get<{ id: string; decimals: number; symbol: string; specs: string | null }>(
       'SELECT * FROM assets WHERE chain_id = ? AND (id = ? OR symbol = ?)',
-      [chain, `${chain}:${asset}`, asset]
+      [chain, `${chain}:${asset}`, asset],
     );
     if (!assetRow) throw new NotFoundError('Asset', asset);
+
+    if (chain === 'tron') {
+      const assetId = assetRow.id;
+      if (assetId === 'tron:USDT') {
+        const specs = assetRow.specs
+          ? (typeof assetRow.specs === 'string' ? JSON.parse(assetRow.specs) : assetRow.specs)
+          : {};
+        const contractAddress: string = specs?.contract_address ?? config.TRON_USDT_CONTRACT_ADDRESS ?? '';
+        const adapter = adapterRegistry.get('tron') as TronAdapter;
+        const total = await adapter.getTrc20Balance(address, contractAddress);
+        res.json({
+          data: {
+            address, chain,
+            asset:               'tron:USDT',
+            confirmed:           total,
+            confirmed_display:   formatAssetDisplay(total, 6, 'USDT'),
+            unconfirmed:         '0',
+            unconfirmed_display: formatAssetDisplay('0', 6, 'USDT'),
+            total,
+            total_display:       formatAssetDisplay(total, 6, 'USDT'),
+          },
+        });
+        return;
+      }
+      // tron:TRX
+      const bal = await adapterRegistry.get('tron').getAddressBalance(address, req.tenantId!);
+      res.json({
+        data: {
+          address, chain,
+          asset:               'tron:TRX',
+          confirmed:           bal.confirmed,
+          confirmed_display:   formatAssetDisplay(bal.confirmed, 6, 'TRX'),
+          unconfirmed:         bal.unconfirmed,
+          unconfirmed_display: formatAssetDisplay(bal.unconfirmed, 6, 'TRX'),
+          total:               bal.total,
+          total_display:       formatAssetDisplay(bal.total, 6, 'TRX'),
+        },
+      });
+      return;
+    }
 
     const bal = await utxoLockService.getAddressBalance(req.tenantId!, chain, address);
     res.json({
       data: {
-        address, chain, asset,
+        address, chain,
+        asset,
         confirmed:           bal.confirmed,
-        confirmed_display:   satoshiToBtc(bal.confirmed),
+        confirmed_display:   formatAssetDisplay(bal.confirmed, 8, 'BTC'),
         unconfirmed:         bal.unconfirmed,
-        unconfirmed_display: satoshiToBtc(bal.unconfirmed),
+        unconfirmed_display: formatAssetDisplay(bal.unconfirmed, 8, 'BTC'),
         total:               bal.total,
-        total_display:       satoshiToBtc(bal.total),
+        total_display:       formatAssetDisplay(bal.total, 8, 'BTC'),
       },
     });
   } catch (err) {
@@ -63,31 +126,46 @@ walletBalancesRouter.get('/', async (req: Request, res: Response, next: NextFunc
     const walletId = req.params['walletId']!;
     const db = getDbClient();
 
-    const wallet = await db.get('SELECT * FROM wallets WHERE id = ?', [walletId]);
+    const wallet = await db.get('SELECT id FROM wallets WHERE id = ?', [walletId]);
     if (!wallet) throw new NotFoundError('Wallet', walletId);
 
-    const chainBalances = await utxoLockService.getWalletBalances(walletId);
-
-    // Ensure chains with addresses but no UTXOs appear in the response
     const chainIds = await db.all<{ chain_id: string }>(
-      'SELECT DISTINCT chain_id FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active']
+      'SELECT DISTINCT chain_id FROM addresses WHERE wallet_id = ? AND status = ?', [walletId, 'active'],
     );
-    for (const { chain_id } of chainIds) {
-      if (!chainBalances[chain_id]) {
-        chainBalances[chain_id] = { confirmed: '0', unconfirmed: '0', total: '0' };
-      }
-    }
 
     const balances: Record<string, object> = {};
-    for (const [chain, b] of Object.entries(chainBalances)) {
-      balances[chain] = {
-        confirmed:           b.confirmed,
-        confirmed_display:   satoshiToBtc(b.confirmed),
-        unconfirmed:         b.unconfirmed,
-        unconfirmed_display: satoshiToBtc(b.unconfirmed),
-        total:               b.total,
-        total_display:       satoshiToBtc(b.total),
-      };
+
+    for (const { chain_id } of chainIds) {
+      if (chain_id === 'bitcoin') {
+        const chainBalances = await utxoLockService.getWalletBalances(walletId);
+        const b = chainBalances['bitcoin'] ?? { confirmed: '0', unconfirmed: '0', total: '0' };
+        balances['bitcoin:BTC'] = {
+          confirmed:           b.confirmed,
+          confirmed_display:   formatAssetDisplay(b.confirmed, 8, 'BTC'),
+          unconfirmed:         b.unconfirmed,
+          unconfirmed_display: formatAssetDisplay(b.unconfirmed, 8, 'BTC'),
+          total:               b.total,
+          total_display:       formatAssetDisplay(b.total, 8, 'BTC'),
+        };
+      } else if (chain_id === 'tron') {
+        const tron = await tronBalancesService.getWalletBalances(walletId);
+        balances['tron:TRX'] = {
+          confirmed:           tron.trxSun,
+          confirmed_display:   formatAssetDisplay(tron.trxSun, 6, 'TRX'),
+          unconfirmed:         '0',
+          unconfirmed_display: formatAssetDisplay('0', 6, 'TRX'),
+          total:               tron.trxSun,
+          total_display:       formatAssetDisplay(tron.trxSun, 6, 'TRX'),
+        };
+        balances['tron:USDT'] = {
+          confirmed:           tron.usdtSun,
+          confirmed_display:   formatAssetDisplay(tron.usdtSun, 6, 'USDT'),
+          unconfirmed:         '0',
+          unconfirmed_display: formatAssetDisplay('0', 6, 'USDT'),
+          total:               tron.usdtSun,
+          total_display:       formatAssetDisplay(tron.usdtSun, 6, 'USDT'),
+        };
+      }
     }
 
     res.json({ data: { walletId, balances } });

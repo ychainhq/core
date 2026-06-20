@@ -92,3 +92,11 @@ export function compareSatoshi(a: string, b: string): number {
   if (bigA > bigB) return 1;
   return 0;
 }
+
+/**
+ * Format raw amount in smallest unit to display string with symbol.
+ * Works for any chain — pass the correct decimals (8 for BTC, 6 for TRX/USDT).
+ */
+export function formatAssetDisplay(raw: string, decimals: number, symbol: string): string {
+  return `${formatAmount(raw, decimals)} ${symbol}`;
+}

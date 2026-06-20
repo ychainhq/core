@@ -248,10 +248,10 @@ describe('GET /v1/wallets/:walletId/balances', () => {
     // failed addresses and returns zero totals for the chain.
     expect(res.status).toBe(200);
     expect(res.body.data.walletId).toBe(walletId);
-    expect(res.body.data.balances.bitcoin).toBeDefined();
-    expect(res.body.data.balances.bitcoin.confirmed).toBeDefined();
-    expect(res.body.data.balances.bitcoin.unconfirmed).toBeDefined();
-    expect(res.body.data.balances.bitcoin.total).toBeDefined();
+    expect(res.body.data.balances['bitcoin:BTC']).toBeDefined();
+    expect(res.body.data.balances['bitcoin:BTC'].confirmed).toBeDefined();
+    expect(res.body.data.balances['bitcoin:BTC'].unconfirmed).toBeDefined();
+    expect(res.body.data.balances['bitcoin:BTC'].total).toBeDefined();
   });
 
   it('returns 401 without auth', async () => {
@@ -305,5 +305,69 @@ describe('Wallets — RBAC guard (X-Actor-Token)', () => {
       .set({ ...AUTH, 'X-Actor-Token': token });
 
     expect(res.status).toBe(403);
+  });
+});
+
+// ─── chains field ──────────────────────────────────────────────────────────────
+
+describe('GET /v1/wallets — chains field', () => {
+  it('returns chains: [] for wallet with no addresses', async () => {
+    const createRes = await request(app)
+      .post('/v1/wallets')
+      .set(AUTH)
+      .send({ name: 'No-Addr Chains Wallet', type: 'watch_only' });
+    const walletId = createRes.body.data.id;
+
+    const listRes = await request(app).get('/v1/wallets').set(AUTH);
+    const wallet = listRes.body.data.find((w: any) => w.id === walletId);
+    expect(wallet).toBeDefined();
+    expect(wallet.chains).toEqual([]);
+  });
+
+  it('returns chains: [\'bitcoin\'] after registering a BTC address', async () => {
+    const createRes = await request(app)
+      .post('/v1/wallets')
+      .set(AUTH)
+      .send({ name: 'BTC Chain Wallet', type: 'watch_only' });
+    const walletId = createRes.body.data.id;
+
+    await request(app)
+      .post(`/v1/wallets/${walletId}/addresses`)
+      .set(AUTH)
+      .send({ chain: 'bitcoin', address: uniqueAddr() });
+
+    const listRes = await request(app).get('/v1/wallets').set(AUTH);
+    const wallet = listRes.body.data.find((w: any) => w.id === walletId);
+    expect(wallet).toBeDefined();
+    expect(wallet.chains).toEqual(['bitcoin']);
+  });
+
+  it('GET /v1/wallets/:id includes chains: [] for new wallet', async () => {
+    const createRes = await request(app)
+      .post('/v1/wallets')
+      .set(AUTH)
+      .send({ name: 'Get-By-Id Chains Wallet', type: 'watch_only' });
+    const walletId = createRes.body.data.id;
+
+    const res = await request(app).get(`/v1/wallets/${walletId}`).set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.chains).toEqual([]);
+  });
+
+  it('GET /v1/wallets/:id includes chains: [\'bitcoin\'] after address registration', async () => {
+    const createRes = await request(app)
+      .post('/v1/wallets')
+      .set(AUTH)
+      .send({ name: 'Get-By-Id With Addr Wallet', type: 'watch_only' });
+    const walletId = createRes.body.data.id;
+
+    await request(app)
+      .post(`/v1/wallets/${walletId}/addresses`)
+      .set(AUTH)
+      .send({ chain: 'bitcoin', address: uniqueAddr() });
+
+    const res = await request(app).get(`/v1/wallets/${walletId}`).set(AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body.data.chains).toEqual(['bitcoin']);
   });
 });

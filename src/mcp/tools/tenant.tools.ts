@@ -589,13 +589,13 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }, async ({ address }: any) => safeTool(async () => ({ data: await addressesService.resolveCustomerDeposit(tenantId, address) })));
 
   server.registerTool('chainapi_get_wallet_balances', {
-    description: 'Get on-chain balances for a wallet.',
+    description: 'Get on-chain balances for a wallet. Returns balances keyed by asset_id (e.g. "bitcoin:BTC", "tron:TRX", "tron:USDT"). Each entry has confirmed, unconfirmed, total (raw in smallest unit) and _display variants (formatted with symbol).',
     inputSchema: { walletId: z.string().min(1) },
     annotations: readOnly,
   }, async ({ walletId }: any) => safeTool(async () => ({ data: await bitcoinTransactionsService.getWalletBalances(tenantId, walletId) })));
 
   server.registerTool('chainapi_get_address_balances', {
-    description: 'Get on-chain balances for an address.',
+    description: 'Get on-chain balance for an address. For bitcoin: returns UTXO-based BTC balance. For tron without asset: returns TRX balance. For tron with asset=USDT: returns TRC-20 USDT balance. Response includes confirmed, unconfirmed, total (raw in smallest unit) and _display variants.',
     inputSchema: { chain: z.string().min(1), address: z.string().min(1), asset: z.string().optional() },
     annotations: readOnly,
   }, async ({ chain, address, asset }: any) => safeTool(async () => ({ data: await bitcoinTransactionsService.getAddressBalance(tenantId, chain, address, asset) })));

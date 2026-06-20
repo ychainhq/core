@@ -11,17 +11,26 @@ export interface Wallet {
   wallet_role: string;
   status: string;
   metadata: Record<string, unknown> | null;
+  chains: string[];
   created_at: number;
   updated_at: number;
 }
 
-function mapWallet(row: any): Wallet {
+function mapWallet(row: any): Omit<Wallet, 'chains'> {
   return {
     ...row,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
     created_at: toUnixTs(row.created_at),
     updated_at: toUnixTs(row.updated_at),
   };
+}
+
+async function fetchWalletChains(db: ReturnType<typeof getDbClient>, walletId: string): Promise<string[]> {
+  const rows = await db.all<{ chain_id: string }>(
+    "SELECT DISTINCT chain_id FROM addresses WHERE wallet_id = ? AND status = 'active'",
+    [walletId]
+  );
+  return rows.map(r => r.chain_id);
 }
 
 function generateWalletId(): string {
@@ -89,8 +98,15 @@ export const walletsService = {
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
 
+    const data = await Promise.all(
+      items.map(async (row) => ({
+        ...mapWallet(row),
+        chains: await fetchWalletChains(db, (row as any).id),
+      }))
+    );
+
     return {
-      data: items.map(mapWallet),
+      data,
       nextCursor: hasMore ? (items[items.length - 1] as any).id : null,
     };
   },
@@ -99,6 +115,9 @@ export const walletsService = {
     const db = getDbClient();
     const row = await db.get('SELECT * FROM wallets WHERE id = ? AND tenant_id = ?', [id, tenantId]);
     if (!row) throw new NotFoundError('Wallet', id);
-    return mapWallet(row);
+    return {
+      ...mapWallet(row),
+      chains: await fetchWalletChains(db, id),
+    };
   },
 };
