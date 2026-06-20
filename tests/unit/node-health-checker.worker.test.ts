@@ -26,6 +26,10 @@ function makeNode(id = 'node_test') {
   return { id, rpcUrl: 'http://btc-node:18443', rpcUser: 'bitcoin', chainId: 'bitcoin' };
 }
 
+function makeTronNode(id = 'node_tron') {
+  return { id, rpcUrl: 'http://tron-node:8090', rpcUser: null, chainId: 'tron' };
+}
+
 function mockRpcResponse(result: Record<string, unknown>) {
   global.fetch = jest.fn().mockResolvedValue({
     ok: true,
@@ -127,6 +131,23 @@ describe('other health outcomes', () => {
     await new NodeHealthCheckerWorker().run();
     const blockHeight = (chainNodesService.updateHealthStatus as jest.Mock).mock.calls[0][2];
     expect(blockHeight).toBe(133);
+  });
+
+  test('TRON nodes use getnowblock endpoint and extract block height', async () => {
+    (chainNodesService.list as jest.Mock).mockResolvedValue([makeTronNode()]);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ block_header: { raw_data: { number: 456 } } }),
+    }) as jest.Mock;
+
+    await new NodeHealthCheckerWorker().run();
+
+    expect(global.fetch).toHaveBeenCalledWith('http://tron-node:8090/wallet/getnowblock', expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    }));
+    expect(capturedStatus()).toBe('healthy');
+    expect((chainNodesService.updateHealthStatus as jest.Mock).mock.calls[0][2]).toBe(456);
   });
 
   test('no enabled nodes → updateHealthStatus not called', async () => {

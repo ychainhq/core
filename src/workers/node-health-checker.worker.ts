@@ -52,14 +52,32 @@ export class NodeHealthCheckerWorker {
 
     try {
       const password = await chainNodesService.resolvePassword(id);
-      const auth = Buffer.from(`${rpcUser}:${password}`).toString('base64');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (rpcUser && password) {
+        headers['Authorization'] = `Basic ${Buffer.from(`${rpcUser}:${password}`).toString('base64')}`;
+      }
+
+      if (chainId === 'tron') {
+        const response = await fetch(`${rpcUrl}/wallet/getnowblock`, {
+          headers,
+          signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+        });
+
+        if (!response.ok && response.status !== 500) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json() as any;
+        blockHeight = data?.block_header?.raw_data?.number ?? data?.number ?? null;
+        status = 'healthy';
+        await chainNodesService.updateHealthStatus(id, status, blockHeight, error);
+        logger.debug('Chain node health updated', { id, chainId, status, blockHeight });
+        return;
+      }
 
       const response = await fetch(rpcUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Basic ${auth}`,
-        },
+        headers,
         body: JSON.stringify({ jsonrpc: '1.1', id: 'health', method: 'getblockchaininfo', params: [] }),
         signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
       });
