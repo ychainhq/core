@@ -2,45 +2,16 @@ import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 import BIP32Factory from 'bip32';
 import crypto from 'crypto';
-import { keccak_256 } from '@noble/hashes/sha3';
 import { getDbClient } from '../../db/client';
 import { ValidationError, NotFoundError } from '../../shared/errors/index';
 import { config } from '../../config/index';
 import { logger } from '../../shared/logging/index';
 import { tenantsService } from '../tenants/tenants.service';
+import { tronAddressFromPublicKey } from '../../shared/crypto/tron-address';
 
 // Initialize ECC library (idempotent)
 try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
 const bip32 = BIP32Factory(ecc);
-
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
-function base58Encode(buf: Buffer): string {
-  let num = BigInt('0x' + buf.toString('hex'));
-  let encoded = '';
-  while (num > 0n) {
-    encoded = BASE58_ALPHABET[Number(num % 58n)]! + encoded;
-    num = num / 58n;
-  }
-  for (const byte of buf) {
-    if (byte !== 0) break;
-    encoded = BASE58_ALPHABET[0]! + encoded;
-  }
-  return encoded;
-}
-
-function tronAddressFromCompressedPubkey(compressedPubkey: Uint8Array): string {
-  const uncompressed = ecc.pointCompress(compressedPubkey, false); // 65 bytes: 04 || x || y
-  const hash = keccak_256(uncompressed.slice(1)); // keccak256 of 64-byte x||y
-  const addressBytes = Buffer.allocUnsafe(21);
-  addressBytes[0] = 0x41; // TRON mainnet prefix
-  Buffer.from(hash).copy(addressBytes, 1, 12); // last 20 bytes of keccak256
-  const checksum = crypto.createHash('sha256')
-    .update(crypto.createHash('sha256').update(addressBytes).digest())
-    .digest()
-    .subarray(0, 4);
-  return base58Encode(Buffer.concat([addressBytes, checksum]));
-}
 
 function getBtcNetwork(): bitcoin.Network {
   switch (config.BITCOIN_NETWORK) {
@@ -234,7 +205,7 @@ export const depositAddressService = {
 
     const index = await tenantsService.allocateTronDerivationIndex(tenantId);
     const child = rootNode.derive(0).derive(index);
-    const address = tronAddressFromCompressedPubkey(child.publicKey);
+    const address = tronAddressFromPublicKey(child.publicKey);
     const derivationPath = `m/0/${index}`;
 
     const now = new Date().toISOString();

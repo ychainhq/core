@@ -112,13 +112,13 @@ export class TronSweepWorker {
       SELECT a.address
       FROM addresses a
       JOIN wallets w ON w.id = a.wallet_id
-      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_cold'
+      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
         AND a.chain_id = 'tron' AND a.status = 'active'
       LIMIT 1
     `, [tenantId]);
 
     if (!coldAddr) {
-      logger.debug('TronSweepWorker: no active TRON cold wallet address — skipping', { tenantId });
+      logger.debug('TronSweepWorker: no active TRON hot wallet address — skipping', { tenantId });
       return;
     }
 

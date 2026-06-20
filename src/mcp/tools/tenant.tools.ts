@@ -99,6 +99,10 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
       btcXpub: z.string().min(1).nullable().optional(),
       btcSweepThresholdSats: z.string().regex(/^\d+$/).optional(),
       customerSessionTtlSeconds: z.number().int().min(60).max(86400).optional(),
+      tronXpub: z.string().min(1).nullable().optional(),
+      tronHotAddress: z.string().min(1).optional(),
+      tronConfirmationsRequired: z.number().int().min(1).optional(),
+      tronSweepThresholdSun: z.string().regex(/^\d+$/).nullable().optional(),
     },
     annotations: write,
   }, async (input: any) => safeTool(async () => ({ data: await tenantsService.updateConfig(tenantId, input) })));

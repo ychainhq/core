@@ -590,11 +590,13 @@ Przykłady **dozwolone**: `const FALLBACK_FEE_RATE_SAT_VB = 5`, `config.btc_fee_
 
 TRON ma trzy odrębne klucze o różnych rolach — ważne żeby nie mylić ich zakresów:
 
-| Klucz | Rola | Gdzie żyje | Engine widzi? |
-|-------|------|-----------|---------------|
-| SR key (`localwitness`) | Podpisywanie bloków na poziomie protokołu TRON | `config-node1.conf` w nodzie TRON | Nigdy |
-| Withdrawal key | Hot wallet: wypłaty klientów, bezpośredni klucz | External signer, fingerprint `TRON_SIGNER_FINGERPRINT` | Nigdy |
-| Sweep HD xprv | Klucze sweep per-depozyt: BIP32 `m/0/N`, SLIP44 coin 195 | External signer, fingerprint `TRON_SIGNER_FINGERPRINT_HD` | Nigdy |
+| Klucz | Rola | Gdzie żyje | Dev env var | Engine widzi? |
+|-------|------|-----------|-------------|---------------|
+| SR key (`localwitness`) | Podpisywanie bloków na poziomie protokołu TRON | `config-node1.conf` w nodzie TRON | — | Nigdy |
+| Withdrawal key | Hot wallet: wypłaty klientów, bezpośredni klucz `m/1/0` | External signer, fingerprint `TRON_SIGNER_FINGERPRINT` | `TRON_DEV_PRIVATE_KEY_HEX` (w signerze) | Nigdy |
+| Sweep HD xprv | Klucze sweep per-depozyt: BIP32 `m/0/N`, SLIP44 coin 195 | External signer, fingerprint `TRON_SIGNER_FINGERPRINT_HD` | `TRON_DEV_ACCOUNT_XPRV` (w signerze) | Nigdy |
+
+**Dev provisioning (seed.ts):** `runSeed()` generuje account xprv (`m/44'/195'/0'`) → zapisuje `tron_xpub` do `tenant_configs` → wyprowadza `m/1/0` (hot wallet node) → zapisuje `TRON_DEV_PRIV_KEY_HEX` i `TRON_DEV_HOT_ADDRESS` do `engine/.env` → wywołuje `upsertTronTreasuryWallet(tenantId, hotAddress)` → tworzy `tenant_hot` wallet z adresem TRON + ledger accounts (sweep_in_transit, network_fee_expense). `start.sh` następnie przekazuje te wartości do konfiguracji signera.
 
 **SR key / localwitness** — genesis dev key (`da146374a75310b9666e834ee4ad0866d6f4035967bfc76217c5a495fff9f0d5`), skonfigurowany tylko w `config-node1.conf` TRON noda. Dotyczy produkcji bloków przez Super Representative. Engine nigdy nie widzi, nie przechowuje ani nie przekazuje tego klucza.
 

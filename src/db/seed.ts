@@ -9,6 +9,7 @@ import { runMigrations } from './migrate';
 import { config } from '../config/index';
 import { logger } from '../shared/logging/index';
 import { tenantsService } from '../modules/tenants/tenants.service';
+import { tronAddressFromPublicKey } from '../shared/crypto/tron-address';
 
 function sha256(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -155,6 +156,11 @@ export async function runSeed(): Promise<void> {
     console.log('======================================================');
     console.log('');
 
+    // Derive hot wallet key/address from m/1/0 (internal chain, index 0)
+    const tronHotNode = tronAccountNode.derive(1).derive(0);
+    const tronHotPrivKeyHex = Buffer.from(tronHotNode.privateKey!).toString('hex');
+    const tronHotAddress = tronAddressFromPublicKey(tronHotNode.publicKey);
+
     if (config.BITCOIN_NETWORK !== 'mainnet') {
       const envPath = path.resolve(__dirname, '../../.env');
       if (fs.existsSync(envPath)) {
@@ -164,10 +170,29 @@ export async function runSeed(): Promise<void> {
         } else {
           envContent = envContent.trimEnd() + `\nTRON_DEV_XPRV=${tronXprv}\n`;
         }
+        if (/^TRON_DEV_PRIV_KEY_HEX=/m.test(envContent)) {
+          envContent = envContent.replace(/^TRON_DEV_PRIV_KEY_HEX=.*/m, `TRON_DEV_PRIV_KEY_HEX=${tronHotPrivKeyHex}`);
+        } else {
+          envContent = envContent.trimEnd() + `\nTRON_DEV_PRIV_KEY_HEX=${tronHotPrivKeyHex}\n`;
+        }
+        if (/^TRON_DEV_HOT_ADDRESS=/m.test(envContent)) {
+          envContent = envContent.replace(/^TRON_DEV_HOT_ADDRESS=.*/m, `TRON_DEV_HOT_ADDRESS=${tronHotAddress}`);
+        } else {
+          envContent = envContent.trimEnd() + `\nTRON_DEV_HOT_ADDRESS=${tronHotAddress}\n`;
+        }
         fs.writeFileSync(envPath, envContent);
-        logger.info('TRON account xprv written to engine/.env');
+        logger.info('TRON account xprv + hot wallet written to engine/.env');
       }
     }
+
+    console.log('');
+    console.log('======================================================');
+    console.log('GENERATED TRON HOT WALLET (m/1/0 of account xprv):');
+    console.log('');
+    console.log(`  TRON_DEV_PRIV_KEY_HEX=${tronHotPrivKeyHex}`);
+    console.log(`  TRON_DEV_HOT_ADDRESS=${tronHotAddress}`);
+    console.log('======================================================');
+    console.log('');
   } else {
     logger.info('TRON xpub already set for tenant_default, skipping');
   }
@@ -204,6 +229,12 @@ export async function runSeed(): Promise<void> {
   } else {
     logger.info('Asset bitcoin:BTC already exists, skipping');
   }
+
+  // 3b. Enable TRON chain (inserted by migration 023 with is_enabled=0)
+  await db.run("UPDATE chains SET is_enabled=1 WHERE id='tron'");
+
+  // 4b. Enable TRON assets (inserted by migration 023 with is_enabled=0)
+  await db.run("UPDATE assets SET is_enabled=1 WHERE id IN ('tron:TRX', 'tron:USDT')");
 
   // 5. Upsert API key with tenant_id
   let apiKey = config.API_KEY;
@@ -335,6 +366,38 @@ export async function runSeed(): Promise<void> {
     logger.info('Provisioned BTC LWallets for tenant_default');
   } else {
     logger.info('BTC LWallets already provisioned for tenant_default, skipping');
+  }
+
+  // 9b. Provision TRON tenant_hot wallet for tenant_default
+  const tronHotWalletRows = await db.all<{ id: string }>(
+    `SELECT a.id FROM addresses a
+     JOIN wallets w ON w.id = a.wallet_id
+     WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
+       AND a.chain_id = 'tron' AND a.status = 'active'
+     LIMIT 1`,
+    ['tenant_default']
+  );
+
+  if (tronHotWalletRows.length === 0) {
+    const tronCfg9Rows = await db.all<{ tron_xpub: string | null }>(
+      'SELECT tron_xpub FROM tenant_configs WHERE tenant_id = ?', ['tenant_default']
+    );
+    const tronCfg9 = tronCfg9Rows[0];
+
+    if (tronCfg9?.tron_xpub) {
+      try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
+      const bip32Tron9 = BIP32Factory(ecc);
+      const tronAccountNode9 = bip32Tron9.fromBase58(tronCfg9.tron_xpub, bitcoin.networks.bitcoin);
+      const tronHotNode9 = tronAccountNode9.derive(1).derive(0);
+      const tronHotAddress9 = tronAddressFromPublicKey(tronHotNode9.publicKey);
+
+      await tenantsService.upsertTronTreasuryWallet('tenant_default', tronHotAddress9);
+      logger.info('Provisioned TRON tenant_hot wallet for tenant_default', { hotAddress: tronHotAddress9 });
+    } else {
+      logger.warn('TRON xpub not set for tenant_default — skipping TRON wallet provisioning');
+    }
+  } else {
+    logger.info('TRON tenant_hot wallet already provisioned for tenant_default, skipping');
   }
 }
 
