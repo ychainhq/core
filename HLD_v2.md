@@ -1792,7 +1792,7 @@ interface StateLocker          // UTXO lock (BTC) | nonce reservation (ETH/TRON)
 
 TRON ma trzy kategorie kluczy o całkowicie rozłącznych rolach. Silnik nie widzi żadnego z nich.
 
-### D.1 Mapa kluczy
+### D.1 Mapa kluczy i drzewo BIP32
 
 ```
 TRON Node (lokalny/self-hosted)
@@ -1806,19 +1806,131 @@ Engine (chain-api)
   └── Wywołuje TRON FullNode API (POST /wallet/triggersmartcontract)
   └── Otrzymuje: { txID, raw_data, raw_data_hex } — budowanie raw_data = rola FullNode
   └── Przekazuje unsignedPayload do external signer przez signer protocol
+  └── Operuje wyłącznie na kluczach PUBLICZNYCH (tron_xpub) do derivacji adresów
 
 External Signer (OSS lub Enterprise)
   ├── Withdrawal key — TRON_SIGNER_FINGERPRINT
   │     Rola: podpisywanie wypłat klientów (hot wallet)
-  │     Typ: bezpośredni EC private key (secp256k1)
+  │     Typ: bezpośredni EC private key (secp256k1), ścieżka m/1/0
+  │     Dev env: TRON_DEV_PRIVATE_KEY_HEX (tylko w signerze, nigdy w engine)
   │
   └── Sweep HD xprv — TRON_SIGNER_FINGERPRINT_HD
         Rola: podpisywanie sweep per-depozyt
         Typ: BIP32 HD xprv, SLIP44 coin_type=195 (TRON)
         Derywacja: m/0/N gdzie N = numer adresu depozytowego
+        Dev env: TRON_DEV_ACCOUNT_XPRV (tylko w signerze, nigdy w engine)
 ```
 
-### D.2 Jak budowane jest `raw_data` transakcji TRON
+Z jednego seeda (`m/44'/195'/0'` = account node) wynikają wszystkie adresy:
+
+```
+account xprv  m/44'/195'/0'
+├── m/0/0  ← adres depozytowy klienta 0   ┐
+├── m/0/1  ← adres depozytowy klienta 1   ├─ TRON_SIGNER_FINGERPRINT_HD (sweep HD xprv)
+├── m/0/N  ← adres depozytowy klienta N   ┘
+│
+└── m/1/0  ← adres hot wallet tenanta     ── TRON_SIGNER_FINGERPRINT (withdrawal key)
+```
+
+Dwa oddzielne wpisy signera są konieczne: HD xprv umożliwia derivację dowolnego klucza `m/0/*`, ale nie powinien podpisywać wypłat; withdrawal key ma dostęp tylko do `m/1/0`.
+
+### D.2 Przepływ środków
+
+```
+Klient USDT   ──deposit──►  m/0/N  (customer_deposits wallet)
+                                       │
+                               sweep  (signer HD, TRON_SIGNER_FINGERPRINT_HD)
+                               derivuje m/0/N → podpisuje
+                                       │
+                                       ▼
+              m/1/0  (tenant_hot wallet)  ◄── TRX na gas (zasilany przez tenanta)
+                                       │
+                            withdrawal (signer, TRON_SIGNER_FINGERPRINT)
+                            używa m/1/0 wprost → podpisuje
+                                       │
+                                       ▼
+                            Zewnętrzny adres klienta
+```
+
+Sweepy idą do `tenant_hot` (nie `tenant_cold`) — analogicznie jak BTC. `tenant_cold` nie istnieje dla TRON. Wypłaty wychodzą z `tenant_hot`, więc środki muszą tam trafić.
+
+### D.3 Depozyty TRON/USDT
+
+Engine derivuje adresy depozytowe wyłącznie z `tron_xpub` (klucz publiczny):
+
+```
+POST /v1/customers/:id/deposit-address { chain: 'tron' }
+  → engine czyta tron_xpub z tenant_configs
+  → bip32.fromBase58(xpub).derive(0).derive(N) → publicKey
+  → tronAddressFromPublicKey(publicKey):
+      1. pointCompress(pubkey, false) → 65-bajtowy uncompressed pubkey
+      2. keccak256(pubkey[1:]) → 32 bajtów  (Ethereum-compatible, nie NIST SHA-3)
+      3. ostatnie 20 bajtów → prepend 0x41 (TRON mainnet prefix) → 21 bajtów
+      4. double-SHA256 checksum (4 bajty) → Base58Check → "TXxx..."
+  → INSERT INTO addresses (wallet_role=customer_deposits, metadata.derivationPath="m/0/N")
+  → INSERT INTO watched_addresses → tron-indexer obserwuje adres
+
+Klient wysyła USDT on-chain:
+  → tron-indexer wykrywa transakcję → INSERT INTO chain_events
+  → deposit-event-processor.worker: fetchUnprocessed → INSERT INTO deposits (status='detected')
+  → po N potwierdzeń (tenant_configs.tron_confirmations_required) → status='confirmed'
+```
+
+### D.4 Sweepy TRON/USDT
+
+```
+TronSweepWorker (co 60s):
+  1. Pobiera wszystkich aktywnych tenantów z tron_sweep_threshold_sun ustawionym
+  2. Dla każdego tenanta: odpytuje adres tenant_hot (wallet_role='tenant_hot', chain_id='tron')
+  3. Dla każdego adresu depozytowego (wallet_role='customer_deposits', chain_id='tron'):
+     a. Sprawdza USDT balance on-chain
+     b. balance < threshold → skip
+     c. Sprawdza czy istnieje aktywny sweep dla tego adresu → skip (jeden na raz)
+     d. tronFeeService.estimateFeeForAddress() → feeLimitSun
+     e. POST /wallet/triggersmartcontract (from=adres depozytowy, to=tenant_hot)
+        ← { txID, raw_data_hex }
+     f. INSERT INTO sweeps (status='pending_signature')
+     g. INSERT INTO signing_tasks:
+            requestType: 'tron_sweep'
+            payloadFormat: 'tron_raw_tx'
+            unsignedPayload: JSON { derivationPath: "m/0/N", txID, raw_data_hex, ... }
+            signerId → signer z fingerprint = TRON_SIGNER_FINGERPRINT_HD
+
+Signer HD odbiera task:
+  → weryfikuje 3 warstwy (patrz D.6)
+  → derivuje m/0/N z HD xprv → child private key
+  → signRecoverable(txID_bytes, childKey) → 65-bajtowy podpis
+  → POST /v1/external-signers/:id/tasks/:taskId/submit { signedPayload }
+  → engine broadcastuje przez TRON FullNode → txHash
+  → sweeps.status → 'broadcast' → 'confirmed' (po potwierdzeniu on-chain)
+```
+
+### D.5 Wypłaty TRON/USDT
+
+```
+POST /v1/me/withdrawals { assetId: 'tron:USDT', amount, toAddress }
+  → INSERT INTO customer_withdrawals (status='pending')
+
+WithdrawalBatcher (cyklicznie):
+  1. Odpytuje wallet_role='tenant_hot', chain_id='tron' → adres hot wallet (m/1/0)
+  2. Buduje unsigned TRC-20 transfer:
+         from: hot wallet address (m/1/0)
+         to:   zewnętrzny adres klienta
+  3. POST /wallet/triggersmartcontract → { txID, raw_data_hex }
+  4. INSERT INTO withdrawal_batches + signing_tasks:
+            requestType: 'tron_withdrawal'
+            payloadFormat: 'tron_raw_tx'
+            signerId → signer z fingerprint = TRON_SIGNER_FINGERPRINT
+            (brak derivationPath — withdrawal key nie jest HD)
+
+Signer (withdrawal key) odbiera task:
+  → weryfikuje 3 warstwy (patrz D.6)
+  → używa bezpośredniego klucza m/1/0 (bez HD derivacji)
+  → signRecoverable(txID_bytes, hotKey) → podpis
+  → engine broadcastuje
+```
+
+### D.6 Jak budowane jest `raw_data` transakcji TRON
 
 Engine **nie buduje `raw_data` ręcznie**. Sekwencja:
 
@@ -1836,11 +1948,11 @@ Engine **nie buduje `raw_data` ręcznie**. Sekwencja:
 
 FullNode jest jedynym autorytatywnym budowniczym `raw_data`. Zmiana formatu `raw_data` nie wymaga żadnych zmian w engine.
 
-### D.3 Proces podpisywania w signerze
+### D.7 Proces podpisywania w signerze
 
 ```
 Input:  txID (32 bytes = sha256 of raw_data)
-Key:    secp256k1 private key (withdrawal) lub HD child key (sweep m/0/N)
+Key:    secp256k1 private key (withdrawal, m/1/0) lub HD child key (sweep, m/0/N)
 Op:     signRecoverable(txIdBytes, privKey)
 Output: 65 bytes → 130 hex chars
         [ 64 bytes signature | 1 byte recovery ID ]
@@ -1848,7 +1960,7 @@ Output: 65 bytes → 130 hex chars
 
 TRON wymaga EC recoverable signature (nie standard ECDSA DER). Recovery ID umożliwia weryfikację klucza publicznego bez osobnego jego przesyłania.
 
-### D.4 Warstwy weryfikacji w signerze
+### D.8 Warstwy weryfikacji w signerze
 
 Signer weryfikuje każde zadanie podpisania w trzech warstwach zanim użyje klucza:
 
@@ -1860,12 +1972,21 @@ Signer weryfikuje każde zadanie podpisania w trzech warstwach zanim użyje kluc
 
 Odrzucenie na dowolnej warstwie → task odrzucony (`reject`), brak podpisu.
 
-### D.5 Reguły architektoniczne
+### D.9 TRX na gas
+
+TRON pobiera bandwidth i energy za każdy transfer TRC-20. Tenant musi utrzymywać TRX:
+- Na adresie `m/1/0` (hot wallet) — do sweepów wychodzących i withdrawali.
+- Na adresach `m/0/N` (depozyty) — do sweepów przychodzących z tych adresów.
+
+`tronFeeService.estimateFee()` szacuje koszt przed każdą operacją (bandwidth + energy × aktualna cena na sieci). Signer weryfikuje że `feeLimitSun` w payloadzie nie przekracza `MAX_TRON_FEE_LIMIT_SUN` skonfigurowanego w polityce.
+
+### D.10 Reguły architektoniczne
 
 - Engine nie przyjmuje, nie przechowuje ani nie loguje żadnego klucza prywatnego TRON.
 - SR key (localwitness) nigdy nie trafia do engine ani do external signer protocol.
 - Zmiana providera kluczy (np. z pliku lokalnego na Vault) wymaga zmiany tylko w adapterze signera — zero zmian w engine.
 - `payloadFormat=tron_raw_tx` jest częścią `packages/external-signer-protocol` — oba signery (OSS i Enterprise) obsługują go identycznie.
+- `derivationPath` jest obowiązkowy w payloadzie sweepów i musi pasować do ścieżki `m/0/N` zarejestrowanej w `addresses.metadata`. Signer odrzuca sweep bez poprawnej ścieżki.
 
 ---
 

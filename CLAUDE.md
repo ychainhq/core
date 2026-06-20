@@ -600,6 +600,116 @@ TRON ma trzy odrębne klucze o różnych rolach — ważne żeby nie mylić ich 
 
 **SR key / localwitness** — genesis dev key (`da146374a75310b9666e834ee4ad0866d6f4035967bfc76217c5a495fff9f0d5`), skonfigurowany tylko w `config-node1.conf` TRON noda. Dotyczy produkcji bloków przez Super Representative. Engine nigdy nie widzi, nie przechowuje ani nie przekazuje tego klucza.
 
+#### Drzewo BIP32 i podział ról
+
+Z jednego seeda (`m/44'/195'/0'` = account node) wynikają wszystkie adresy:
+
+```
+account xprv  m/44'/195'/0'
+├── m/0/0  ← adres depozytowy klienta 0   ┐
+├── m/0/1  ← adres depozytowy klienta 1   ├─ TRON_SIGNER_FINGERPRINT_HD (sweep HD xprv)
+├── m/0/N  ← adres depozytowy klienta N   ┘
+│
+└── m/1/0  ← adres hot wallet tenanta     ── TRON_SIGNER_FINGERPRINT (withdrawal key)
+```
+
+- `m/0/*` — external chain, adresy depozytowe klientów. Signer HD derivuje child key per zadanie sweep.
+- `m/1/0` — internal chain, pierwszy adres = hot wallet. Jeden stały klucz, używany do wszystkich wypłat.
+
+Signer ma **dwa oddzielne wpisy** bo zakresy dostępu do klucza muszą być rozdzielone: HD xprv może derivować dowolny klucz depozytowy, ale nie powinien podpisywać wypłat; withdrawal key ma dostęp tylko do `m/1/0` i nie dotyka ścieżki `m/0/*`.
+
+#### Depozyty TRON/USDT
+
+```
+POST /v1/customers/:id/deposit-address { chain: 'tron' }
+  → engine czyta tron_xpub z tenant_configs
+  → bip32.fromBase58(xpub).derive(0).derive(N) → publicKey
+  → tronAddressFromPublicKey(publicKey) → "TXxx..."  (keccak256 + Base58Check)
+  → INSERT INTO addresses (wallet_role=customer_deposits, metadata.derivationPath="m/0/N")
+  → INSERT INTO watched_addresses → tron-indexer obserwuje adres
+
+Klient wysyła USDT on-chain:
+  → tron-indexer wykrywa transakcję → INSERT INTO chain_events
+  → deposit-event-processor.worker: fetchUnprocessed → INSERT INTO deposits (status='detected')
+  → po N potwierdzeń (tron_confirmations_required) → status='confirmed'
+```
+
+Engine operuje wyłącznie na kluczach publicznych — adresy derivowane z `tron_xpub`, nigdy z xprv.
+
+#### Sweepy TRON/USDT
+
+Cel: przelać USDT z adresów depozytowych (`m/0/N`) do hot wallet (`m/1/0`), skąd idą wypłaty.
+
+```
+TronSweepWorker (co 60s):
+  → dla każdego tenanta z tron_sweep_threshold_sun: sprawdza USDT balance każdego adresu depozytowego
+  → balance >= threshold? → buduje sweep:
+      from: adres klienta "TXxx..." (m/0/N)
+      to:   tenant_hot address      (m/1/0)
+  → POST /wallet/triggersmartcontract na TRON FullNode
+      ← { txID, raw_data, raw_data_hex }
+  → INSERT INTO sweeps (status='pending_signature')
+  → INSERT INTO signing_tasks:
+        requestType: 'tron_sweep'
+        payloadFormat: 'tron_raw_tx'
+        unsignedPayload: { derivationPath: "m/0/N", txID, raw_data_hex, ... }
+        signerId → signer z TRON_SIGNER_FINGERPRINT_HD
+
+Signer HD odbiera task:
+  → derivuje m/0/N z HD xprv → child private key
+  → signRecoverable(txID_bytes, childKey) → 65-bajtowy podpis
+  → POST /v1/external-signers/:id/tasks/:taskId/submit
+  → engine broadcastuje przez TRON FullNode → txHash
+  → sweeps.status → 'broadcast' → 'confirmed'
+```
+
+`derivationPath` jest częścią `unsignedPayload` — signer sam derivuje właściwy klucz. Jeden HD xprv obsługuje nieograniczoną liczbę adresów depozytowych.
+
+Sweepy idą do `tenant_hot` (nie `tenant_cold`) — analogicznie jak w BTC. `tenant_cold` nie istnieje dla TRON w obecnej architekturze. Wypłaty wychodzą z `tenant_hot`, więc środki muszą tam trafić.
+
+#### Wypłaty TRON/USDT
+
+```
+POST /v1/me/withdrawals { assetId: 'tron:USDT', amount, toAddress }
+  → INSERT INTO customer_withdrawals
+
+WithdrawalBatcher (cyklicznie):
+  → odpytuje wallet_role='tenant_hot', chain_id='tron' → adres hot wallet (m/1/0)
+  → buduje unsigned TRC-20 transfer:
+      from: hot wallet address (m/1/0)
+      to:   adres klienta (zewnętrzny)
+  → POST /wallet/triggersmartcontract → { txID, raw_data_hex }
+  → INSERT INTO withdrawal_batches + signing_tasks:
+        requestType: 'tron_withdrawal'
+        payloadFormat: 'tron_raw_tx'
+        signerId → signer z TRON_SIGNER_FINGERPRINT
+
+Signer (withdrawal key) odbiera task:
+  → używa bezpośredniego klucza m/1/0 (bez HD derivacji)
+  → signRecoverable(txID_bytes, hotKey) → podpis
+  → engine broadcastuje
+```
+
+#### Przepływ środków
+
+```
+Klient USDT   ──deposit──►  m/0/N  (customer_deposits wallet)
+                                       │
+                               sweep  (signer HD, TRON_SIGNER_FINGERPRINT_HD)
+                               derivuje m/0/N → podpisuje
+                                       │
+                                       ▼
+              m/1/0  (tenant_hot wallet)  ◄── TRX na gas (zasilany ręcznie przez tenanta)
+                                       │
+                            withdrawal (signer, TRON_SIGNER_FINGERPRINT)
+                            używa m/1/0 wprost → podpisuje
+                                       │
+                                       ▼
+                            Zewnętrzny adres klienta
+```
+
+**TRX na gas:** TRON pobiera bandwidth/energy za każdy transfer TRC-20. Tenant musi utrzymywać TRX na adresie `m/1/0` (hot wallet, do sweepów wychodzących i withdrawali) oraz na każdym adresie depozytowym przed sweepem. `tronFeeService.estimateFee()` szacuje koszt przed każdą operacją; signer weryfikuje że `feeLimitSun` nie przekracza skonfigurowanego maksimum.
+
 **Jak budowane jest `raw_data` transakcji TRON:**
 Engine nie buduje `raw_data` ręcznie. Engine wywołuje `POST /wallet/triggersmartcontract` na lokalnym TRON FullNode, który zwraca:
 ```json
