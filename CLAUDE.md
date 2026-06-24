@@ -40,6 +40,14 @@
 - Wspolny kod protokolu i walidacji trafia do `packages/external-signer-protocol` lub `packages/external-signer-core`; engine uzywa tych kontraktow zamiast duplikowac formaty.
 - Fingerprint reprezentuje material/zakres podpisujacy, nie nazwe providera. Nie zapisuj w engine sekretow ani identyfikatorow providerow, ktore pozwalalyby ominac signer protocol.
 
+### Rate limiting dla signer protocol
+
+Endpointy protokołu signera (`tasks`, `heartbeat`, `claim`, `submit`, `reject`) używają wyższego limitu `SIGNER_RATE_LIMIT_PER_MIN` (domyślnie 600 req/min). Endpointy zarządzania (`GET /external-signers`, `/policies`, `/enable`, itd.) używają standardowego `RATE_LIMIT_PER_MIN` (100 req/min).
+
+- **Każdy signer daemon musi mieć dedykowany API key** — start.sh generuje go automatycznie przy enrollmencie (`POST /admin/v1/tenants/:id/api-keys`). Współdzielony klucz przez kilka instancji = wspólny bucket = 429 przy normalnym obciążeniu.
+- **`PollingLoop` implementuje exponential backoff** na HTTP 429: delay podwaja się (od `intervalMs` do `maxBackoffMs`, domyślnie 60s), resetuje po sukcesie. Bez backoffu throttled signer wchodzi w pętlę która nigdy nie wychodzi z limitu.
+- Konfiguracja: `RATE_LIMIT_PER_MIN`, `SIGNER_RATE_LIMIT_PER_MIN` w engine `config/index.ts`.
+
 ## X-Actor-Token — RBAC dla użytkowników tenanta
 
 Każde żądanie do `/v1/*` może opcjonalnie zawierać nagłówek `X-Actor-Token`.

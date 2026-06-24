@@ -37,6 +37,7 @@ const configSchema = z.object({
   CUSTOMER_SESSION_SECRET: z.string().min(32).default('change-me-in-production-min-32-chars!!'),
   CUSTOMER_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
   RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(100),
+  SIGNER_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(600),
   WEBHOOK_AUTO_PAUSE_THRESHOLD: z.coerce.number().int().min(1).default(10),
   WEBHOOK_DELIVERY_RETENTION_DAYS: z.coerce.number().int().min(1).default(30),
   MCP_ADMIN_ENABLED: z

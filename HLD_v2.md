@@ -1311,8 +1311,17 @@ Krytyczne miejsca, które MUSZĄ filtrować po tenant_id:
 ### 9.6 Rate Limiting
 
 - In-process rate limiting przez sliding window counter w pamięci.
-- Konfigurowalny limit per API key (domyślnie 100 req/min).
+- Klucz bucketu: `apiKeyId` (jeśli uwierzytelniony przez API key), fallback: IP klienta.
 - Nie wymaga Redis.
+- **Dwa poziomy limitu:**
+  - `RATE_LIMIT_PER_MIN` (domyślnie 100) — dla wszystkich endpointów tenant API.
+  - `SIGNER_RATE_LIMIT_PER_MIN` (domyślnie 600) — dla ścieżek protokołu external signer:
+    - `GET /v1/external-signers/:id/tasks` (polling zadań, 1-5s interwał)
+    - `POST /v1/external-signers/:id/tasks/:tid/claim|submit|reject`
+    - `POST /v1/external-signers/:id/heartbeat`
+- Endpointy zarządzania signerami (`GET /external-signers`, `/policies`, `/enable`, `/disable`) używają standardowego limitu 100 req/min.
+- **Każdy signer daemon powinien mieć dedykowany API key** (generowany przez start.sh przy enrollment) — oddzielne buckety, brak rywalizacji między instancemi.
+- **Ograniczenie active-active:** liczniki są in-memory per instancja silnika. Przy dwóch silnikach za nginx każdy widzi ≈50% ruchu — efektywny limit singlera to 2× skonfigurowaną wartość. W razie potrzeby ścisłego global rate limiting wymagany Redis.
 
 ### 9.7 Request Validation
 

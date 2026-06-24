@@ -22,6 +22,10 @@ setInterval(() => {
   }
 }, 5 * 60_000);
 
+// Signer protocol paths (relative to /v1 mount): high-frequency polling by enrolled daemons.
+// Matched: /external-signers/:id/tasks, /tasks/:tid/claim|submit|reject, /heartbeat
+const SIGNER_PROTOCOL_RE = /^\/external-signers\/[^/]+\/(tasks|heartbeat)(\/|$)/;
+
 export function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
   // Skip rate limiting for health endpoint
   if (req.path === '/health') {
@@ -29,7 +33,8 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
     return;
   }
 
-  const limit = config.RATE_LIMIT_PER_MIN;
+  const isSignerProtocol = SIGNER_PROTOCOL_RE.test(req.path);
+  const limit = isSignerProtocol ? config.SIGNER_RATE_LIMIT_PER_MIN : config.RATE_LIMIT_PER_MIN;
   const now = Date.now();
 
   // Use API key ID if available, otherwise fall back to IP
