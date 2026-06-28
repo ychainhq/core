@@ -222,7 +222,7 @@ export const tenantsService = {
       role: 'tenant_hot',
       address: hotAddress,
       addressRole: 'treasury_hot',
-      walletName: 'Tenant Hot Wallet (TRON)',
+      walletName: 'Tenant Hot Wallet',
       accountType: 'tenant_hot_control',
       accountName: 'Tenant Hot Control (TRON)',
       chainId: 'tron',
@@ -290,7 +290,7 @@ export const tenantsService = {
         address: asset.hotAddress,
         pubkeyHex: asset.hotPubkeyHex,
         addressRole: 'treasury_hot',
-        walletName: 'Tenant Hot Wallet (BTC)',
+        walletName: 'Tenant Hot Wallet',
         accountType: 'tenant_hot_control',
         accountName: 'Tenant Hot Control (BTC)',
       }
@@ -301,7 +301,7 @@ export const tenantsService = {
         role: 'tenant_cold',
         address: asset.coldAddress,
         addressRole: 'treasury_cold',
-        walletName: 'Tenant Cold Wallet (BTC)',
+        walletName: 'Tenant Cold Wallet',
         accountType: 'tenant_cold_control',
         accountName: 'Tenant Cold Control (BTC)',
       }
@@ -477,7 +477,7 @@ export const tenantsService = {
         address: input.btcHotAddress,
         pubkeyHex: input.btcHotPubkeyHex,
         addressRole: 'treasury_hot',
-        walletName: 'Tenant Hot Wallet (BTC)',
+        walletName: 'Tenant Hot Wallet',
         accountType: 'tenant_hot_control',
         accountName: 'Tenant Hot Control (BTC)',
       });
@@ -488,7 +488,7 @@ export const tenantsService = {
         role: 'tenant_cold',
         address: input.btcColdAddress,
         addressRole: 'treasury_cold',
-        walletName: 'Tenant Cold Wallet (BTC)',
+        walletName: 'Tenant Cold Wallet',
         accountType: 'tenant_cold_control',
         accountName: 'Tenant Cold Control (BTC)',
       });
