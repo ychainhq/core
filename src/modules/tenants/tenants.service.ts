@@ -272,7 +272,7 @@ export const tenantsService = {
 
     // Always create the customer_deposits LWallet (needed for deposit acceptance)
     const depositsWallet = await walletsService.create(tenantId, {
-      name: 'Customer Deposits (BTC)',
+      name: 'Customer Deposits',
       type: 'watch_only',
       walletRole: 'customer_deposits',
     });
