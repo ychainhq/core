@@ -229,10 +229,24 @@ export const tenantsService = {
       assetId: 'tron:TRX',
     });
 
+    // Wallet-attached USDT account: needed so that USDT sweep arrivals and direct
+    // deposits to the hot wallet are tracked via findAccountByWalletAndAsset.
+    await upsertTreasuryWalletRows(tenantId, {
+      role: 'tenant_hot',
+      address: hotAddress,
+      addressRole: 'treasury_hot',
+      walletName: 'Tenant Hot Wallet',
+      accountType: 'tenant_hot_control',
+      accountName: 'Tenant Hot Control (TRON/USDT)',
+      chainId: 'tron',
+      assetId: 'tron:USDT',
+    });
+
     // Ensure TRON operational accounts exist
     const db = getDbClient();
     const tronAccounts: Array<{ accountType: string; name: string; assetId: string }> = [
-      { accountType: 'sweep_in_transit',   name: 'Sweep In Transit (TRON)',    assetId: 'tron:TRX' },
+      { accountType: 'sweep_in_transit',   name: 'Sweep In Transit (TRON/TRX)',    assetId: 'tron:TRX' },
+      { accountType: 'sweep_in_transit',   name: 'Sweep In Transit (TRON/USDT)',   assetId: 'tron:USDT' },
       { accountType: 'network_fee_expense', name: 'Network Fee Expense (TRON)', assetId: 'tron:TRX' },
     ];
     for (const acct of tronAccounts) {

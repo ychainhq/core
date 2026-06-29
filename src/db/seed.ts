@@ -236,6 +236,22 @@ export async function runSeed(): Promise<void> {
   // 4b. Enable TRON assets (inserted by migration 023 with is_enabled=0)
   await db.run("UPDATE assets SET is_enabled=1 WHERE id IN ('tron:TRX', 'tron:USDT')");
 
+  // 4c. Override tron:USDT contract address from env (dev private net uses a locally deployed contract;
+  //     migration 023 hardcodes the mainnet address TR7NHq... which would never match).
+  const tronUsdtContract = process.env['TRON_USDT_CONTRACT_ADDRESS'];
+  if (tronUsdtContract) {
+    const rows = await db.all<{ specs: string | null }>(
+      `SELECT specs FROM assets WHERE id = 'tron:USDT'`,
+    );
+    const currentSpecs = rows[0]?.specs ? JSON.parse(rows[0].specs) : {};
+    currentSpecs.contract_address = tronUsdtContract;
+    await db.run(
+      `UPDATE assets SET specs = ? WHERE id = 'tron:USDT'`,
+      [JSON.stringify(currentSpecs)],
+    );
+    logger.info('tron:USDT contract_address set from TRON_USDT_CONTRACT_ADDRESS', { address: tronUsdtContract });
+  }
+
   // 5. Upsert API key with tenant_id
   let apiKey = config.API_KEY;
   let apiKeyGenerated = false;
@@ -368,36 +384,25 @@ export async function runSeed(): Promise<void> {
     logger.info('BTC LWallets already provisioned for tenant_default, skipping');
   }
 
-  // 9b. Provision TRON tenant_hot wallet for tenant_default
-  const tronHotWalletRows = await db.all<{ id: string }>(
-    `SELECT a.id FROM addresses a
-     JOIN wallets w ON w.id = a.wallet_id
-     WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
-       AND a.chain_id = 'tron' AND a.status = 'active'
-     LIMIT 1`,
-    ['tenant_default']
+  // 9b. Provision TRON tenant_hot wallet for tenant_default.
+  // Always called (upsertTronTreasuryWallet is idempotent) so that new asset
+  // ledger accounts (e.g. tron:USDT) are added to existing wallets on restart.
+  const tronCfg9Rows = await db.all<{ tron_xpub: string | null }>(
+    'SELECT tron_xpub FROM tenant_configs WHERE tenant_id = ?', ['tenant_default']
   );
+  const tronCfg9 = tronCfg9Rows[0];
 
-  if (tronHotWalletRows.length === 0) {
-    const tronCfg9Rows = await db.all<{ tron_xpub: string | null }>(
-      'SELECT tron_xpub FROM tenant_configs WHERE tenant_id = ?', ['tenant_default']
-    );
-    const tronCfg9 = tronCfg9Rows[0];
+  if (tronCfg9?.tron_xpub) {
+    try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
+    const bip32Tron9 = BIP32Factory(ecc);
+    const tronAccountNode9 = bip32Tron9.fromBase58(tronCfg9.tron_xpub, bitcoin.networks.bitcoin);
+    const tronHotNode9 = tronAccountNode9.derive(1).derive(0);
+    const tronHotAddress9 = tronAddressFromPublicKey(tronHotNode9.publicKey);
 
-    if (tronCfg9?.tron_xpub) {
-      try { bitcoin.initEccLib(ecc); } catch { /* already initialized */ }
-      const bip32Tron9 = BIP32Factory(ecc);
-      const tronAccountNode9 = bip32Tron9.fromBase58(tronCfg9.tron_xpub, bitcoin.networks.bitcoin);
-      const tronHotNode9 = tronAccountNode9.derive(1).derive(0);
-      const tronHotAddress9 = tronAddressFromPublicKey(tronHotNode9.publicKey);
-
-      await tenantsService.upsertTronTreasuryWallet('tenant_default', tronHotAddress9);
-      logger.info('Provisioned TRON tenant_hot wallet for tenant_default', { hotAddress: tronHotAddress9 });
-    } else {
-      logger.warn('TRON xpub not set for tenant_default — skipping TRON wallet provisioning');
-    }
+    await tenantsService.upsertTronTreasuryWallet('tenant_default', tronHotAddress9);
+    logger.info('Upserted TRON tenant_hot wallet for tenant_default', { hotAddress: tronHotAddress9 });
   } else {
-    logger.info('TRON tenant_hot wallet already provisioned for tenant_default, skipping');
+    logger.warn('TRON xpub not set for tenant_default — skipping TRON wallet provisioning');
   }
 }
 
