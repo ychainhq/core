@@ -4,4 +4,4 @@
 -- PostgreSQL INTEGER is 32-bit (max ~2.1e9) — overflow on every write.
 -- SQLite silently stored it as 64-bit int, masking the bug in tests.
 
-ALTER TABLE tron_account_balances ALTER COLUMN updated_at TYPE BIGINT;
+-- PG_ONLY: ALTER TABLE tron_account_balances ALTER COLUMN updated_at TYPE BIGINT;
