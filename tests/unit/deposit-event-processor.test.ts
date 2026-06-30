@@ -331,3 +331,118 @@ describe('ChainEventProcessorWorker — isNew tickler semantics', () => {
     expect(subcategories).toContain('confirmed');
   });
 });
+
+// ─── field5 = chain_id/asset_id ──────────────────────────────────────────────
+
+describe('ChainEventProcessorWorker — field5 chain_id/asset_id', () => {
+
+  test('detected tickler has field5="bitcoin/bitcoin:BTC" for BTC deposit', async () => {
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
+
+    await new ChainEventProcessorWorker().run();
+
+    const call = (ticklerService.record as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[0] as any).subcategory === 'detected'
+    );
+    expect(call![0].field5).toBe('bitcoin/bitcoin:BTC');
+  });
+
+  test('detected tickler has field5="tron/tron:TRX" for native TRON deposit', async () => {
+    const tronEvent = makeChainEvent(0, {
+      chain_id: 'tron',
+      event_type: 'deposit_created',
+      contract_address: null,
+      vout_index: null,
+      log_index: 0,
+    });
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([tronEvent]);
+    (assetsService.getByChainAndSymbol as jest.Mock).mockResolvedValue({ id: 'tron:TRX', decimals: 6 });
+    (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
+
+    await new ChainEventProcessorWorker().run();
+
+    const call = (ticklerService.record as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[0] as any).subcategory === 'detected'
+    );
+    expect(call![0].field5).toBe('tron/tron:TRX');
+  });
+
+  test('detected tickler has field5="tron/tron:USDT" for TRON USDT deposit', async () => {
+    const tronEvent = makeChainEvent(0, {
+      chain_id: 'tron',
+      event_type: 'deposit_created',
+      contract_address: 'TKDevContract',
+      vout_index: null,
+      log_index: 0,
+    });
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([tronEvent]);
+    (assetsService.findByContractAddress as jest.Mock).mockResolvedValue({ id: 'tron:USDT', decimals: 6 });
+    (depositsService.upsert as jest.Mock).mockResolvedValue(makeUpsertResult({}, true, null));
+
+    await new ChainEventProcessorWorker().run();
+
+    const call = (ticklerService.record as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[0] as any).subcategory === 'detected'
+    );
+    expect(call![0].field5).toBe('tron/tron:USDT');
+  });
+
+  test('confirmed tickler has field5="bitcoin/bitcoin:BTC" for BTC deposit', async () => {
+    const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(1)]);
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
+    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
+
+    await new ChainEventProcessorWorker().run();
+
+    const call = (ticklerService.record as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[0] as any).subcategory === 'confirmed'
+    );
+    expect(call![0].field5).toBe('bitcoin/bitcoin:BTC');
+  });
+
+  test('confirmed tickler has field5="tron/tron:TRX" for native TRON deposit', async () => {
+    const tronEvent = makeChainEvent(1, {
+      chain_id: 'tron',
+      event_type: 'deposit_created',
+      contract_address: null,
+      vout_index: null,
+      log_index: 0,
+    });
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([tronEvent]);
+    (assetsService.getByChainAndSymbol as jest.Mock).mockResolvedValue({ id: 'tron:TRX', decimals: 6 });
+    const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
+    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
+
+    await new ChainEventProcessorWorker().run();
+
+    const call = (ticklerService.record as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[0] as any).subcategory === 'confirmed'
+    );
+    expect(call![0].field5).toBe('tron/tron:TRX');
+  });
+
+  test('confirmed tickler has field5="tron/tron:USDT" for TRON USDT deposit', async () => {
+    const tronEvent = makeChainEvent(1, {
+      chain_id: 'tron',
+      event_type: 'deposit_created',
+      contract_address: 'TKDevContract',
+      vout_index: null,
+      log_index: 0,
+    });
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([tronEvent]);
+    (assetsService.findByContractAddress as jest.Mock).mockResolvedValue({ id: 'tron:USDT', decimals: 6 });
+    const confirmed = makeDeposit({ confirmations: 1, status: 'confirmed' });
+    (depositsService.upsert as jest.Mock).mockResolvedValue({ deposit: confirmed, isNew: false, previousStatus: 'detected' });
+    (depositsService.getByIdInternal as jest.Mock).mockResolvedValue(confirmed);
+
+    await new ChainEventProcessorWorker().run();
+
+    const call = (ticklerService.record as jest.Mock).mock.calls.find(
+      (c: unknown[]) => (c[0] as any).subcategory === 'confirmed'
+    );
+    expect(call![0].field5).toBe('tron/tron:USDT');
+  });
+});

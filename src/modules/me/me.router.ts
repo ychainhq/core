@@ -9,6 +9,7 @@ import { customersProfileService } from '../customers/customers-profile.service'
 import { customersContactService } from '../customers/customers-contact.service';
 import { customersDocumentsService } from '../customers/customers-documents.service';
 import { customersAmlKycService } from '../customers/customers-aml-kyc.service';
+import { tenantsService } from '../tenants/tenants.service';
 import { ticklerService } from '../../shared/tickler/tickler.service';
 import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
 
@@ -43,6 +44,30 @@ meRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const { tenantId, customerId } = ctx(req);
     const customer = await customersService.getById(tenantId, customerId);
     res.json({ data: customer });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /v1/me/tenant-config — safe subset of tenant configuration visible to the authenticated customer.
+// Returns which chains are available for deposit address generation based on xpub presence.
+// Does NOT expose xpub values, secrets, withdrawal limits, or any other sensitive config.
+meRouter.get('/tenant-config', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { tenantId } = ctx(req);
+    const tenant = await tenantsService.getById(tenantId);
+    const cfg = tenant.config;
+    res.json({
+      data: {
+        availableChains: [
+          ...(cfg?.btc_xpub ? ['bitcoin'] : []),
+          ...(cfg?.tron_xpub ? ['tron'] : []),
+        ],
+        btcConfirmationsRequired: cfg?.btc_confirmations_required ?? 1,
+        tronConfirmationsRequired: cfg?.tron_confirmations_required ?? 1,
+        customerSessionTtlSeconds: cfg?.customer_session_ttl_seconds ?? 3600,
+      },
+    });
   } catch (err) {
     next(err);
   }

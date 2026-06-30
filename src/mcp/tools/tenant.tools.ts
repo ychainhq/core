@@ -232,12 +232,18 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }));
 
   server.registerTool('chainapi_create_customer_deposit_address', {
-    description: 'Generate a new BTC deposit address for a customer.',
-    inputSchema: { customerId: z.string().min(1) },
+    description: 'Generate a new deposit address for a customer. chain=bitcoin (default) creates a BTC P2WPKH address; chain=tron creates a TRON account address that accepts both TRX and USDT (TRC-20). A customer may hold multiple addresses per chain — each call derives a new unique address. Requires btc_xpub or tron_xpub to be configured on the tenant.',
+    inputSchema: {
+      customerId: z.string().min(1),
+      chain: z.enum(['bitcoin', 'tron']).default('bitcoin'),
+    },
     annotations: write,
-  }, async ({ customerId }: any) => safeTool(async () => {
+  }, async ({ customerId, chain }: any) => safeTool(async () => {
     await customersService.getById(tenantId, customerId);
-    return { data: await depositAddressService.generateForCustomer(tenantId, customerId) };
+    const result = chain === 'tron'
+      ? await depositAddressService.generateTronForCustomer(tenantId, customerId)
+      : await depositAddressService.generateForCustomer(tenantId, customerId);
+    return { data: result };
   }));
 
   // ── Customer KYC sub-resources ──────────────────────────────────────────────

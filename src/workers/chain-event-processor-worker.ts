@@ -208,6 +208,7 @@ export class ChainEventProcessorWorker {
         field2: event.address,
         field3: event.amount_raw,
         field4: ctx.customer_id ?? null,
+        field5: `${event.chain_id}/${assetId}`,
       });
 
       const pendingPRs = await paymentRequestsService.findPendingByAddressInternal(
@@ -296,6 +297,7 @@ export class ChainEventProcessorWorker {
       field1: input.txHash,
       field2: String(input.confirmations),
       field3: input.status,
+      field5: `${input.chainId}/${input.assetId}`,
     });
 
     const deposit = await depositsService.getByIdInternal(input.depositId);

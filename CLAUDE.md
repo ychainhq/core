@@ -299,7 +299,7 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | GET | `/v1/customers/:customerId/deposits` | ✅ | ✅ | ✅ `chainapi_list_customer_deposits` |
 | GET | `/v1/customers/:customerId/addresses` | ✅ | ✅ | ✅ `chainapi_list_customer_addresses` |
 | POST | `/v1/customers/:customerId/sessions` | ✅ | ✅ | ✅ `chainapi_create_customer_session` |
-| POST | `/v1/customers/:customerId/deposit-address` | ✅ | ✅ | ✅ `chainapi_create_customer_deposit_address` |
+| POST | `/v1/customers/:customerId/deposit-address` | ✅ | ✅ | ✅ `chainapi_create_customer_deposit_address` (`chain=bitcoin\|tron`) |
 | GET | `/v1/customers/:customerId/profile` | ✅ | ✅ | ✅ `chainapi_get_customer_profile` |
 | PUT | `/v1/customers/:customerId/profile` | ✅ | ✅ | ✅ `chainapi_upsert_customer_profile` |
 | GET | `/v1/customers/:customerId/identifiers` | ✅ | ✅ | ✅ `chainapi_list_customer_identifiers` |
@@ -326,11 +326,12 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | GET | `/v1/me` | ✅ | ✅ | ✅ `chainapi_me_get_profile` |
+| GET | `/v1/me/tenant-config` | ✅ | ✅ | ✅ `chainapi_me_get_tenant_config` |
 | GET | `/v1/me/balances` | ✅ | ⚠️ | ✅ `chainapi_me_get_balances` |
 | GET | `/v1/me/deposits` | ✅ | ⚠️ | ✅ `chainapi_me_list_deposits` |
 | GET | `/v1/me/addresses` | ✅ | ✅ | ✅ `chainapi_me_list_addresses` |
 | GET | `/v1/me/addresses/resolve` | ✅ | ✅ | ✅ `chainapi_me_resolve_address` |
-| POST | `/v1/me/deposit-address` | ✅ | ✅ | ✅ `chainapi_me_create_deposit_address` |
+| POST | `/v1/me/deposit-address` | ✅ | ✅ | ✅ `chainapi_me_create_deposit_address` (`chain=bitcoin\|tron`) |
 | POST | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_create_withdrawal` |
 | GET | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_list_withdrawals` |
 | GET | `/v1/me/withdrawals/:withdrawalId` | ✅ | ✅ | ✅ `chainapi_me_get_withdrawal` |

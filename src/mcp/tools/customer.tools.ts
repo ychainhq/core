@@ -10,6 +10,7 @@ import { customersProfileService } from '../../modules/customers/customers-profi
 import { customersContactService } from '../../modules/customers/customers-contact.service';
 import { customersDocumentsService } from '../../modules/customers/customers-documents.service';
 import { customersAmlKycService } from '../../modules/customers/customers-aml-kyc.service';
+import { tenantsService } from '../../modules/tenants/tenants.service';
 import { NotFoundError } from '../../shared/errors/index';
 
 const paging = {
@@ -70,11 +71,36 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
     annotations: readOnly,
   }, async ({ address }: any) => safeTool(async () => ({ data: await addressesService.resolveCustomerDeposit(tenantId, address) })));
 
-  server.registerTool('chainapi_me_create_deposit_address', {
-    description: 'Generate a new BTC deposit address for the authenticated customer.',
+  server.registerTool('chainapi_me_get_tenant_config', {
+    description: 'Get the tenant configuration visible to the authenticated customer. Returns availableChains (which chains have deposit address generation configured), and confirmation thresholds. Does NOT expose xpub keys, secrets, or internal business config.',
     inputSchema: {},
+    annotations: readOnly,
+  }, async () => safeTool(async () => {
+    const tenant = await tenantsService.getById(tenantId);
+    const cfg = tenant.config;
+    return {
+      data: {
+        availableChains: [
+          ...(cfg?.btc_xpub ? ['bitcoin'] : []),
+          ...(cfg?.tron_xpub ? ['tron'] : []),
+        ],
+        btcConfirmationsRequired: cfg?.btc_confirmations_required ?? 1,
+        tronConfirmationsRequired: cfg?.tron_confirmations_required ?? 1,
+        customerSessionTtlSeconds: cfg?.customer_session_ttl_seconds ?? 3600,
+      },
+    };
+  }));
+
+  server.registerTool('chainapi_me_create_deposit_address', {
+    description: 'Generate a new deposit address for the authenticated customer. chain=bitcoin (default) creates a BTC P2WPKH address; chain=tron creates a TRON account address that accepts both TRX and USDT (TRC-20). Requires btc_xpub or tron_xpub to be configured on the tenant.',
+    inputSchema: { chain: z.enum(['bitcoin', 'tron']).default('bitcoin') },
     annotations: write,
-  }, async () => safeTool(async () => ({ data: await depositAddressService.generateForCustomer(tenantId, customerId) })));
+  }, async ({ chain }: any) => safeTool(async () => {
+    const result = chain === 'tron'
+      ? await depositAddressService.generateTronForCustomer(tenantId, customerId)
+      : await depositAddressService.generateForCustomer(tenantId, customerId);
+    return { data: result };
+  }));
 
   server.registerTool('chainapi_me_create_withdrawal', {
     description: 'Create a customer withdrawal request. If toAddress is a registered deposit address of another customer on this tenant, an instant internal ledger transfer is performed (no fee, no blockchain). Set forceExternal=true to force blockchain routing even for on-platform addresses.',
