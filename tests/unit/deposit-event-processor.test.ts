@@ -446,3 +446,49 @@ describe('ChainEventProcessorWorker — field5 chain_id/asset_id', () => {
     expect(call![0].field5).toBe('tron/tron:USDT');
   });
 });
+
+// ─── from_address propagation ─────────────────────────────────────────────────
+
+describe('ChainEventProcessorWorker — from_address propagation', () => {
+
+  test('BTC event without from_address passes fromAddress=null to upsert()', async () => {
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([makeChainEvent(0)]);
+    await new ChainEventProcessorWorker().run();
+
+    expect(depositsService.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ fromAddress: null })
+    );
+  });
+
+  test('TRON native event with from_address passes it through to upsert()', async () => {
+    const tronEvent = makeChainEvent(0, {
+      chain_id: 'tron', event_type: 'deposit_created',
+      contract_address: null, vout_index: null, log_index: 0,
+      from_address: 'Tsender123',
+    });
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([tronEvent]);
+    (assetsService.getByChainAndSymbol as jest.Mock).mockResolvedValue({ id: 'tron:TRX', decimals: 6 });
+
+    await new ChainEventProcessorWorker().run();
+
+    expect(depositsService.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ fromAddress: 'Tsender123' })
+    );
+  });
+
+  test('TRON USDT event with from_address passes it through to upsert()', async () => {
+    const usdtEvent = makeChainEvent(0, {
+      chain_id: 'tron', event_type: 'deposit_created',
+      contract_address: 'TKDevContract', vout_index: null, log_index: 0,
+      from_address: 'Tsender456',
+    });
+    (chainEventsService.claimAndMarkProcessed as jest.Mock).mockResolvedValueOnce([usdtEvent]);
+    (assetsService.findByContractAddress as jest.Mock).mockResolvedValue({ id: 'tron:USDT', decimals: 6 });
+
+    await new ChainEventProcessorWorker().run();
+
+    expect(depositsService.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ fromAddress: 'Tsender456' })
+    );
+  });
+});

@@ -16,6 +16,7 @@ export interface ChainEvent {
   block_height: number | null;
   block_hash: string | null;
   confirmations: number;
+  from_address: string | null;
   created_at: string;
 }
 

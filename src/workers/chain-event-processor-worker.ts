@@ -174,6 +174,7 @@ export class ChainEventProcessorWorker {
       vout: depositIndex ?? undefined,
       confirmations,
       status,
+      fromAddress: event.from_address ?? null,
     });
 
     if (isBitcoinUtxo) {

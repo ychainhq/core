@@ -21,6 +21,7 @@ export interface Deposit {
   status: string;
   payment_request_id: string | null;
   metadata: Record<string, unknown> | null;
+  from_address: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -52,6 +53,7 @@ export const depositsService = {
     status: string;
     paymentRequestId?: string;
     metadata?: Record<string, unknown>;
+    fromAddress?: string | null;
   }): Promise<{ deposit: Deposit; isNew: boolean; previousStatus: string | null }> {
     const db = getDbClient();
     const now = new Date().toISOString();
@@ -90,8 +92,8 @@ export const depositsService = {
       INSERT INTO deposits
         (id, tenant_id, customer_id, chain_id, asset_id, wallet_id, address, amount_raw, amount_display,
          tx_hash, vout, block_height, block_hash, confirmations, status,
-         payment_request_id, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         payment_request_id, metadata, from_address, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       id,
       input.tenantId ?? null,
@@ -110,6 +112,7 @@ export const depositsService = {
       input.status,
       input.paymentRequestId ?? null,
       input.metadata ? JSON.stringify(input.metadata) : null,
+      input.fromAddress ?? null,
       now,
       now
     ]);
