@@ -60,7 +60,7 @@ describe('TronAdapter.buildUnsignedWithdrawalTx() — TRX (native)', () => {
     });
 
     expect(result.txID).toBe(UNSIGNED_TX.txID);
-    expect(result.unsignedPayload).toBe(UNSIGNED_TX.raw_data_hex);
+    expect(result.rawTransaction).toBe(UNSIGNED_TX); // full tx object, not just raw_data_hex
 
     // Verify the correct TRON endpoint was hit
     const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
@@ -110,7 +110,7 @@ describe('TronAdapter.buildUnsignedWithdrawalTx() — USDT (TRC-20)', () => {
     });
 
     expect(result.txID).toBe(UNSIGNED_TX.txID);
-    expect(result.unsignedPayload).toBe(UNSIGNED_TX.raw_data_hex);
+    expect(result.rawTransaction.raw_data_hex).toBe(UNSIGNED_TX.raw_data_hex);
 
     const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toContain('/wallet/triggersmartcontract');

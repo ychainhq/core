@@ -154,4 +154,90 @@ describe('GET /v1/me/tenant-config', () => {
     expect(data).not.toHaveProperty('btc_sweep_threshold_sats');
     expect(data).not.toHaveProperty('tron_sweep_threshold_sun');
   });
+
+  // ── availableAssets ────────────────────────────────────────────────────────
+
+  it('returns availableAssets as an array', async () => {
+    const { sessionToken } = await setupTenant();
+    const res = await request(app)
+      .get('/v1/me/tenant-config')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data.availableAssets)).toBe(true);
+  });
+
+  it('returns empty availableAssets when no xpubs configured', async () => {
+    const { sessionToken } = await setupTenant();
+    const res = await request(app)
+      .get('/v1/me/tenant-config')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.availableAssets).toEqual([]);
+  });
+
+  it('returns bitcoin:BTC asset when btcXpub is configured', async () => {
+    const { sessionToken } = await setupTenant({ btcXpub: true });
+    const res = await request(app)
+      .get('/v1/me/tenant-config')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
+    const assets = res.body.data.availableAssets;
+    expect(assets).toHaveLength(1);
+    expect(assets[0]).toMatchObject({ chainId: 'bitcoin', assetId: 'bitcoin:BTC', symbol: 'BTC' });
+  });
+
+  it('returns tron:TRX asset when tronXpub is configured', async () => {
+    const { sessionToken } = await setupTenant({ tronXpub: true });
+    const res = await request(app)
+      .get('/v1/me/tenant-config')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
+    const assets = res.body.data.availableAssets;
+    // TRX always present when tron is configured
+    expect(assets.some((a: any) => a.assetId === 'tron:TRX')).toBe(true);
+    // tron:USDT presence depends on TRON_USDT_CONTRACT_ADDRESS env — test only verifies structure
+    const usdtAsset = assets.find((a: any) => a.assetId === 'tron:USDT');
+    if (usdtAsset) {
+      expect(usdtAsset.chainId).toBe('tron');
+      expect(typeof usdtAsset.symbol).toBe('string');
+    }
+  });
+
+  it('returns both bitcoin:BTC and tron:TRX when both xpubs configured', async () => {
+    const { sessionToken } = await setupTenant({ btcXpub: true, tronXpub: true });
+    const res = await request(app)
+      .get('/v1/me/tenant-config')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
+    const assetIds = res.body.data.availableAssets.map((a: any) => a.assetId);
+    expect(assetIds).toContain('bitcoin:BTC');
+    expect(assetIds).toContain('tron:TRX');
+  });
+
+  it('availableAssets items have required fields: chainId, assetId, symbol, label', async () => {
+    const { sessionToken } = await setupTenant({ btcXpub: true, tronXpub: true });
+    const res = await request(app)
+      .get('/v1/me/tenant-config')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
+    for (const asset of res.body.data.availableAssets) {
+      expect(typeof asset.chainId).toBe('string');
+      expect(typeof asset.assetId).toBe('string');
+      expect(typeof asset.symbol).toBe('string');
+      expect(typeof asset.label).toBe('string');
+    }
+  });
+
+  it('availableAssets does NOT expose contract addresses or internal secrets', async () => {
+    const { sessionToken } = await setupTenant({ tronXpub: true });
+    const res = await request(app)
+      .get('/v1/me/tenant-config')
+      .set('Authorization', `Bearer ${sessionToken}`);
+    expect(res.status).toBe(200);
+    for (const asset of res.body.data.availableAssets) {
+      expect(asset).not.toHaveProperty('contractAddress');
+      expect(asset).not.toHaveProperty('contract_address');
+      expect(asset).not.toHaveProperty('xpub');
+    }
+  });
 });

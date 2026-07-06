@@ -371,7 +371,8 @@ export const signingTasksService = {
         await batcher.onSigningTaskRejected(
           tenantId,
           task.withdrawal_batch_id,
-          `Signing task rejected: ${input.reasonCode} — ${input.reasonMessage}`
+          `Signing task rejected: ${input.reasonCode} — ${input.reasonMessage}`,
+          input.reasonCode
         );
       } catch (err) {
         logger.warn('Failed to revert batch/withdrawals on task rejection', { taskId, batchId: task.withdrawal_batch_id, error: String(err) });

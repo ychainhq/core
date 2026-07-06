@@ -513,7 +513,7 @@ export const withdrawalBatcherService = {
 
     let unsignedTx: { unsignedPayload: string; txID: string };
     try {
-      unsignedTx = await tronAdapter.buildUnsignedWithdrawalTx({
+      const rawTx = await tronAdapter.buildUnsignedWithdrawalTx({
         fromAddress: hotAddrRow.address,
         toAddress: wd.to_address,
         assetId,
@@ -521,6 +521,20 @@ export const withdrawalBatcherService = {
         feeLimitSun: feeEstimate.recommendedFeeLimitSun || 10_000_000,
         contractAddress,
       });
+      // Build canonical JSON envelope expected by external-signer-protocol validators.
+      // Format mirrors tron-sweep.worker.ts — signer validates chainId, network, rawTransaction.
+      const envelope: Record<string, unknown> = {
+        chainId: 'tron',
+        network: config.TRON_NETWORK,
+        type: assetId === 'tron:USDT' ? 'trc20_transfer' : 'trx_transfer',
+        amountRaw: onChainAmountRaw,
+        fromAddress: hotAddrRow.address,
+        toAddress: wd.to_address,
+        feeLimitSun: String(feeEstimate.recommendedFeeLimitSun || 10_000_000),
+        rawTransaction: rawTx.rawTransaction,
+      };
+      if (contractAddress) envelope.contractAddress = contractAddress;
+      unsignedTx = { unsignedPayload: JSON.stringify(envelope), txID: rawTx.txID };
     } catch (err) {
       logger.error('Failed to build unsigned TRON withdrawal tx', { tenantId, withdrawalId: wd.id, assetId, error: String(err) });
       return null;
@@ -737,51 +751,65 @@ export const withdrawalBatcherService = {
       throw new ValidationError('Signing task has no signed payload');
     }
 
-    const adapter = new BitcoinAdapter(btcNodeSelector);
     const db = getDbClient();
     const now = new Date().toISOString();
 
-    // Finalize PSBT → raw tx
+    let txHash: string;
     let rawTx: string;
-    try {
-      const finalResult = await adapter.finalizePsbt(signingTask.signed_payload);
-      if (!finalResult.complete) {
-        throw new Error('PSBT not fully signed — missing signatures');
-      }
-      rawTx = finalResult.hex;
-    } catch (err: any) {
-      await db.run(`
-        UPDATE withdrawal_batches
-        SET status = 'failed', last_error = ?, updated_at = ?
-        WHERE id = ?
-      `, [String(err), now, batchId]);
-      throw new UnprocessableEntityError(`Failed to finalize PSBT: ${err.message}`);
-    }
 
-    // testmempoolaccept
-    try {
-      const acceptResult = await adapter.testMempoolAccept(rawTx);
-      if (!acceptResult.allowed) {
-        const errMsg = `testmempoolaccept rejected: ${acceptResult.rejectReason}`;
+    if (batch.chain_id === 'tron') {
+      // TRON: signed_payload is the complete signed tx JSON — broadcast directly, no PSBT
+      const tronAdapter = adapterRegistry.get('tron') as import('../../chain-adapters/tron/adapter').TronAdapter;
+      rawTx = signingTask.signed_payload;
+      try {
+        txHash = await tronAdapter.sendRawTransaction(rawTx);
+      } catch (err: any) {
         await db.run(`
           UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?
-        `, [errMsg, now, batchId]);
-        throw new UnprocessableEntityError(errMsg);
+        `, [String(err), now, batchId]);
+        throw new UnprocessableEntityError(`Failed to broadcast TRON tx: ${err.message}`);
       }
-    } catch (err: any) {
-      if (err instanceof UnprocessableEntityError) throw err;
-      logger.warn('testmempoolaccept RPC call failed', { batchId, error: String(err) });
-    }
+    } else {
+      // Bitcoin: finalize PSBT → raw tx → testmempoolaccept → broadcast
+      const btcAdapter = new BitcoinAdapter(btcNodeSelector);
 
-    // Broadcast
-    let txHash: string;
-    try {
-      txHash = await adapter.sendRawTransaction(rawTx);
-    } catch (err: any) {
-      await db.run(`
-        UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?
-      `, [String(err), now, batchId]);
-      throw new UnprocessableEntityError(`Failed to broadcast: ${err.message}`);
+      try {
+        const finalResult = await btcAdapter.finalizePsbt(signingTask.signed_payload);
+        if (!finalResult.complete) {
+          throw new Error('PSBT not fully signed — missing signatures');
+        }
+        rawTx = finalResult.hex;
+      } catch (err: any) {
+        await db.run(`
+          UPDATE withdrawal_batches
+          SET status = 'failed', last_error = ?, updated_at = ?
+          WHERE id = ?
+        `, [String(err), now, batchId]);
+        throw new UnprocessableEntityError(`Failed to finalize PSBT: ${err.message}`);
+      }
+
+      try {
+        const acceptResult = await btcAdapter.testMempoolAccept(rawTx);
+        if (!acceptResult.allowed) {
+          const errMsg = `testmempoolaccept rejected: ${acceptResult.rejectReason}`;
+          await db.run(`
+            UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?
+          `, [errMsg, now, batchId]);
+          throw new UnprocessableEntityError(errMsg);
+        }
+      } catch (err: any) {
+        if (err instanceof UnprocessableEntityError) throw err;
+        logger.warn('testmempoolaccept RPC call failed', { batchId, error: String(err) });
+      }
+
+      try {
+        txHash = await btcAdapter.sendRawTransaction(rawTx);
+      } catch (err: any) {
+        await db.run(`
+          UPDATE withdrawal_batches SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?
+        `, [String(err), now, batchId]);
+        throw new UnprocessableEntityError(`Failed to broadcast: ${err.message}`);
+      }
     }
 
     // Update batch
@@ -795,13 +823,13 @@ export const withdrawalBatcherService = {
     // Assign txHash to all withdrawals in batch
     await withdrawalsService.markBroadcast(await withdrawalBatcherService._getWithdrawalIds(batchId), txHash);
 
-    // Mark UTXOs as spent
+    // Mark UTXOs as spent (no-op for TRON — no UTXO model)
     await utxoLockService.markSpentForBatch(tenantId, batchId);
 
     // Mark signing task as submitted
     await signingTasksService.markSubmitted(batch.signing_task_id, txHash);
 
-    logger.info('Withdrawal batch broadcast', { batchId, tenantId, txHash, outputsCount: batch.outputs_count });
+    logger.info('Withdrawal batch broadcast', { batchId, tenantId, txHash, chainId: batch.chain_id, outputsCount: batch.outputs_count });
     return withdrawalBatcherService.getBatchById(tenantId, batchId);
   },
 
@@ -1123,9 +1151,10 @@ export const withdrawalBatcherService = {
 
   /**
    * Called by signingTasksService when a signing task is rejected.
-   * Marks the batch as failed and requeues its withdrawals.
+   * Permanent errors (malformed payload, invalid address) fail the withdrawal immediately.
+   * Transient errors (node timeout, signer unavailable) requeue for retry.
    */
-  async onSigningTaskRejected(tenantId: string, batchId: string, reason: string): Promise<void> {
+  async onSigningTaskRejected(tenantId: string, batchId: string, reason: string, reasonCode?: string): Promise<void> {
     const db = getDbClient();
     const now = new Date().toISOString();
     await db.run(`
@@ -1136,6 +1165,18 @@ export const withdrawalBatcherService = {
     `, [reason, now, batchId, tenantId]);
 
     const ids = await withdrawalBatcherService._getWithdrawalIds(batchId);
-    await withdrawalsService.requeue(ids);
+
+    // Permanent errors: the same payload will always be rejected — retrying is pointless.
+    const PERMANENT_ERROR_CODES = ['tron_tx_invalid', 'btc_tx_invalid', 'invalid_address', 'payload_format_error'];
+    if (reasonCode && PERMANENT_ERROR_CODES.includes(reasonCode)) {
+      logger.warn('Signing task rejected with permanent error — marking withdrawal as failed', {
+        batchId, reasonCode, withdrawalIds: ids,
+      });
+      for (const id of ids) {
+        await withdrawalsService.updateStatus(id, 'failed', { error: `${reasonCode}: ${reason}` });
+      }
+    } else {
+      await withdrawalsService.requeue(ids);
+    }
   },
 };

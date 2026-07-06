@@ -12,6 +12,7 @@ import { customersAmlKycService } from '../customers/customers-aml-kyc.service';
 import { tenantsService } from '../tenants/tenants.service';
 import { ticklerService } from '../../shared/tickler/tickler.service';
 import { resolveActorLogin } from '../../shared/tickler/tickler.actor';
+import { config } from '../../config';
 
 export const meRouter = Router();
 
@@ -62,6 +63,13 @@ meRouter.get('/tenant-config', async (req: Request, res: Response, next: NextFun
         availableChains: [
           ...(cfg?.btc_xpub ? ['bitcoin'] : []),
           ...(cfg?.tron_xpub ? ['tron'] : []),
+        ],
+        availableAssets: [
+          ...(cfg?.btc_xpub ? [{ chainId: 'bitcoin', assetId: 'bitcoin:BTC', symbol: 'BTC', label: 'Bitcoin (BTC)' }] : []),
+          ...(cfg?.tron_xpub ? [
+            { chainId: 'tron', assetId: 'tron:TRX', symbol: 'TRX', label: 'TRON (TRX)' },
+            ...(config.TRON_USDT_CONTRACT_ADDRESS ? [{ chainId: 'tron', assetId: 'tron:USDT', symbol: 'USDT', label: 'USDT (TRC-20)' }] : []),
+          ] : []),
         ],
         btcConfirmationsRequired: cfg?.btc_confirmations_required ?? 1,
         tronConfirmationsRequired: cfg?.tron_confirmations_required ?? 1,

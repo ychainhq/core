@@ -41,7 +41,7 @@ function insertHotWallet(tenantId: string, tronAddress: string) {
   `).run(walletId, tenantId, now, now);
 
   db.prepare(`
-    INSERT INTO addresses (id, tenant_id, wallet_id, chain_id, address, label, address_type, address_role, status, created_at, updated_at)
+    INSERT OR IGNORE INTO addresses (id, tenant_id, wallet_id, chain_id, address, label, address_type, address_role, status, created_at, updated_at)
     VALUES (?, ?, ?, 'tron', ?, 'TRON hot wallet', 'p2pkh', 'hot', 'active', ?, ?)
   `).run(addrId, tenantId, walletId, tronAddress, now, now);
 
@@ -72,9 +72,14 @@ function insertQueuedWithdrawal(tenantId: string, assetId: 'tron:USDT' | 'tron:T
 
 // ── Mock TRON adapter ─────────────────────────────────────────────────────────
 
+const MOCK_TX_ID = 'aabbccdd1122334455667788aabbccdd1122334455667788aabbccdd11223344';
 const MOCK_UNSIGNED_TX = {
-  unsignedPayload: 'deadbeef_raw_data_hex_unsigned',
-  txID: 'aabbccdd1122334455667788aabbccdd1122334455667788aabbccdd11223344',
+  rawTransaction: {
+    txID: MOCK_TX_ID,
+    raw_data: { contract: [] },
+    raw_data_hex: 'deadbeef_raw_data_hex_unsigned',
+  },
+  txID: MOCK_TX_ID,
 };
 
 // Spy on the registered TronAdapter instance
@@ -186,7 +191,10 @@ describe('buildTronBatchForTenant() — tron:USDT happy path', () => {
     expect(task.request_type).toBe('tron_withdrawal');
     expect(task.chain_id).toBe('tron');
     expect(task.asset_id).toBe('tron:USDT');
-    expect(task.unsigned_payload).toBe(MOCK_UNSIGNED_TX.unsignedPayload);
+    const envelope = JSON.parse(task.unsigned_payload);
+    expect(envelope.chainId).toBe('tron');
+    expect(envelope.type).toBe('trc20_transfer');
+    expect(envelope.rawTransaction).toEqual(MOCK_UNSIGNED_TX.rawTransaction);
   });
 
   it('links signing_task_id on the batch row', async () => {
@@ -233,6 +241,67 @@ describe('buildTronBatchForTenant() — tron:TRX', () => {
       assetId: 'tron:TRX',
       contractAddress: undefined,
     }));
+  });
+});
+
+describe('finalizeBatch() — TRON chain', () => {
+  const HOT_WALLET_ADDR = 'TGCRkw1Vq759FBCrwxkZGgqZbRX1WkBHSu';
+  const RECIPIENT_ADDR = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+  const MOCK_TX_HASH = 'ff'.repeat(32);
+
+  it('broadcasts via TronAdapter.sendRawTransaction (not finalizePsbt) and marks batch broadcast', async () => {
+    const db = getDb();
+    insertHotWallet(TENANT_ID, HOT_WALLET_ADDR);
+    insertQueuedWithdrawal(TENANT_ID, 'tron:USDT', RECIPIENT_ADDR, '5000000');
+
+    const batch = await withdrawalBatcherService.buildTronBatchForTenant(TENANT_ID, 'tron:USDT');
+    expect(batch).not.toBeNull();
+
+    // Simulate signer: mark signing task as signed with a TRON signed tx JSON
+    const signedPayload = JSON.stringify({
+      txID: MOCK_TX_ID,
+      raw_data: { contract: [] },
+      raw_data_hex: 'deadbeef',
+      signature: ['ab'.repeat(65)],
+    });
+    db.prepare('UPDATE signing_tasks SET status = ?, signed_payload = ?, updated_at = ? WHERE withdrawal_batch_id = ?')
+      .run('signed', signedPayload, new Date().toISOString(), batch!.id);
+
+    // Mock TronAdapter.sendRawTransaction to avoid real node
+    const tronAdapter = adapterRegistry.get('tron') as TronAdapter;
+    const sendSpy = jest.spyOn(tronAdapter, 'sendRawTransaction').mockResolvedValueOnce(MOCK_TX_HASH);
+
+    await withdrawalBatcherService.finalizeBatch(TENANT_ID, batch!.id);
+
+    // sendRawTransaction called with the signed TRON tx JSON
+    expect(sendSpy).toHaveBeenCalledWith(signedPayload);
+
+    // Batch moved to broadcast
+    const batchRow = db.prepare('SELECT status, tx_hash FROM withdrawal_batches WHERE id = ?').get(batch!.id) as any;
+    expect(batchRow.status).toBe('broadcast');
+    expect(batchRow.tx_hash).toBe(MOCK_TX_HASH);
+  });
+
+  it('marks batch failed and throws when TronAdapter.sendRawTransaction rejects', async () => {
+    const db = getDb();
+    insertHotWallet(TENANT_ID, HOT_WALLET_ADDR);
+    insertQueuedWithdrawal(TENANT_ID, 'tron:USDT', RECIPIENT_ADDR, '3000000');
+
+    const batch = await withdrawalBatcherService.buildTronBatchForTenant(TENANT_ID, 'tron:USDT');
+    expect(batch).not.toBeNull();
+
+    const signedPayload = JSON.stringify({ txID: MOCK_TX_ID, raw_data: {}, raw_data_hex: 'ff', signature: ['aa'.repeat(65)] });
+    db.prepare('UPDATE signing_tasks SET status = ?, signed_payload = ?, updated_at = ? WHERE withdrawal_batch_id = ?')
+      .run('signed', signedPayload, new Date().toISOString(), batch!.id);
+
+    const tronAdapter = adapterRegistry.get('tron') as TronAdapter;
+    jest.spyOn(tronAdapter, 'sendRawTransaction').mockRejectedValueOnce(new Error('TRON node down'));
+
+    await expect(withdrawalBatcherService.finalizeBatch(TENANT_ID, batch!.id))
+      .rejects.toThrow(/TRON node down/);
+
+    const batchRow = db.prepare('SELECT status FROM withdrawal_batches WHERE id = ?').get(batch!.id) as any;
+    expect(batchRow.status).toBe('failed');
   });
 });
 

@@ -326,13 +326,13 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | Method | Path | MVP | Testy | MCP |
 |--------|------|-----|-------|-----|
 | GET | `/v1/me` | ✅ | ✅ | ✅ `chainapi_me_get_profile` |
-| GET | `/v1/me/tenant-config` | ✅ | ✅ | ✅ `chainapi_me_get_tenant_config` |
+| GET | `/v1/me/tenant-config` | ✅ | ✅ | ✅ `chainapi_me_get_tenant_config` — zwraca `availableChains` + `availableAssets` |
 | GET | `/v1/me/balances` | ✅ | ⚠️ | ✅ `chainapi_me_get_balances` |
 | GET | `/v1/me/deposits` | ✅ | ⚠️ | ✅ `chainapi_me_list_deposits` |
 | GET | `/v1/me/addresses` | ✅ | ✅ | ✅ `chainapi_me_list_addresses` |
 | GET | `/v1/me/addresses/resolve` | ✅ | ✅ | ✅ `chainapi_me_resolve_address` |
 | POST | `/v1/me/deposit-address` | ✅ | ✅ | ✅ `chainapi_me_create_deposit_address` (`chain=bitcoin\|tron`) |
-| POST | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_create_withdrawal` |
+| POST | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_create_withdrawal` — params: `chainId`, `assetId`, `amountSats`, `toAddress` |
 | GET | `/v1/me/withdrawals` | ✅ | ✅ | ✅ `chainapi_me_list_withdrawals` |
 | GET | `/v1/me/withdrawals/:withdrawalId` | ✅ | ✅ | ✅ `chainapi_me_get_withdrawal` |
 | GET | `/v1/me/profile` | ✅ | ✅ | ✅ `chainapi_me_get_kyc_profile` |

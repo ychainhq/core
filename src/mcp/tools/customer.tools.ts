@@ -12,6 +12,7 @@ import { customersDocumentsService } from '../../modules/customers/customers-doc
 import { customersAmlKycService } from '../../modules/customers/customers-aml-kyc.service';
 import { tenantsService } from '../../modules/tenants/tenants.service';
 import { NotFoundError } from '../../shared/errors/index';
+import { config } from '../../config';
 
 const paging = {
   limit: z.number().int().min(1).max(100).optional(),
@@ -72,7 +73,7 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
   }, async ({ address }: any) => safeTool(async () => ({ data: await addressesService.resolveCustomerDeposit(tenantId, address) })));
 
   server.registerTool('chainapi_me_get_tenant_config', {
-    description: 'Get the tenant configuration visible to the authenticated customer. Returns availableChains (which chains have deposit address generation configured), and confirmation thresholds. Does NOT expose xpub keys, secrets, or internal business config.',
+    description: 'Get the tenant configuration visible to the authenticated customer. Returns availableChains (chain IDs) and availableAssets (list of {chainId, assetId, symbol, label} for each available asset). Does NOT expose xpub keys, secrets, contract addresses, or internal business config.',
     inputSchema: {},
     annotations: readOnly,
   }, async () => safeTool(async () => {
@@ -83,6 +84,13 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
         availableChains: [
           ...(cfg?.btc_xpub ? ['bitcoin'] : []),
           ...(cfg?.tron_xpub ? ['tron'] : []),
+        ],
+        availableAssets: [
+          ...(cfg?.btc_xpub ? [{ chainId: 'bitcoin', assetId: 'bitcoin:BTC', symbol: 'BTC', label: 'Bitcoin (BTC)' }] : []),
+          ...(cfg?.tron_xpub ? [
+            { chainId: 'tron', assetId: 'tron:TRX', symbol: 'TRX', label: 'TRON (TRX)' },
+            ...(config.TRON_USDT_CONTRACT_ADDRESS ? [{ chainId: 'tron', assetId: 'tron:USDT', symbol: 'USDT', label: 'USDT (TRC-20)' }] : []),
+          ] : []),
         ],
         btcConfirmationsRequired: cfg?.btc_confirmations_required ?? 1,
         tronConfirmationsRequired: cfg?.tron_confirmations_required ?? 1,
@@ -103,10 +111,12 @@ export function registerCustomerTools(server: McpServer, ctx: McpAuthContext): v
   }));
 
   server.registerTool('chainapi_me_create_withdrawal', {
-    description: 'Create a customer withdrawal request. If toAddress is a registered deposit address of another customer on this tenant, an instant internal ledger transfer is performed (no fee, no blockchain). Set forceExternal=true to force blockchain routing even for on-platform addresses.',
+    description: 'Create a customer withdrawal request. chainId selects the chain (bitcoin|tron, defaults to bitcoin); assetId selects the asset (bitcoin:BTC, tron:TRX, tron:USDT). If toAddress is a registered deposit address of another customer on this tenant, an instant internal ledger transfer is performed. Set forceExternal=true to force blockchain routing for on-platform addresses.',
     inputSchema: {
       toAddress: z.string().min(1),
       amountSats: z.string().regex(/^\d+$/),
+      chainId: z.string().optional(),
+      assetId: z.string().optional(),
       idempotencyKey: z.string().optional(),
       forceExternal: z.boolean().optional(),
     },

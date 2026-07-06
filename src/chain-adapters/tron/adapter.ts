@@ -16,7 +16,7 @@ import { TronFeeEstimate } from './tron-types';
 import { tronFeeService } from '../../modules/tron/tron-fee.service';
 
 export interface TronUnsignedWithdrawalTx {
-  unsignedPayload: string;
+  rawTransaction: TronUnsignedTransaction; // full object from TRON FullNode (txID, raw_data, raw_data_hex)
   txID: string;
 }
 
@@ -230,7 +230,7 @@ export class TronAdapter implements IChainAdapter {
     }
 
     return {
-      unsignedPayload: tx.raw_data_hex,
+      rawTransaction: tx,
       txID: tx.txID,
     };
   }
