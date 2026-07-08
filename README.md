@@ -1,43 +1,65 @@
-# Chain API (Beta)
+# Chain API Engine
 
-A production-grade REST API for building Bitcoin payment processing, crypto banking, and checkout functionality. The beta version supports Bitcoin (mainnet, testnet, regtest) via Bitcoin Core JSON-RPC.
+A production-grade REST API for building crypto payment processing, custodial banking, and programmatic money movement. Supports Bitcoin and TRON (TRX + USDT TRC-20), with an EVM chain adapter in progress.
 
-**Key capabilities:** multi-tenant architecture, address monitoring, deposit detection, payment requests with BIP-21 QR payloads, PSBT/raw transaction preparation, fee estimation, UTXO management, HMAC-signed webhooks, minimal ledger.
+**Key capabilities:** multi-tenant architecture, multi-chain address monitoring, deposit detection via dedicated block indexers, payment requests, PSBT/raw transaction preparation, dynamic fee estimation, UTXO management, batch withdrawal processing, external signer integration (OSS and Enterprise), actor-scoped RBAC, HMAC-signed webhooks, immutable audit ledger, MCP tool layer for AI agent integration.
 
-## How it works: FWallet, LWallet, Tenant, Customer
+---
 
-Two types of wallets exist in the system:
+## How it works
 
-- **FWallet** (Physical Wallet) — a watch-only wallet in the Bitcoin Core node, named `btc_{tenantId}`. One per tenant, BTC only. Not exposed via API — pure monitoring infrastructure.
-- **LWallet** (Logical Wallet) — a wallet record in the chain-api database representing a business role. All `/v1/wallets` endpoints operate on LWallets.
+### Wallets and tenants
+
+The engine operates on two wallet constructs:
+
+- **LWallet** (Logical Wallet) — a wallet record in the chain-api database representing a business role. All `/v1/wallets` endpoints operate on LWallets. Roles: `customer_deposits`, `tenant_hot`, `tenant_cold`, `watch_only`.
+- **Chain nodes** — registered Bitcoin Core or TRON FullNode instances. The engine connects to them for transaction preparation and broadcasting. It does not use named wallets (FWallets) in Bitcoin Core.
 
 ```
-Bitcoin Core node (BTC only)
-  └── FWallet: btc_{tenantId}         ← one per tenant, watch-only, auto-provisioned
-        └── Imported addresses         ← all deposit addresses belonging to this tenant
-
-chain-api platform
+chain-api engine
   └── Tenant (API key owner)
-        ├── LWallet: tenant_hot        ← operational hot wallet (tenant-provided address)
-        ├── LWallet: tenant_cold       ← cold storage (tenant-provided address)
-        └── Customer (ledger identity — NOT an FWallet, NOT a Bitcoin Core construct)
+        ├── LWallet: tenant_hot        ← operational hot wallet
+        ├── LWallet: tenant_cold       ← cold storage
+        └── Customer (ledger identity)
               ├── LWallet: customer_deposits  ← namespace for deposit addresses
-              ├── LedgerAccount (available / pending / hold per asset)
+              ├── LedgerAccount (per chain, per asset)
               └── TransactionHistory
 ```
 
-**Key rules:**
+### Deposit detection: chain_events
 
-- Each **Tenant** gets one **FWallet** in Bitcoin Core (`btc_{tenantId}`) and three **LWallets** in the chain-api DB (`customer_deposits`, `tenant_hot`, `tenant_cold`). All are provisioned automatically when the tenant is created.
-- **Ethereum has no FWallet.** ETH addresses are monitored directly via node RPC — no `createwallet` or `importaddress` needed.
-- Each **Customer** is a ledger construct only — no node wallet. Deposit addresses belong to the tenant's `customer_deposits` LWallet and are imported into the FWallet (BTC) for monitoring.
-- The **ledger is the source of truth** for balances; Bitcoin Core is chain infrastructure.
-- UTXOs are never shared between tenants: the FWallet namespace enforces node-level isolation, and `WHERE tenant_id = ?` enforces SQL-level isolation.
+The engine does not poll chain nodes for deposits. Instead, dedicated block indexer processes run alongside the engine:
+
+- **btc-indexer** — scans Bitcoin blocks, writes raw events to the `chain_events` table
+- **tron-indexer** — scans TRON blocks and TRC-20 Transfer logs, writes to `chain_events`
+
+The engine's `DepositEventProcessorWorker` reads `chain_events`, maps events to registered deposit addresses, creates deposit records, updates ledger accounts, fires webhooks, and records an immutable tickler audit entry. Each event is processed exactly once (UNIQUE constraint + `SELECT FOR UPDATE SKIP LOCKED`).
+
+Indexers have no knowledge of tenants or business logic. They output only: address → on-chain event.
+
+### External signing
+
+The engine never holds private keys. It prepares unsigned payloads:
+
+- **Bitcoin:** PSBT (Partially Signed Bitcoin Transaction)
+- **TRON:** raw transaction `txID` + `raw_data_hex` from a TRON FullNode
+
+A registered external signer polls for signing tasks, validates the payload locally, signs it, and submits the signed result. The engine validates, broadcasts, and records the audit trail.
+
+Two signer editions exist: **Signer OSS** (open source, local keys) and **Signer Enterprise** (HashiCorp Vault Transit, AWS KMS, Azure Key Vault).
+
+---
 
 ## Prerequisites
 
 - **Node.js 20+**
-- **Bitcoin Core** (fully synced) with JSON-RPC enabled
+- **PostgreSQL 16+** (production) — SQLite is used only in integration tests via `bootstrapApp()`
+- **Bitcoin Core** (fully synced) — for Bitcoin transaction preparation and broadcasting
+- **TRON FullNode** — for TRON transaction preparation and broadcasting
+- **btc-indexer** — `packages/btc-indexer`, required for Bitcoin deposit detection
+- **tron-indexer** — `packages/tron-indexer`, required for TRON deposit detection
+
+---
 
 ## Quick Start
 
@@ -47,14 +69,14 @@ npm install
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env — at minimum set BITCOIN_RPC_URL, BITCOIN_RPC_USER, BITCOIN_RPC_PASSWORD
+# Edit .env — set DATABASE_URL, BITCOIN_RPC_URL, TRON_NODE_URL at minimum
 
 # 3. Run database migrations
 npm run db:migrate
 
-# 4. Seed initial data (bitcoin chain + BTC asset + API key)
+# 4. Seed initial data (chains + assets + API key)
 npm run db:seed
-# The seed will print your API key if API_KEY is not set in .env
+# Seed prints your API key if API_KEY is not set in .env
 
 # 5. Start the server (development)
 npm run dev
@@ -63,38 +85,54 @@ npm run dev
 npm run build && npm start
 ```
 
+---
+
 ## Configuration Reference
 
 All configuration is loaded at startup from `.env` via `src/config/index.ts` (Zod-validated). Missing required values cause immediate `process.exit(1)` with a descriptive error.
 
-### Engine environment variables
-
-#### Server & Database
+### Server & Database
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP listen port |
-| `DB_TYPE` | `sqlite` | `sqlite` (dev/MVP) or `postgres` (enterprise) |
-| `SQLITE_DB_PATH` | `./data/chain-api.db` | SQLite file path (ignored when `DB_TYPE=postgres`) |
-| `DATABASE_URL` | — | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db` |
+| `DB_TYPE` | `sqlite` | `sqlite` (tests only) or `postgres` (production) |
+| `DATABASE_URL` | — | PostgreSQL connection string: `postgres://user:pass@host:5432/db` |
 | `DB_POOL_MAX` | `20` | Max PostgreSQL pool connections |
 | `DB_POOL_IDLE_TIMEOUT_MS` | `30000` | Pool idle connection timeout (ms) |
+| `SQLITE_DB_PATH` | `./data/chain-api.db` | SQLite file path (ignored when `DB_TYPE=postgres`) |
 
-#### Bitcoin Core
+### Bitcoin Core
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BITCOIN_RPC_URL` | `http://127.0.0.1:8332` | Bitcoin Core JSON-RPC endpoint |
+| `BITCOIN_RPC_URL` | `http://127.0.0.1:8332` | Bitcoin Core JSON-RPC endpoint (fallback when `chain_nodes` table is empty) |
 | `BITCOIN_RPC_USER` | `bitcoin` | RPC username |
 | `BITCOIN_RPC_PASSWORD` | `changeme` | RPC password |
 | `BITCOIN_RPC_TIMEOUT_MS` | `10000` | Per-request timeout (ms) |
 | `BITCOIN_RPC_MAX_ATTEMPTS` | `3` | Retry count on transient failure |
 | `BITCOIN_RPC_RETRY_DELAY_MS` | `1000` | Delay between retries (ms) |
-| `BITCOIN_CORE_PROVISIONING_ENABLED` | `true` | `false` in v3 architecture (btc-indexer handles deposits). `true` enables legacy FWallet provisioning. |
 | `BITCOIN_NETWORK` | `mainnet` | `mainnet` \| `testnet` \| `regtest` |
-| `BTC_FEE_RATE_CACHE_TTL_MS` | `30000` | How long to cache fee rate from Bitcoin Core (ms) |
+| `BTC_FEE_RATE_CACHE_TTL_MS` | `30000` | Fee rate cache TTL from Bitcoin Core (ms) |
 
-#### Seed / Initial Keys
+### TRON
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRON_NODE_URL` | — | TRON FullNode HTTP API base URL (fallback when `chain_nodes` table has no TRON entries) |
+| `TRON_USDT_CONTRACT_ADDRESS` | — | TRC-20 USDT contract address (`TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t` on mainnet). When set, activates USDT support. |
+| `TRON_SIGNER_FINGERPRINT` | — | Fingerprint of the external signer key for TRON withdrawals (`m/1/0` — hot wallet key) |
+| `TRON_SIGNER_FINGERPRINT_HD` | — | Fingerprint of the external signer HD key for TRON sweeps (account xprv for `m/0/N` child derivation) |
+| `TRON_DEFAULT_CONFIRMATIONS` | `20` | Platform-wide default confirmations for TRON deposits |
+
+### Ethereum / EVM (in progress)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ETH_NODE_URL` | — | Ethereum node JSON-RPC URL. Activates `EthereumAdapter` when set. |
+| `ETH_NODE_AUTH` | — | Basic auth for Ethereum node: `user:password` format |
+
+### Seed / Initial Keys
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -102,46 +140,49 @@ All configuration is loaded at startup from `.env` via `src/config/index.ts` (Zo
 | `ADMIN_KEY` | — | Admin key (auto-generated by seed if empty, printed once) |
 | `TENANT_NAME` | `Default Tenant` | Name of the default tenant created by seed |
 
-#### Deposit Confirmations (platform-wide defaults)
+### Deposit Confirmations (platform-wide defaults)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BTC_DEFAULT_CONFIRMATIONS` | `1` | Confirmations required for deposit status → `confirmed` |
-| `BTC_FINALITY_CONFIRMATIONS` | `6` | Confirmations after which deposit is considered final (no reorg risk) |
+| `BTC_DEFAULT_CONFIRMATIONS` | `1` | Confirmations required for BTC deposit → `confirmed` |
+| `BTC_FINALITY_CONFIRMATIONS` | `6` | Confirmations after which BTC deposit is considered final |
 
-> Per-tenant overrides live in the database — see [Per-tenant configuration](#per-tenant-configuration) below.
+Per-tenant overrides live in `tenant_configs` — see [Per-tenant configuration](#per-tenant-configuration).
 
-#### Workers
+### Workers
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WORKERS_ENABLED` | `true` | `false` disables all background workers (useful in tests) |
 | `WEBHOOK_DELIVERY_INTERVAL_MS` | `10000` | Webhook delivery worker interval (ms) |
 | `TX_STATUS_INTERVAL_MS` | `60000` | Transaction status / sweep confirmation worker interval (ms) |
-| `SWEEP_WORKER_INTERVAL_MS` | `300000` | Sweep creation worker interval (ms) |
+| `SWEEP_WORKER_INTERVAL_MS` | `300000` | BTC sweep creation worker interval (ms) |
+| `TRON_SWEEP_WORKER_INTERVAL_MS` | `60000` | TRON sweep worker interval (ms) |
+| `TRON_BALANCE_REFRESH_INTERVAL_MS` | `300000` | TRON balance safety-net refresh worker interval (ms) |
 | `NODE_HEALTH_CHECK_INTERVAL_MS` | `30000` | Chain node health check worker interval (ms) |
-| `WEBHOOK_AUTO_PAUSE_THRESHOLD` | `10` | Consecutive failures before a webhook endpoint is paused |
+| `WEBHOOK_AUTO_PAUSE_THRESHOLD` | `10` | Consecutive failures before webhook endpoint is paused |
 | `WEBHOOK_DELIVERY_RETENTION_DAYS` | `30` | How long to keep webhook delivery records |
 
-#### External Signer & Withdrawal Batcher
+### External Signer & Withdrawal Batcher
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BATCH_WORKER_INTERVAL_MS` | `30000` | Withdrawal batcher worker interval (ms) |
-| `BATCH_WORKER_MAX_BATCHES_PER_RUN` | `25` | Max batches built in one worker tick |
+| `BATCH_WORKER_MAX_BATCHES_PER_RUN` | `25` | Max batches built per worker tick |
 | `BATCH_WORKER_MAX_BATCHES_PER_TENANT_PER_RUN` | `5` | Max batches per tenant per worker tick |
-| `BATCH_WORKER_MAX_RUN_MS` | `25000` | Hard time limit for one batcher run (ms) |
-| `SIGNING_TASK_TTL_SECONDS` | `300` | Signing tasks expire after this many seconds (5 min) |
+| `BATCH_WORKER_MAX_RUN_MS` | `25000` | Hard time limit per batcher run (ms) |
+| `SIGNING_TASK_TTL_SECONDS` | `300` | Signing tasks expire after this many seconds |
 | `SIGNING_TASK_EXPIRY_INTERVAL_MS` | `60000` | Signing task expiry worker interval (ms) |
+| `SIGNER_RATE_LIMIT_PER_MIN` | `600` | Rate limit for signer protocol endpoints (tasks, heartbeat, claim, submit, reject) |
 
-#### UTXO Locks
+### UTXO Locks
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `UTXO_LOCK_TTL_SECONDS` | `900` | Withdrawal batch UTXO lock TTL — safety net for abandoned batches (15 min) |
 | `SWEEP_UTXO_LOCK_TTL_SECONDS` | `604800` | Sweep UTXO lock TTL — safety net for stuck sweeps (7 days) |
 
-#### Security & Auth
+### Security & Auth
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -149,31 +190,24 @@ All configuration is loaded at startup from `.env` via `src/config/index.ts` (Zo
 | `CUSTOMER_SESSION_TTL_SECONDS` | `3600` | Customer session expiry (1 hour) |
 | `RATE_LIMIT_PER_MIN` | `100` | API requests per minute per API key |
 
-#### MCP
+### MCP
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MCP_ADMIN_ENABLED` | `false` | Enable admin MCP endpoint (`POST /mcp/admin`) |
 | `MCP_ALLOWED_ORIGINS` | `http://127.0.0.1,http://localhost` | Comma-separated allowed CORS origins for MCP endpoints |
 
-#### Logging
+### Logging
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
-#### Ethereum adapter (FAZA 3)
+### Engine Cluster HA
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ETH_NODE_URL` | — | Ethereum node JSON-RPC URL. Activates `EthereumAdapter` when set. |
-| `ETH_NODE_AUTH` | — | Basic auth for Ethereum node in `user:password` format |
-
-#### Engine Cluster HA (FAZA 4)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CLUSTER_ENABLED` | `false` | Enable cluster mode (leader election, active-active workers) |
+| `CLUSTER_ENABLED` | `false` | Enable cluster mode (active-active workers, leader election) |
 | `ENGINE_URL` | — | This engine's public URL — used for cluster peer registration |
 | `CLUSTER_PEER_URLS` | — | Comma-separated peer engine URLs |
 | `CLUSTER_HEARTBEAT_INTERVAL_MS` | `10000` | Heartbeat to peer engines (ms) |
@@ -183,18 +217,21 @@ All configuration is loaded at startup from `.env` via `src/config/index.ts` (Zo
 
 ### Per-tenant configuration
 
-Per-tenant settings are stored in the `tenant_configs` database table and managed via API. They **override** the platform-wide env var defaults for each tenant individually.
+Per-tenant settings are stored in `tenant_configs` and managed via API. They override platform-wide env var defaults for each tenant individually.
 
-| DB column | API field | Platform default | Description |
-|-----------|-----------|------------------|-------------|
-| `btc_confirmations_required` | `btcConfirmationsRequired` | `BTC_DEFAULT_CONFIRMATIONS` | Confirmations for deposit → `confirmed` |
-| `btc_finality_confirmations` | `btcFinalityConfirmations` | `BTC_FINALITY_CONFIRMATIONS` | Finality threshold (no reorg risk) |
-| `btc_fee_target_blocks` | `btcFeeTargetBlocks` | `6` | Fee estimation target blocks for sweeps |
-| `custody_mode` | `custodyMode` | `custodial` | Custody model for this tenant |
-| `withdrawal_mode` | `withdrawalMode` | `auto` | Withdrawal flow: `auto` or `manual` |
-| `daily_withdrawal_limit_sats` | `dailyWithdrawalLimitSats` | — | Daily BTC withdrawal cap (satoshis as string) |
-| `per_tx_limit_sats` | `perTxLimitSats` | — | Per-transaction BTC cap (satoshis as string) |
-| `actor_token_secret` | `actorTokenSecret` | — | Secret for X-Actor-Token JWT verification (min 32 chars) |
+| DB column | API field | Description |
+|-----------|-----------|-------------|
+| `btc_confirmations_required` | `btcConfirmationsRequired` | Confirmations for BTC deposit → `confirmed` |
+| `btc_finality_confirmations` | `btcFinalityConfirmations` | BTC finality threshold (no reorg risk) |
+| `btc_fee_target_blocks` | `btcFeeTargetBlocks` | Fee estimation target blocks for BTC sweeps |
+| `tron_confirmations_required` | `tronConfirmationsRequired` | Confirmations for TRON deposit → `confirmed` |
+| `tron_sweep_threshold_sun` | `tronSweepThresholdSun` | Min TRON balance (in sun) that triggers sweep |
+| `tron_usdt_contract_address` | — | Per-tenant USDT contract override (optional) |
+| `custody_mode` | `custodyMode` | Custody model for this tenant |
+| `withdrawal_mode` | `withdrawalMode` | Withdrawal flow: `auto` or `manual` |
+| `daily_withdrawal_limit_sats` | `dailyWithdrawalLimitSats` | Daily BTC withdrawal cap (satoshis as string) |
+| `per_tx_limit_sats` | `perTxLimitSats` | Per-transaction BTC cap (satoshis as string) |
+| `actor_token_secret` | `actorTokenSecret` | Secret for X-Actor-Token JWT verification (min 32 chars) |
 
 **Endpoints:**
 
@@ -215,15 +252,24 @@ GET  /v1/tenant/withdrawal-batch-config
 PATCH /v1/tenant/withdrawal-batch-config
 ```
 
+**Bitcoin:**
+
 | DB column | Description |
 |-----------|-------------|
-| `btc_target_blocks` | Fee estimation target blocks for batches (default: `6`) |
+| `btc_target_blocks` | Fee estimation target blocks for BTC batches (default: `6`) |
 | `btc_fee_policy` | Fee policy: `target_blocks` \| `fixed` |
 | `btc_max_fee_rate_sat_vb` | Cap on fee rate (sat/vbyte) |
 | `btc_min_fee_rate_sat_vb` | Floor on fee rate (sat/vbyte) |
 | `btc_min_outputs_per_batch` | Minimum outputs to trigger batch creation (default: `1`) |
 | `btc_max_outputs_per_batch` | Maximum outputs per single batch |
-| `btc_max_batch_age_seconds` | Oldest queued withdrawal age that triggers batch creation (default: `30s`) |
+| `btc_max_batch_age_seconds` | Oldest queued withdrawal age that triggers batch creation |
+
+**TRON:**
+
+| DB column | Description |
+|-----------|-------------|
+| `tron_usdt_withdrawal_fee` | Fixed USDT fee per withdrawal (micro-USDT as TEXT, `'0'` = tenant_pays) |
+| `withdrawal_fee_coverage` | Fee coverage mode: `tenant_pays` \| `sender_pays` \| `recipient_pays` |
 
 ---
 
@@ -237,17 +283,53 @@ rpcuser=bitcoin
 rpcpassword=changeme
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
-
-# For testnet:
-# testnet=1
+txindex=1
 ```
 
-**FWallet and LWallets are provisioned automatically.** When a new tenant is created via the admin API, the engine:
+The engine uses Bitcoin Core in **stateless mode** — no named wallets (FWallets), no `importaddress`, no `listunspent`. Transaction preparation uses `createpsbt` + `utxoupdatepsbt`. Broadcasting uses `sendrawtransaction`. Deposit monitoring is handled by btc-indexer.
 
-1. Creates the **FWallet** in Bitcoin Core: `bitcoin-cli createwallet "btc_{tenantId}" true` (watch-only)
-2. Creates **LWallets** in the chain-api database: `customer_deposits`, and optionally `tenant_hot` / `tenant_cold` when addresses are provided.
+Register Bitcoin Core nodes via the admin API after startup:
 
-You do not need to create wallets manually. The seed script (`npm run db:seed`) provisions the default tenant. Subsequent tenants are provisioned via `POST /admin/v1/tenants`.
+```bash
+curl -X POST /admin/v1/chain-nodes \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{
+    "chainId": "bitcoin",
+    "url": "http://127.0.0.1:8332",
+    "rpcUser": "bitcoin",
+    "rpcPasswordRef": "env:BITCOIN_RPC_PASSWORD",
+    "role": "full"
+  }'
+```
+
+Multiple nodes can be registered per chain. The engine selects nodes with dynamic failover (TTL-cached health, skip unhealthy nodes).
+
+---
+
+## TRON Node Setup
+
+The engine connects to a self-hosted TRON FullNode over its HTTP API. **No TronGrid or third-party hosted indexers** — the tron-indexer package connects to the same node.
+
+Register TRON nodes via the admin API:
+
+```bash
+curl -X POST /admin/v1/chain-nodes \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{
+    "chainId": "tron",
+    "url": "http://127.0.0.1:8090",
+    "role": "full"
+  }'
+```
+
+Set the USDT contract address in `.env`:
+
+```bash
+# Mainnet
+TRON_USDT_CONTRACT_ADDRESS=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+```
+
+---
 
 ## API Authentication
 
@@ -256,317 +338,402 @@ All `/v1/...` endpoints require:
 Authorization: Bearer <your-api-key>
 ```
 
+Admin endpoints (`/admin/v1/...`) require:
+```
+X-Admin-Key: <admin-key>
+```
+
+Customer self-service endpoints (`/v1/me/...`) require a customer session JWT:
+```
+Authorization: Bearer <customer-session-jwt>
+```
+
 The `/health` endpoint is public.
+
+---
+
+## X-Actor-Token (RBAC)
+
+Tenant API endpoints optionally accept `X-Actor-Token` for fine-grained, actor-scoped access control. Without it, full tenant-admin access applies.
+
+```
+X-Actor-Token: <jwt-hs256>
+```
+
+JWT payload:
+```json
+{
+  "sub": "user_123",
+  "tenant_id": "tenant_abc",
+  "permissions": ["customers:read:team", "customers:write:assigned"],
+  "teams": ["team_warsaw"],
+  "exp": 1716394800
+}
+```
+
+Permission format: `<entity>:<action>:<level>` — levels are `all`, `team`, `assigned`. Token secret is configured per tenant via `PATCH /v1/tenant/config { "actorTokenSecret": "..." }`.
+
+---
+
+## MCP Endpoints
+
+The engine exposes MCP over Streamable HTTP with the same auth and tenant isolation as REST:
+
+```bash
+POST /mcp/tenant        # Authorization: Bearer <tenant-api-key>
+POST /mcp/customer      # Authorization: Bearer <customer-session-jwt>
+POST /mcp/admin         # X-Admin-Key: <admin-key>
+```
+
+Enable admin MCP: `MCP_ADMIN_ENABLED=true`
+
+---
 
 ## Endpoints Reference
 
-### Admin: Tenant Management
-
-All admin endpoints require `X-Admin-Key: <admin-key>`.
+### Health
 
 ```bash
-# Create tenant — provisions FWallet + LWallets automatically
+GET /health
+```
+
+### Admin: Tenant Management
+
+```bash
+POST   /admin/v1/tenants
+GET    /admin/v1/tenants
+GET    /admin/v1/tenants/:tenantId
+PATCH  /admin/v1/tenants/:tenantId
+GET    /admin/v1/tenants/:tenantId/config
+PATCH  /admin/v1/tenants/:tenantId/config
+POST   /admin/v1/tenants/:tenantId/api-keys
+POST   /admin/v1/tenants/:tenantId/disable
+```
+
+Create tenant example:
+
+```bash
 curl -X POST /admin/v1/tenants \
   -H "X-Admin-Key: $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Acme Fintech",
     "assets": [
-      {
-        "chain": "bitcoin",
-        "hotAddress": "bc1q...",   // optional — creates tenant_hot LWallet + imports into FWallet
-        "coldAddress": "bc1q..."   // optional — creates tenant_cold LWallet + imports into FWallet
-      }
-    ]
+      { "chain": "bitcoin", "hotAddress": "bc1q..." },
+      { "chain": "tron", "hotAddress": "TXxx..." }
+    ],
+    "tronXpub": "xpub...",
+    "tronConfirmationsRequired": 20
   }'
-# → always creates: FWallet btc_{tenantId} (Bitcoin Core) + LWallet customer_deposits (DB)
-# → if hotAddress: LWallet tenant_hot + address registered and imported into FWallet
-# → if coldAddress: LWallet tenant_cold + address registered and imported into FWallet
-
-GET  /admin/v1/tenants
-GET  /admin/v1/tenants/:tenantId
-PATCH /admin/v1/tenants/:tenantId          # update name, status, metadata
-GET  /admin/v1/tenants/:tenantId/config
-PATCH /admin/v1/tenants/:tenantId/config   # btcConfirmationsRequired, custodyMode, limits...
-
-# Generate API key for tenant
-curl -X POST /admin/v1/tenants/:tenantId/api-keys \
-  -H "X-Admin-Key: $ADMIN_KEY" \
-  -d '{"name": "primary-key"}'
-# → returns apiKey (cak_...) — store securely, shown only once
-```
-
-**`assets` field structure** (designed to be extended per chain):
-```json
-{
-  "assets": [
-    {
-      "chain": "bitcoin",       // required — chain identifier
-      "hotAddress": "bc1q...", // optional — tenant operational hot wallet
-      "coldAddress": "bc1q..."  // optional — tenant cold storage address
-    }
-    // future: { "chain": "ethereum", "hotAddress": "0x..." }
-  ]
-}
-```
-
-### Health
-```bash
-GET /health
-```
-
-### MCP Endpoints
-
-The same engine is also exposed as MCP over Streamable HTTP. MCP uses the same auth and tenant isolation rules as REST.
-
-```bash
-POST /mcp/tenant
-Authorization: Bearer <tenant-api-key>
-
-POST /mcp/customer
-Authorization: Bearer <customer-session-jwt>
-
-POST /mcp/admin
-X-Admin-Key: <admin-key>
-```
-
-Admin MCP is disabled by default. Enable it with:
-
-```bash
-MCP_ADMIN_ENABLED=true
-```
-
-For browser-like clients, set allowed origins:
-
-```bash
-MCP_ALLOWED_ORIGINS=http://127.0.0.1,http://localhost,https://your-admin-ui.example
 ```
 
 ### Chains & Assets
+
 ```bash
 GET /v1/chains
-GET /v1/chains/bitcoin
-GET /v1/assets?chain=bitcoin
-GET /v1/chains/bitcoin/assets/BTC
+GET /v1/chains/:chain
+GET /v1/assets
+GET /v1/chains/:chain/assets/:asset
 ```
 
 ### Wallets
-```bash
-# Create wallet
-curl -X POST /v1/wallets \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "My Wallet", "type": "watch_only"}'
 
-GET /v1/wallets
-GET /v1/wallets/:walletId
+```bash
+POST /v1/wallets
+GET  /v1/wallets
+GET  /v1/wallets/:walletId
 ```
 
-### Address Management
+### Addresses
+
 ```bash
-# Validate address
-curl -X POST /v1/chains/bitcoin/addresses/validate \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{"address": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"}'
-
-# Register address to wallet
-curl -X POST /v1/wallets/:walletId/addresses \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{"chain": "bitcoin", "address": "bc1q...", "label": "Deposit #1"}'
-
-GET /v1/wallets/:walletId/addresses
-
-# Monitor address (without wallet)
-curl -X POST /v1/monitors/addresses \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{"chain": "bitcoin", "address": "bc1q...", "events": ["incoming"]}'
-
-GET /v1/monitors/addresses
+POST   /v1/chains/:chain/addresses/validate
+GET    /v1/addresses/resolve
+POST   /v1/wallets/:walletId/addresses
+GET    /v1/wallets/:walletId/addresses
+POST   /v1/monitors/addresses
+GET    /v1/monitors/addresses
 DELETE /v1/monitors/addresses/:monitorId
 ```
 
 ### Balances
+
 ```bash
-GET /v1/chains/bitcoin/addresses/:address/balances
-GET /v1/chains/bitcoin/addresses/:address/balances/BTC
-GET /v1/wallets/:walletId/balances
+GET  /v1/chains/:chain/addresses/:address/balances
+GET  /v1/chains/:chain/addresses/:address/balances/:asset
+GET  /v1/wallets/:walletId/balances
+POST /v1/chains/tron/addresses/:address/balance-refresh   # fire-and-forget, 202
 ```
 
-### UTXOs & Fees
+TRON balances are served from SQL cache (`tron_account_balances`) populated by tron-indexer — O(1) read regardless of wallet size. Responses include `stale: true` if cache is older than 10 minutes.
+
+### Fees
+
+```bash
+GET /v1/chains/bitcoin/fees     # sat/vbyte estimate from Bitcoin Core
+GET /v1/chains/tron/fees        # bandwidth points, energy estimate, USDT fee config
+```
+
+TRON fee estimation covers: bandwidth points (free tier + cost), energy (amount × price × 1.5 safety cap for `fee_limit`), and the tenant's configured USDT withdrawal fee.
+
+### UTXOs (Bitcoin)
+
 ```bash
 GET /v1/chains/bitcoin/addresses/:address/utxos?minConfirmations=1
 GET /v1/wallets/:walletId/utxos
-GET /v1/chains/bitcoin/fees
 ```
 
 ### Transaction Preparation & Broadcast
+
+**Bitcoin:**
+
 ```bash
-# Coin selection preview
-curl -X POST /v1/chains/bitcoin/transactions/coin-selection \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{
-    "fromAddresses": ["bc1q..."],
-    "outputs": [{"address": "bc1q...", "amount": "100000"}],
-    "feeRate": 5,
-    "changeAddress": "bc1q..."
-  }'
-
-# Prepare PSBT
-curl -X POST /v1/chains/bitcoin/transactions/prepare \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{
-    "fromAddresses": ["bc1q..."],
-    "outputs": [{"address": "bc1q...", "amount": "100000"}],
-    "changeAddress": "bc1q...",
-    "format": "psbt"
-  }'
-
-# Finalize PSBT (after external signing)
-curl -X POST /v1/chains/bitcoin/transactions/finalize \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{"psbt": "<base64-psbt>"}'
-
-# Broadcast (idempotent)
-curl -X POST /v1/chains/bitcoin/transactions/broadcast \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Idempotency-Key: $(uuidgen)" \
-  -d '{"rawTransaction": "<hex>"}'
-
-# Validate without broadcasting
+POST /v1/chains/bitcoin/transactions/coin-selection
+POST /v1/chains/bitcoin/transactions/prepare       # returns PSBT
+POST /v1/chains/bitcoin/transactions/finalize      # accepts signed PSBT
+POST /v1/chains/bitcoin/transactions/broadcast     # idempotent
 POST /v1/chains/bitcoin/transactions/validate
+GET  /v1/chains/bitcoin/transactions/:txHash
+GET  /v1/chains/bitcoin/transactions/:txHash/status
+```
 
-# Transaction status
-GET /v1/chains/bitcoin/transactions/:txHash
-GET /v1/chains/bitcoin/transactions/:txHash/status
+**Generic (TRON + future chains):**
+
+```bash
+POST /v1/chains/:chain/transactions/broadcast
+POST /v1/chains/:chain/transactions/validate
+GET  /v1/chains/:chain/transactions/:txHash
+GET  /v1/chains/:chain/transactions/:txHash/status
 ```
 
 ### Payment Requests
-```bash
-# Create payment request (idempotent)
-curl -X POST /v1/payment-requests \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Idempotency-Key: order-123" \
-  -d '{
-    "chain": "bitcoin",
-    "asset": "BTC",
-    "amount": "0.001",
-    "walletId": "wallet_abc",
-    "reference": "order-123",
-    "expiresAt": "2024-12-31T23:59:59Z"
-  }'
 
-GET /v1/payment-requests?status=pending&chain=bitcoin
-GET /v1/payment-requests/:paymentRequestId
+```bash
+POST /v1/payment-requests
+GET  /v1/payment-requests
+GET  /v1/payment-requests/:paymentRequestId
 POST /v1/payment-requests/:paymentRequestId/cancel
-GET /v1/payment-requests/by-reference/order-123
-GET /v1/payment-requests/:paymentRequestId/qr
+GET  /v1/payment-requests/by-reference/:reference
+GET  /v1/payment-requests/:paymentRequestId/qr
 ```
 
 ### Deposits
+
 ```bash
-GET /v1/deposits?walletId=wallet_abc&status=confirmed
+GET /v1/deposits
 GET /v1/deposits/:depositId
-GET /v1/chains/bitcoin/addresses/:address/deposits
+GET /v1/chains/:chain/addresses/:address/deposits
 ```
 
-The deposit worker scans each tenant Bitcoin Core FWallet once per cycle and
-maps returned UTXOs back to registered addresses in SQLite. This keeps the
-worker cost proportional to tenant wallets and new UTXOs, not to the total
-number of active deposit addresses.
+Deposit statuses: `detected` → `confirmed`. No `pending_confirmation`. Per-tenant confirmation threshold via `btcConfirmationsRequired` / `tronConfirmationsRequired`.
 
-### Customer Withdrawals
+### Customers
+
 ```bash
-# Customer-scoped withdrawal request
-POST /v1/me/withdrawals
-{
-  "toAddress": "bc1q...",
-  "amountSats": "100000",
-  "idempotencyKey": "optional-client-key"
-}
-
-GET /v1/me/withdrawals
-GET /v1/me/withdrawals/:withdrawalId
-
-# Tenant-facing operations
-GET /v1/withdrawals
-GET /v1/withdrawals/:withdrawalId
+POST   /v1/customers
+GET    /v1/customers
+GET    /v1/customers/:customerId
+PATCH  /v1/customers/:customerId
+POST   /v1/customers/:customerId/disable
+GET    /v1/customers/:customerId/balances
+GET    /v1/customers/:customerId/deposits
+GET    /v1/customers/:customerId/addresses
+POST   /v1/customers/:customerId/sessions
+POST   /v1/customers/:customerId/deposit-address   # ?chain=bitcoin|tron
+GET    /v1/customers/:customerId/profile
+PUT    /v1/customers/:customerId/profile
+GET    /v1/customers/:customerId/identifiers
+POST   /v1/customers/:customerId/identifiers
+PATCH  /v1/customers/:customerId/identifiers/:identifierId
+DELETE /v1/customers/:customerId/identifiers/:identifierId
+GET    /v1/customers/:customerId/aml-kyc
+PUT    /v1/customers/:customerId/aml-kyc
+GET    /v1/customers/:customerId/data-governance
+PUT    /v1/customers/:customerId/data-governance
+GET    /v1/customers/:customerId/contact
+PUT    /v1/customers/:customerId/contact
+GET    /v1/customers/:customerId/documents
+POST   /v1/customers/:customerId/documents
+PATCH  /v1/customers/:customerId/documents/:documentId
+DELETE /v1/customers/:customerId/documents/:documentId
 ```
 
-`POST /v1/me/withdrawals` validates and reserves customer balance, then creates
-a `queued` withdrawal. The request path does not build a PSBT. The withdrawal
-batcher consumes queued withdrawals, builds a BTC PSBT batch, creates a signing
-task, and finalizes/broadcasts after the external signer submits a signature.
+TRON deposit addresses are generated via HD derivation from the tenant's `tron_xpub` (BIP44 `m/44'/195'/0'`, child path `m/0/{index}`). One address covers both TRX and USDT.
+
+### Customer Self-Service (`/v1/me`)
+
+```bash
+GET  /v1/me
+GET  /v1/me/tenant-config          # availableChains, availableAssets — safe subset for customer
+GET  /v1/me/balances
+GET  /v1/me/deposits
+GET  /v1/me/addresses
+GET  /v1/me/addresses/resolve
+POST /v1/me/deposit-address        # chain=bitcoin|tron
+POST /v1/me/withdrawals            # chainId, assetId, amountSats, toAddress
+GET  /v1/me/withdrawals
+GET  /v1/me/withdrawals/:withdrawalId
+GET  /v1/me/profile
+PUT  /v1/me/profile
+GET  /v1/me/kyc-status
+GET  /v1/me/contact
+PUT  /v1/me/contact
+GET  /v1/me/documents
+POST /v1/me/documents
+```
+
+### Withdrawals
+
+```bash
+GET  /v1/withdrawals
+GET  /v1/withdrawals/:withdrawalId
+POST /v1/withdrawals/:withdrawalId/submit-signed
+```
+
+Customer withdrawals flow: `created → batched → pending_signature → broadcast → confirmed`.
+
+The withdrawal batcher builds signed task payloads per chain:
+- **Bitcoin:** PSBT batch (N outputs, coin selection, fee estimation)
+- **TRON:** one raw transaction per withdrawal (`triggersmartcontract` for USDT, `createtransaction` for TRX)
+
+TRON USDT withdrawal fee coverage modes: `tenant_pays`, `sender_pays`, `recipient_pays`.
 
 ### Withdrawal Batches
+
 ```bash
-GET /v1/withdrawal-batches
-GET /v1/withdrawal-batches/:batchId
+GET  /v1/withdrawal-batches
+GET  /v1/withdrawal-batches/:batchId
 POST /v1/withdrawal-batches/:batchId/approve
 POST /v1/withdrawal-batches/:batchId/reject
 POST /v1/withdrawal-batches/:batchId/cancel
 POST /v1/withdrawal-batches/:batchId/retry
-
-GET /v1/tenant/withdrawal-batch-config
+POST /v1/withdrawal-batches/:batchId/rbf-bump    # Bitcoin only — RBF fee bump
+POST /v1/withdrawal-batches/:batchId/cpfp        # Bitcoin only — CPFP child tx
+GET  /v1/tenant/withdrawal-batch-config
 PATCH /v1/tenant/withdrawal-batch-config
 ```
 
-The batcher can create multiple batches per worker run, bounded by
-`BATCH_WORKER_MAX_BATCHES_PER_RUN`, `BATCH_WORKER_MAX_BATCHES_PER_TENANT_PER_RUN`,
-and `BATCH_WORKER_MAX_RUN_MS`. BTC fee estimates are cached briefly with
-`BTC_FEE_RATE_CACHE_TTL_MS`.
+### External Signers
+
+```bash
+POST   /v1/external-signers/enroll
+GET    /v1/external-signers
+GET    /v1/external-signers/policies
+PUT    /v1/external-signers/policies
+GET    /v1/external-signers/:signerId
+PATCH  /v1/external-signers/:signerId
+POST   /v1/external-signers/:signerId/enable
+POST   /v1/external-signers/:signerId/disable
+DELETE /v1/external-signers/:signerId
+POST   /v1/external-signers/:signerId/heartbeat
+GET    /v1/external-signers/:signerId/tasks
+POST   /v1/external-signers/:signerId/tasks/:taskId/claim
+POST   /v1/external-signers/:signerId/tasks/:taskId/submit
+POST   /v1/external-signers/:signerId/tasks/:taskId/reject
+```
+
+**Signing task types:**
+
+| Type | Chain | Payload format | Signer action |
+|------|-------|----------------|---------------|
+| `btc_psbt` | Bitcoin | Base64 PSBT | Finalize and sign PSBT |
+| `tron_withdrawal` | TRON | `txID` + `raw_data_hex` | Sign txID → 65-byte recoverable sig |
+| `tron_sweep` | TRON | `txID` + `raw_data_hex` + `derivationPath` | HD derive `m/0/N`, sign txID |
+| `tron_raw_tx` | TRON | `txID` + `raw_data_hex` | Generic TRON sign |
+
+Each signer daemon should have its own dedicated API key to avoid shared rate limit buckets. The signer protocol endpoints use `SIGNER_RATE_LIMIT_PER_MIN` (default 600/min) — separate from the standard API limit.
+
+### Signing Tasks
+
+```bash
+GET  /v1/signing-tasks
+GET  /v1/signing-tasks/:taskId
+POST /v1/signing-tasks/:taskId/approve
+POST /v1/signing-tasks/:taskId/reject
+```
+
+### Sweeps
+
+Sweeps are created automatically by `SweepWorker` (BTC) and `TronSweepWorker` (TRON). No `POST /v1/sweeps` endpoint.
+
+```bash
+GET  /v1/sweeps/summary
+GET  /v1/sweeps
+GET  /v1/sweeps/:sweepId
+POST /v1/sweeps/:sweepId/submit-signed
+```
 
 ### Ledger
+
 ```bash
-# Create ledger account
-curl -X POST /v1/ledger/accounts \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{"walletId": "wallet_abc", "chainId": "bitcoin", "assetId": "bitcoin:BTC", "name": "Main Account"}'
-
-GET /v1/ledger/accounts
-GET /v1/ledger/accounts/:ledgerAccountId
-GET /v1/ledger/accounts/:ledgerAccountId/balances
-GET /v1/ledger/accounts/:ledgerAccountId/entries
-
-# Internal transfer (idempotent)
-curl -X POST /v1/ledger/transfers \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Idempotency-Key: transfer-456" \
-  -d '{
-    "fromLedgerAccountId": "lacc_abc",
-    "toLedgerAccountId": "lacc_def",
-    "assetId": "bitcoin:BTC",
-    "amount": "50000"
-  }'
+POST /v1/ledger/accounts
+GET  /v1/ledger/accounts
+GET  /v1/ledger/accounts/:ledgerAccountId
+GET  /v1/ledger/accounts/:ledgerAccountId/balances
+GET  /v1/ledger/accounts/:ledgerAccountId/entries
+POST /v1/ledger/transfers            # idempotent internal transfer
 ```
 
 ### Webhooks
+
 ```bash
-# Create webhook (secret returned only once!)
-curl -X POST /v1/webhooks \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{
-    "url": "https://your-server.com/webhooks",
-    "events": ["deposit.detected", "deposit.confirmed", "payment_request.paid"],
-    "chains": ["bitcoin"]
-  }'
-
-GET /v1/webhooks
-PATCH /v1/webhooks/:webhookId
+POST   /v1/webhooks
+GET    /v1/webhooks
+GET    /v1/webhooks/:webhookId
+PATCH  /v1/webhooks/:webhookId
 DELETE /v1/webhooks/:webhookId
-POST /v1/webhooks/:webhookId/test
-
-GET /v1/webhook-deliveries?webhookId=wh_abc&status=failed
-POST /v1/webhook-deliveries/:deliveryId/retry
+POST   /v1/webhooks/:webhookId/test
+GET    /v1/webhook-deliveries
+POST   /v1/webhook-deliveries/:deliveryId/retry
 ```
+
+### Ticklers (Audit Log)
+
+```bash
+GET /v1/ticklers
+GET /admin/v1/ticklers
+GET /admin/v1/tenants/:tenantId/ticklers
+```
+
+The tickler table is write-once (append-only). Every financial state transition creates a tickler record. Records are never modified or deleted.
+
+### Chain Nodes
+
+```bash
+POST  /admin/v1/chain-nodes
+GET   /admin/v1/chain-nodes
+GET   /admin/v1/chain-nodes/:nodeId
+PATCH /admin/v1/chain-nodes/:nodeId
+POST  /admin/v1/chain-nodes/:nodeId/test-connection
+
+POST  /v1/chain-nodes
+GET   /v1/chain-nodes
+GET   /v1/chain-nodes/:nodeId
+PATCH /v1/chain-nodes/:nodeId
+DELETE /v1/chain-nodes/:nodeId
+POST  /v1/chain-nodes/:nodeId/set-primary
+POST  /v1/chain-nodes/:nodeId/test-connection
+```
+
+### Engine Cluster HA
+
+```bash
+GET  /admin/v1/cluster/status
+POST /internal/cluster/heartbeat
+POST /internal/cluster/claim-leadership
+```
+
+---
 
 ## Webhook Signature Verification
 
-Each webhook delivery includes these headers:
+Each webhook delivery includes:
 - `X-CryptoApi-Event-Id`: `evt_<uuid>`
 - `X-CryptoApi-Timestamp`: Unix timestamp in milliseconds
 - `X-CryptoApi-Signature`: HMAC-SHA256 hex signature
 
-Verification example (Node.js):
+Verification (Node.js):
+
 ```javascript
 const crypto = require('crypto');
 
@@ -577,50 +744,94 @@ function verifyWebhook(secret, timestamp, body, signature) {
 }
 ```
 
+---
+
 ## Idempotency
 
-POST endpoints that create resources support the `Idempotency-Key` header:
+POST endpoints that create resources support the `Idempotency-Key` header. Results are cached for 24 hours. Sending the same key returns the original response without re-executing.
+
 ```
 Idempotency-Key: <unique-key>
 ```
 
-Results are cached for 24 hours. Sending the same key returns the original response without executing the operation again.
+Supported: payment requests, transaction broadcasts, ledger transfers.
 
-Supported operations: payment requests, broadcasts, ledger transfers.
+---
 
 ## Architecture
 
 ```
 Express API (src/app.ts)
-    ├── Auth middleware (API key SHA-256 hash lookup)
-    ├── Rate limit middleware (in-memory sliding window, 100 req/min)
-    └── Routes /v1/*
-            │
-    ┌───────┼────────────────┐
-    │       │                │
-Services   Chain Adapters   SQLite (WAL mode)
-    │       │                │
-    │   BitcoinAdapter       better-sqlite3
-    │   └── BitcoinRpcClient (JSON-RPC to Bitcoin Core)
-    │
-Background Workers (setInterval)
-    ├── DepositMonitorWorker  (30s)
-    ├── TxStatusWorker        (60s)
-    ├── SweepWorker
-    ├── SweepConfirmationWorker
-    ├── WithdrawalBatcherWorker
-    ├── SigningTaskExpiryWorker
-    └── WebhookDeliveryWorker (10s)
+    ├── Auth middleware (API key SHA-256 hash lookup, customer session JWT, admin key)
+    ├── Actor-auth middleware (X-Actor-Token RBAC)
+    ├── Rate limit middleware
+    └── Routes /v1/* /admin/v1/* /mcp/* /internal/*
+
+Services
+    ├── Business logic (customers, deposits, withdrawals, ledger, sweeps...)
+    ├── Chain Adapters
+    │   ├── BitcoinAdapter  ← NodeSelector → Bitcoin Core node pool
+    │   └── TronAdapter     ← NodeSelector → TRON FullNode pool
+    └── PostgreSQL (via pg connection pool)
+
+Background Workers (setInterval, SKIP LOCKED for parallelism)
+    ├── DepositEventProcessorWorker  — reads chain_events → deposits
+    ├── TxStatusWorker               — BTC confirmation updates
+    ├── SweepWorker                  — BTC sweep creation
+    ├── SweepConfirmationWorker      — BTC sweep confirmation
+    ├── TronSweepWorker              — TRON/USDT sweep creation
+    ├── TronBalanceRefreshWorker     — TRON balance cache safety net (5 min)
+    ├── WithdrawalBatcherWorker      — builds BTC + TRON withdrawal batches
+    ├── SigningTaskExpiryWorker      — expires stale signing tasks
+    ├── WebhookDeliveryWorker        — HMAC-signed webhook delivery with retry
+    └── NodeHealthCheckerWorker      — chain node health monitoring (30s)
+
+External processes
+    ├── btc-indexer  (packages/btc-indexer)  → chain_events
+    └── tron-indexer (packages/tron-indexer) → chain_events + tron_account_balances
+
+External Signers
+    ├── Signer OSS      (signer-oss/)  — local keys, dev/self-hosted
+    └── Signer Enterprise (signer/)    — Vault Transit / AWS KMS / Azure Key Vault
 ```
+
+---
+
+## Scale
+
+### Designed for millions of customers and transactions
+
+The engine is built to handle the volumes of large-scale financial platforms without structural changes:
+
+- **PostgreSQL 16+** — no ceiling on data volume; tens of millions of customers and transactions without schema changes
+- **`SELECT FOR UPDATE SKIP LOCKED`** — multiple engine instances process work in parallel without coordination services or distributed locks
+- **Block indexers scale independently** — deposit detection runs at O(transactions per block), not O(monitored addresses). Adding more customers does not slow down indexing.
+- **Multi-node chain pools** — Bitcoin Core and TRON FullNode pools with TTL-cached dynamic failover. Node failures are transparent to the API layer.
+- **Batch withdrawal processing** — withdrawals grouped and signed in bulk; throughput bounded by config, not by customer count
+- **TRON balance caching** — balances written by tron-indexer after on-chain events; engine reads from a single SQL query regardless of wallet size
+- **Active-active engine** — multiple engine instances can run simultaneously against the same PostgreSQL backend (cluster mode), enabling horizontal scaling and zero-downtime deployments
+
+### Enterprise-grade isolation
+
+- Full row-level tenant isolation: every SQL query to a tenant-scoped table is gated by `WHERE tenant_id = ?`
+- Each tenant has independent: wallets, customers, ledger accounts, UTXOs, deposits, signing keys, webhook endpoints, and chain node bindings
+- API keys stored as SHA-256 hashes — raw keys never stored
+- Signing tasks rate-limited per signer key, with exponential backoff on the signer side
+
+---
 
 ## Security Notes
 
-- API keys stored as SHA-256 hashes. The raw key is never stored.
+- API keys stored as SHA-256 hashes. Raw keys are never stored.
 - Webhook secrets returned only at creation — store them securely.
-- No private keys are ever accepted or stored by this API.
-- SQLite file should have `600` permissions: `chmod 600 data/crypto-api.sqlite`
-- Bitcoin Core RPC should only be accessible internally (never exposed publicly).
+- No private keys are ever accepted or stored by the engine.
+- Chain node credentials in `chain_nodes` use `rpc_password_ref = 'env:VAR_NAME'` — never stored as plaintext.
+- Bitcoin Core and TRON FullNode RPC should only be accessible internally (never exposed publicly).
 - All `.env` secrets should be excluded from version control.
+- TRON SR key (`localwitness`) is a node configuration concern — the engine never sees or stores it.
+- PostgreSQL file permissions and network access should be restricted to the engine process.
+
+---
 
 ## Troubleshooting
 
@@ -628,29 +839,48 @@ Background Workers (setInterval)
 - Check Bitcoin Core is running: `bitcoin-cli getblockchaininfo`
 - Verify `BITCOIN_RPC_URL`, `BITCOIN_RPC_USER`, `BITCOIN_RPC_PASSWORD` in `.env`
 - Ensure `server=1` is in `bitcoin.conf`
+- Check registered chain nodes via `GET /admin/v1/chain-nodes`
 
-**"UTXOs not found for address"**
-- Ensure the address was registered via `POST /v1/monitors/addresses` — this imports it into the tenant's Bitcoin Core wallet
-- Verify the tenant's wallet (`btc_{tenantId}`) is loaded: `bitcoin-cli listwallets`
+**"TRON_NO_NODES" error (503)**
+- Register a TRON node: `POST /admin/v1/chain-nodes` with `chainId: "tron"`
+- Or set `TRON_NODE_URL` in `.env` as fallback
+- Verify the TRON FullNode is reachable at the configured URL
 
 **Deposits not detected**
-- Ensure addresses are in `watched_addresses` (via `POST /v1/monitors/addresses` or wallet address registration)
+- Ensure btc-indexer or tron-indexer is running and connected to the same database
+- Check `watched_addresses` table contains the deposit address
+- Verify the indexer has scanned past the block containing the transaction
 - Check `WORKERS_ENABLED=true` in `.env`
-- Verify Bitcoin Core is fully synced
 
-**Rate limiting**
-- Default: 100 requests/minute per API key
-- Adjust via `RATE_LIMIT_PER_MIN` in `.env`
+**TRON balances showing stale or zero**
+- Check tron-indexer is running — it writes to `tron_account_balances` after each block
+- Use `POST /v1/chains/tron/addresses/:address/balance-refresh` for immediate refresh (fire-and-forget, 202)
+- Check `stale` and `cache_updated_at` fields in the balance response
+
+**Rate limiting on signer daemon**
+- Each signer daemon must have its own dedicated API key — shared keys share the rate limit bucket
+- The signer protocol uses `SIGNER_RATE_LIMIT_PER_MIN` (default 600/min) — adjust if needed
+- The signer's `PollingLoop` implements exponential backoff on 429 — verify it is not pinned to min interval
+
+---
 
 ## Development
 
 ```bash
-# Run tests
+# Run all tests
 npm test
+
+# Run a specific test file
+npx jest tests/integration/customers.test.ts
 
 # Build TypeScript
 npm run build
 
 # Run migrations only
 npm run db:migrate
+
+# Regenerate seed data
+npm run db:seed
 ```
+
+Integration tests use SQLite in-memory (`:memory:`) via `bootstrapApp()`. They do not touch PostgreSQL and do not require a running chain node — RPC calls are stubbed at the service layer.
