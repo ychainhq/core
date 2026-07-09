@@ -112,7 +112,7 @@ export const withdrawalsService = {
     );
 
     if (platformAddr) {
-      const result = withdrawalsService._executeInternalTransfer({
+      const result = await withdrawalsService._executeInternalTransfer({
         tenantId,
         senderCustomerId: customerId,
         recipientCustomerId: platformAddr.customer_id,

@@ -151,7 +151,7 @@ describe('POST /v1/me/withdrawals — TRON internal transfer (tron:USDT)', () =>
     const recipientBefore = await getTronUsdtSettledBalance(tenantId, recipient);
 
     const token = await issueSession(auth, sender);
-    await request(app)
+    const res = await request(app)
       .post('/v1/me/withdrawals')
       .set({ Authorization: `Bearer ${token}` })
       .send({
@@ -161,6 +161,9 @@ describe('POST /v1/me/withdrawals — TRON internal transfer (tron:USDT)', () =>
         assetId: 'tron:USDT',
       });
 
+    // HTTP 201 is a prerequisite — if it's 500 the balance checks below are
+    // misleading (the fire-and-forget transfer still lands eventually).
+    expect(res.status).toBe(201);
     expect(await getTronUsdtSettledBalance(tenantId, sender)).toBe(15000000n);
     expect(await getTronUsdtSettledBalance(tenantId, recipient)).toBe(recipientBefore + 15000000n);
   });
@@ -345,5 +348,110 @@ describe('TRON internal transfer — tenant isolation', () => {
       // 400/422 also acceptable (invalid address for this tenant or balance issue)
       expect([400, 422]).toContain(res.status);
     }
+  });
+});
+
+// ── Regression: BigInt logger crash + fire-and-forget internal transfer ───────
+//
+// Bug: withdrawalsService.create() called _executeInternalTransfer() without
+// `await`, then logged { amountSats: amountBigInt } — JSON.stringify threw on
+// the BigInt, propagating a 500 before the caller saw the completed transfer.
+// Effect: HTTP 500 to the caller even though the ledger transfer completed in
+// the background (the Promise ran to completion via the event loop).
+//
+// The fix was:
+//   1. `await _executeInternalTransfer(...)` — make the caller wait for the DB commit
+//   2. `amountBigInt.toString()` in the logger — avoid BigInt serialization error
+//
+// These tests enforce both invariants together:
+//   a) HTTP 201 (not 500) — proves the logger doesn't throw
+//   b) Balance updated synchronously with the HTTP 201 — proves the await is present
+
+describe('TRON USDT internal transfer — regression: BigInt logger + missing await', () => {
+  it('returns HTTP 201 (not 500) when amount is a non-zero BigInt micro-USDT value', async () => {
+    const { tenantId, auth } = await createTenantWithTronXpub();
+    const sender = await createCustomer(auth);
+    const recipient = await createCustomer(auth);
+
+    await creditTronUsdt(tenantId, sender, '15000000'); // exact amount used in the original bug report
+    const recipientTronAddr = await generateTronDepositAddress(auth, recipient);
+
+    const token = await issueSession(auth, sender);
+    const res = await request(app)
+      .post('/v1/me/withdrawals')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({
+        toAddress: recipientTronAddr,
+        amountSats: '15000000',
+        chainId: 'tron',
+        assetId: 'tron:USDT',
+      });
+
+    // Was 500 before fix (BigInt → JSON.stringify → TypeError)
+    expect(res.status).toBe(201);
+    expect(res.body.data).toBeDefined();
+    expect(res.body.data.status).toBe('confirmed');
+    expect(res.body.data.withdrawal_type).toBe('internal');
+    expect(res.body.data.amount_raw).toBe('15000000');
+  });
+
+  it('sender balance is debited by the time HTTP 201 is returned (await regression)', async () => {
+    const { tenantId, auth } = await createTenantWithTronXpub();
+    const sender = await createCustomer(auth);
+    const recipient = await createCustomer(auth);
+
+    await creditTronUsdt(tenantId, sender, '25000000');
+    const recipientTronAddr = await generateTronDepositAddress(auth, recipient);
+
+    const token = await issueSession(auth, sender);
+    const res = await request(app)
+      .post('/v1/me/withdrawals')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({
+        toAddress: recipientTronAddr,
+        amountSats: '10000000',
+        chainId: 'tron',
+        assetId: 'tron:USDT',
+      });
+
+    // Without `await _executeInternalTransfer(...)` the HTTP call returns before
+    // the DB commit — even if the response happened to be 201, balances would
+    // be in a race with this check. With the fix, the commit is guaranteed before
+    // this line executes.
+    expect(res.status).toBe(201);
+    expect(await getTronUsdtSettledBalance(tenantId, sender)).toBe(15000000n);
+    expect(await getTronUsdtSettledBalance(tenantId, recipient)).toBe(10000000n);
+  });
+
+  it('response body contains the completed withdrawal record (not a pending Promise or error)', async () => {
+    const { tenantId, auth } = await createTenantWithTronXpub();
+    const sender = await createCustomer(auth);
+    const recipient = await createCustomer(auth);
+
+    await creditTronUsdt(tenantId, sender, '20000000');
+    const recipientTronAddr = await generateTronDepositAddress(auth, recipient);
+
+    const token = await issueSession(auth, sender);
+    const res = await request(app)
+      .post('/v1/me/withdrawals')
+      .set({ Authorization: `Bearer ${token}` })
+      .send({
+        toAddress: recipientTronAddr,
+        amountSats: '20000000',
+        chainId: 'tron',
+        assetId: 'tron:USDT',
+      });
+
+    expect(res.status).toBe(201);
+    const wd = res.body.data;
+    expect(wd.id).toMatch(/^wd_/);
+    expect(wd.chain_id).toBe('tron');
+    expect(wd.asset_id).toBe('tron:USDT');
+    expect(wd.recipient_customer_id).toBe(recipient);
+    expect(wd.fee_raw).toBe('0');
+    expect(wd.tx_hash).toBeNull();
+    // Withdrawal is returned as a fully resolved record — not a serialised Promise
+    expect(typeof wd.created_at).toBe('number');
+    expect(typeof wd.updated_at).toBe('number');
   });
 });
