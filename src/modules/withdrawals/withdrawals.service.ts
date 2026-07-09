@@ -123,7 +123,7 @@ export const withdrawalsService = {
         chainId,
         assetId,
       });
-      logger.info('Customer withdrawal executed for internal transfer', { tenantId, customerId, recipientCustomerId: platformAddr.customer_id, toAddress: input.toAddress, amountSats: amountBigInt });
+      logger.info('Customer withdrawal executed for internal transfer', { tenantId, customerId, recipientCustomerId: platformAddr.customer_id, toAddress: input.toAddress, amountSats: amountBigInt.toString() });
       return result;
     }
 
