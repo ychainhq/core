@@ -651,7 +651,7 @@ describe('UTXO locking after sweep creation', () => {
     // getSummary must reflect the locked state — this is the UI bug fix
     const summary = await sweepsService.getSummary(TENANT_ID);
     expect(summary.total_utxos).toBe(0);
-    expect(summary.current_total_sats).toBe('0');
+    expect(summary.current_total_raw).toBe('0');
     expect(summary.addresses_with_balance).toBe(0);
   });
 
@@ -667,7 +667,7 @@ describe('UTXO locking after sweep creation', () => {
 
     const summary = await sweepsService.getSummary(TENANT_ID);
     expect(summary.total_utxos).toBe(0);
-    expect(summary.current_total_sats).toBe('0');
+    expect(summary.current_total_raw).toBe('0');
   });
 
   it('getSummary restores UTXO count after releaseLocksForSweep (sweep failed)', async () => {
@@ -682,7 +682,7 @@ describe('UTXO locking after sweep creation', () => {
 
     const summary = await sweepsService.getSummary(TENANT_ID);
     expect(summary.total_utxos).toBe(1);
-    expect(summary.current_total_sats).toBe('175000');
+    expect(summary.current_total_raw).toBe('175000');
   });
 
   it('marks sweep as failed immediately when lockUtxosForSweep fails (race: UTXO locked between collect and lock)', async () => {

@@ -45,13 +45,15 @@ function mapSweep(row: any): Sweep {
 }
 
 export interface SweepSummary {
-  threshold_sats: string | null;
-  current_total_sats: string;
-  missing_sats: string | null;
+  chain_id: string;
+  asset_id: string;
+  threshold_raw: string | null;
+  current_total_raw: string;
+  missing_raw: string | null;
   progress_pct: number | null;
   total_deposit_addresses: number;
   addresses_with_balance: number;
-  total_utxos: number;
+  total_utxos: number | null;
   hot_wallet_address: string | null;
   pending_sweep_id: string | null;
 }
@@ -92,6 +94,8 @@ export const sweepsService = {
   },
 
   async list(tenantId: string, filters: {
+    chainId?: string;
+    assetId?: string;
     status?: string;
     limit?: number;
     cursor?: string;
@@ -101,6 +105,8 @@ export const sweepsService = {
     let query = 'SELECT * FROM sweeps WHERE tenant_id = ?';
     const params: unknown[] = [tenantId];
 
+    if (filters.chainId) { query += ' AND chain_id = ?'; params.push(filters.chainId); }
+    if (filters.assetId) { query += ' AND asset_id = ?'; params.push(filters.assetId); }
     if (filters.status) { query += ' AND status = ?'; params.push(filters.status); }
     if (filters.cursor) { query += ' AND id > ?'; params.push(filters.cursor); }
     query += ' ORDER BY created_at DESC LIMIT ?';
@@ -278,14 +284,20 @@ export const sweepsService = {
     return rows.map(mapSweep);
   },
 
-  async getSummary(tenantId: string): Promise<SweepSummary> {
+  async getSummary(tenantId: string, chainId = 'bitcoin', assetId = 'bitcoin:BTC'): Promise<SweepSummary> {
+    if (chainId === 'bitcoin') return sweepsService._getBitcoinSummary(tenantId);
+    if (chainId === 'tron') return sweepsService._getTronSummary(tenantId, assetId);
+    throw new ValidationError(`Unsupported chainId for sweep summary: ${chainId}`);
+  },
+
+  async _getBitcoinSummary(tenantId: string): Promise<SweepSummary> {
     const db = getDbClient();
 
     const configRow = await db.get<{ btc_sweep_threshold_sats: string | null }>(
       'SELECT btc_sweep_threshold_sats FROM tenant_configs WHERE tenant_id = ?',
       [tenantId]
     );
-    const thresholdSats = configRow?.btc_sweep_threshold_sats ?? null;
+    const thresholdRaw = configRow?.btc_sweep_threshold_sats ?? null;
 
     const addrRow = await db.get<{ cnt: number }>(`
       SELECT COUNT(*) AS cnt
@@ -295,9 +307,9 @@ export const sweepsService = {
         AND a.chain_id = 'bitcoin' AND a.status = 'active'
     `, [tenantId]);
 
-    const utxoRow = await db.get<{ total_sats: number; addrs_with_bal: number; utxo_count: number }>(`
+    const utxoRow = await db.get<{ total_raw: number; addrs_with_bal: number; utxo_count: number }>(`
       SELECT
-        COALESCE(SUM(CAST(amount_raw AS BIGINT)), 0) AS total_sats,
+        COALESCE(SUM(CAST(amount_raw AS BIGINT)), 0) AS total_raw,
         COUNT(DISTINCT address)                        AS addrs_with_bal,
         COUNT(*)                                       AS utxo_count
       FROM cached_utxos
@@ -305,16 +317,16 @@ export const sweepsService = {
         AND is_spent = 0 AND is_locked = 0
     `, [tenantId]);
 
-    const currentSats = BigInt(utxoRow!.total_sats);
-    let missingSats: string | null = null;
+    const currentRaw = BigInt(utxoRow!.total_raw);
+    let missingRaw: string | null = null;
     let progressPct: number | null = null;
 
-    if (thresholdSats) {
-      const threshold = BigInt(thresholdSats);
-      const missing = threshold > currentSats ? threshold - currentSats : BigInt(0);
-      missingSats = missing.toString();
+    if (thresholdRaw) {
+      const threshold = BigInt(thresholdRaw);
+      const missing = threshold > currentRaw ? threshold - currentRaw : BigInt(0);
+      missingRaw = missing.toString();
       progressPct = threshold > BigInt(0)
-        ? Math.min(100, Number((currentSats * BigInt(100)) / threshold))
+        ? Math.min(100, Number((currentRaw * BigInt(100)) / threshold))
         : 0;
     }
 
@@ -328,18 +340,92 @@ export const sweepsService = {
     `, [tenantId]);
 
     const pendingRow = await db.get<{ id: string }>(
-      "SELECT id FROM sweeps WHERE tenant_id = ? AND status = 'pending_signature' LIMIT 1",
+      "SELECT id FROM sweeps WHERE tenant_id = ? AND chain_id = 'bitcoin' AND status = 'pending_signature' LIMIT 1",
       [tenantId]
     );
 
     return {
-      threshold_sats: thresholdSats,
-      current_total_sats: currentSats.toString(),
-      missing_sats: missingSats,
+      chain_id: 'bitcoin',
+      asset_id: 'bitcoin:BTC',
+      threshold_raw: thresholdRaw,
+      current_total_raw: currentRaw.toString(),
+      missing_raw: missingRaw,
       progress_pct: progressPct,
       total_deposit_addresses: addrRow!.cnt,
       addresses_with_balance: utxoRow!.addrs_with_bal,
       total_utxos: utxoRow!.utxo_count,
+      hot_wallet_address: hotRow?.address ?? null,
+      pending_sweep_id: pendingRow?.id ?? null,
+    };
+  },
+
+  async _getTronSummary(tenantId: string, assetId: string): Promise<SweepSummary> {
+    const db = getDbClient();
+
+    const configRow = await db.get<{ tron_sweep_threshold_sun: string | null }>(
+      'SELECT tron_sweep_threshold_sun FROM tenant_configs WHERE tenant_id = ?',
+      [tenantId]
+    );
+    // threshold only for TRX; USDT has no per-tenant threshold column yet
+    const thresholdRaw = assetId === 'tron:TRX' ? (configRow?.tron_sweep_threshold_sun ?? null) : null;
+
+    const addrRow = await db.get<{ cnt: number }>(`
+      SELECT COUNT(*) AS cnt
+      FROM addresses a
+      JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'customer_deposits'
+        AND a.chain_id = 'tron' AND a.status = 'active'
+    `, [tenantId]);
+
+    const balRow = await db.get<{ total_raw: number; addrs_with_bal: number }>(`
+      SELECT
+        COALESCE(SUM(CAST(tab.balance_raw AS BIGINT)), 0) AS total_raw,
+        COUNT(DISTINCT tab.address)                        AS addrs_with_bal
+      FROM tron_account_balances tab
+      JOIN addresses a ON a.address = tab.address
+      JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'customer_deposits'
+        AND tab.asset_id = ?
+        AND tab.balance_raw != '0'
+    `, [tenantId, assetId]);
+
+    const currentRaw = BigInt(balRow!.total_raw);
+    let missingRaw: string | null = null;
+    let progressPct: number | null = null;
+
+    if (thresholdRaw) {
+      const threshold = BigInt(thresholdRaw);
+      const missing = threshold > currentRaw ? threshold - currentRaw : BigInt(0);
+      missingRaw = missing.toString();
+      progressPct = threshold > BigInt(0)
+        ? Math.min(100, Number((currentRaw * BigInt(100)) / threshold))
+        : 0;
+    }
+
+    const hotRow = await db.get<{ address: string }>(`
+      SELECT a.address
+      FROM addresses a
+      JOIN wallets w ON w.id = a.wallet_id
+      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
+        AND a.chain_id = 'tron' AND a.status = 'active'
+      LIMIT 1
+    `, [tenantId]);
+
+    const pendingRow = await db.get<{ id: string }>(
+      "SELECT id FROM sweeps WHERE tenant_id = ? AND chain_id = 'tron' AND asset_id = ? AND status = 'pending_signature' LIMIT 1",
+      [tenantId, assetId]
+    );
+
+    return {
+      chain_id: 'tron',
+      asset_id: assetId,
+      threshold_raw: thresholdRaw,
+      current_total_raw: currentRaw.toString(),
+      missing_raw: missingRaw,
+      progress_pct: progressPct,
+      total_deposit_addresses: addrRow!.cnt,
+      addresses_with_balance: balRow!.addrs_with_bal,
+      total_utxos: null,
       hot_wallet_address: hotRow?.address ?? null,
       pending_sweep_id: pendingRow?.id ?? null,
     };

@@ -11,7 +11,14 @@ import { utxoLockService } from '../../shared/utxo-lock/utxo-lock.service';
 
 export const sweepsRouter = Router();
 
+const summaryQuerySchema = z.object({
+  chainId: z.string().default('bitcoin'),
+  assetId: z.string().default('bitcoin:BTC'),
+});
+
 const listQuerySchema = z.object({
+  chainId: z.string().optional(),
+  assetId: z.string().optional(),
   status: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   cursor: z.string().optional(),
@@ -25,17 +32,18 @@ function tenantId(req: Request): string {
   return (req as any).tenantId as string;
 }
 
-// GET /v1/sweeps/summary
+// GET /v1/sweeps/summary?chainId=bitcoin&assetId=bitcoin:BTC
 sweepsRouter.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const summary = await sweepsService.getSummary(tenantId(req));
+    const query = summaryQuerySchema.parse(req.query);
+    const summary = await sweepsService.getSummary(tenantId(req), query.chainId, query.assetId);
     res.json({ data: summary });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /v1/sweeps
+// GET /v1/sweeps?chainId=&assetId=&status=&cursor=&limit=
 sweepsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const query = listQuerySchema.parse(req.query);

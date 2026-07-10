@@ -87,7 +87,7 @@ describe('GET /v1/sweeps/summary', () => {
     const res = await request(app).get('/v1/sweeps/summary').set(auth);
     expect(res.status).toBe(200);
     const d = res.body.data;
-    expect(d).toHaveProperty('current_total_sats');
+    expect(d).toHaveProperty('current_total_raw');
     expect(d).toHaveProperty('total_deposit_addresses');
     expect(d).toHaveProperty('addresses_with_balance');
     expect(d).toHaveProperty('total_utxos');
@@ -126,14 +126,14 @@ describe('GET /v1/sweeps/summary', () => {
 
     const res = await request(app).get('/v1/sweeps/summary').set(auth);
     expect(res.status).toBe(200);
-    expect(res.body.data.threshold_sats).toBe('500000');
+    expect(res.body.data.threshold_raw).toBe('500000');
   });
 
-  it('current_total_sats is "0" when no UTXOs exist', async () => {
+  it('current_total_raw is "0" when no UTXOs exist', async () => {
     const { auth } = await createTenantWithKey();
     const res = await request(app).get('/v1/sweeps/summary').set(auth);
     expect(res.status).toBe(200);
-    expect(res.body.data.current_total_sats).toBe('0');
+    expect(res.body.data.current_total_raw).toBe('0');
   });
 
   it('pending_sweep_id is null when no pending sweep', async () => {
@@ -373,7 +373,7 @@ describe('GET /v1/sweeps/summary — UTXO locking behaviour', () => {
     const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
     expect(res.status).toBe(200);
     expect(res.body.data.total_utxos).toBe(2);
-    expect(res.body.data.current_total_sats).toBe('275000');
+    expect(res.body.data.current_total_raw).toBe('275000');
     expect(res.body.data.addresses_with_balance).toBe(2);
   });
 
@@ -396,7 +396,7 @@ describe('GET /v1/sweeps/summary — UTXO locking behaviour', () => {
     const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
     expect(res.status).toBe(200);
     expect(res.body.data.total_utxos).toBe(0);
-    expect(res.body.data.current_total_sats).toBe('0');
+    expect(res.body.data.current_total_raw).toBe('0');
     expect(res.body.data.addresses_with_balance).toBe(0);
   });
 
@@ -417,7 +417,7 @@ describe('GET /v1/sweeps/summary — UTXO locking behaviour', () => {
     const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
     expect(res.status).toBe(200);
     expect(res.body.data.total_utxos).toBe(0);
-    expect(res.body.data.current_total_sats).toBe('0');
+    expect(res.body.data.current_total_raw).toBe('0');
   });
 
   it('restores UTXO count after releaseLocksForSweep (sweep failed)', async () => {
@@ -438,7 +438,7 @@ describe('GET /v1/sweeps/summary — UTXO locking behaviour', () => {
     const res = await request(app).get('/v1/sweeps/summary').set(AUTH);
     expect(res.status).toBe(200);
     expect(res.body.data.total_utxos).toBe(1);
-    expect(res.body.data.current_total_sats).toBe('175000');
+    expect(res.body.data.current_total_raw).toBe('175000');
   });
 });
 

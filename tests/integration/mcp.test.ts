@@ -71,6 +71,69 @@ describe('MCP tenant endpoint', () => {
     expect(res.body.result.structuredContent.data.id).toBe(TEST_TENANT_ID);
     expect(res.body.result.isError).toBeUndefined();
   });
+
+  it('chainapi_get_sweeps_summary — no args defaults to bitcoin', async () => {
+    const res = await mcpPost('/mcp/tenant')
+      .set(AUTH)
+      .send(rpc(3, 'tools/call', {
+        name: 'chainapi_get_sweeps_summary',
+        arguments: {},
+      }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.result.isError).toBeUndefined();
+    const data = res.body.result.structuredContent.data;
+    expect(data.chain_id).toBe('bitcoin');
+    expect(data.asset_id).toBe('bitcoin:BTC');
+  });
+
+  it('chainapi_get_sweeps_summary — explicit tron/TRX params forwarded', async () => {
+    const res = await mcpPost('/mcp/tenant')
+      .set(AUTH)
+      .send(rpc(4, 'tools/call', {
+        name: 'chainapi_get_sweeps_summary',
+        arguments: { chainId: 'tron', assetId: 'tron:TRX' },
+      }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.result.isError).toBeUndefined();
+    const data = res.body.result.structuredContent.data;
+    expect(data.chain_id).toBe('tron');
+    expect(data.asset_id).toBe('tron:TRX');
+    expect(data.total_utxos).toBeNull();
+  });
+
+  it('chainapi_get_sweeps_summary — tron:USDT returns asset_id and null threshold', async () => {
+    const res = await mcpPost('/mcp/tenant')
+      .set(AUTH)
+      .send(rpc(5, 'tools/call', {
+        name: 'chainapi_get_sweeps_summary',
+        arguments: { chainId: 'tron', assetId: 'tron:USDT' },
+      }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.result.isError).toBeUndefined();
+    const data = res.body.result.structuredContent.data;
+    expect(data.chain_id).toBe('tron');
+    expect(data.asset_id).toBe('tron:USDT');
+    expect(data.threshold_raw).toBeNull();
+    expect(data.total_utxos).toBeNull();
+  });
+
+  it('chainapi_list_sweeps — chainId filter passed through', async () => {
+    const res = await mcpPost('/mcp/tenant')
+      .set(AUTH)
+      .send(rpc(5, 'tools/call', {
+        name: 'chainapi_list_sweeps',
+        arguments: { chainId: 'bitcoin' },
+      }));
+
+    expect(res.status).toBe(200);
+    expect(res.body.result.isError).toBeUndefined();
+    const data = res.body.result.structuredContent.data;
+    expect(Array.isArray(data)).toBe(true);
+    data.forEach((s: any) => expect(s.chain_id).toBe('bitcoin'));
+  });
 });
 
 describe('MCP customer endpoint', () => {

@@ -833,8 +833,8 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }, async ({ withdrawalId, signedPsbt }: any) => safeTool(async () => ({ data: await withdrawalsService.submitSigned(tenantId, withdrawalId, signedPsbt) })));
 
   server.registerTool('chainapi_list_sweeps', {
-    description: 'List tenant sweeps.',
-    inputSchema: { ...paging, status: z.string().optional() },
+    description: 'List tenant sweeps. Filter by chainId (bitcoin|tron), assetId (bitcoin:BTC|tron:TRX|tron:USDT), status.',
+    inputSchema: { ...paging, status: z.string().optional(), chainId: z.string().optional(), assetId: z.string().optional() },
     annotations: readOnly,
   }, async (input: any) => safeTool(async () => page(await sweepsService.list(tenantId, input), input)));
 
@@ -845,16 +845,16 @@ export function registerTenantTools(server: McpServer, ctx: McpAuthContext): voi
   }, async ({ sweepId }: any) => safeTool(async () => ({ data: await sweepsService.getById(tenantId, sweepId) })));
 
   server.registerTool('chainapi_submit_signed_sweep', {
-    description: 'Submit a signed PSBT for a pending sweep.',
+    description: 'Submit a signed payload for a pending sweep. For BTC: signed PSBT hex. For TRON: signed raw transaction JSON string.',
     inputSchema: { sweepId: z.string().min(1), signedPsbt: z.string().min(1) },
     annotations: destructive,
   }, async ({ sweepId, signedPsbt }: any) => safeTool(async () => ({ data: await sweepsService.submitSigned(tenantId, sweepId, signedPsbt) })));
 
   server.registerTool('chainapi_get_sweeps_summary', {
-    description: 'Get current Bitcoin sweep state: collectible sats vs threshold, address/UTXO counts, pending sweep ID.',
-    inputSchema: {},
+    description: 'Get sweep summary for a given chain/asset: collectible balance vs threshold, UTXO count (BTC only), pending sweep ID. Defaults to bitcoin/bitcoin:BTC.',
+    inputSchema: { chainId: z.string().default('bitcoin'), assetId: z.string().default('bitcoin:BTC') },
     annotations: readOnly,
-  }, async () => safeTool(async () => ({ data: await sweepsService.getSummary(tenantId) })));
+  }, async ({ chainId, assetId }: any) => safeTool(async () => ({ data: await sweepsService.getSummary(tenantId, chainId, assetId) })));
 
   server.registerTool('chainapi_bitcoin_coin_selection', {
     description: 'Preview BTC coin selection. Read-only.',

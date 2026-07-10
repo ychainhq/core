@@ -1047,10 +1047,10 @@ Webhook `sweep.ready_for_signing` jest wysyłany jako backward-compatibility dla
 | Method | Path | Opis |
 |--------|------|------|
 | POST | `/v1/sweeps` | Utwórz sweep ręcznie (rzadko używane — worker to robi automatycznie) |
-| GET | `/v1/sweeps/summary` | Podsumowanie stanu: przeliczone UTXO, postęp do progu, oczekujący sweep |
-| GET | `/v1/sweeps` | Lista sweepów tenanta (paginacja cursor-based, filtr `status`) |
-| GET | `/v1/sweeps/:sweepId` | Szczegóły sweepа |
-| POST | `/v1/sweeps/:sweepId/submit-signed` | Prześlij podpisany PSBT ręcznie — silnik robi finalizePsbt + broadcast (fallback bez signera) |
+| GET | `/v1/sweeps/summary?chainId=&assetId=` | Podsumowanie stanu per chain/asset: saldo vs próg, liczba UTXO (tylko BTC), oczekujący sweep. Domyślnie `chainId=bitcoin&assetId=bitcoin:BTC`. |
+| GET | `/v1/sweeps?chainId=&assetId=&status=` | Lista sweepów tenanta (cursor pagination, filtry chainId/assetId/status) |
+| GET | `/v1/sweeps/:sweepId` | Szczegóły sweepa |
+| POST | `/v1/sweeps/:sweepId/submit-signed` | Prześlij podpisany payload ręcznie — BTC: signed PSBT hex; TRON: signed raw tx JSON (fallback bez signera) |
 
 ### 6.18 Ticklers (audit log)
 
