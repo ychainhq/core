@@ -246,7 +246,7 @@ export class TronSweepWorker {
       rawTransaction: rawTx,
     });
 
-    await this._createSweepAndTask({
+    const sweepId = await this._createSweepAndTask({
       tenantId: entry.tenant_id,
       assetId: TRON_USDT_ASSET_ID,
       requestType: 'tron_sweep',
@@ -256,6 +256,16 @@ export class TronSweepWorker {
       feeRaw: feeEstimate.estimatedFeeSun,
       unsignedPayload,
     });
+
+    // Link the sweep to the energy delegation so the reclaim worker can trigger
+    // immediately on sweep.confirmed instead of waiting for the 24h timeout.
+    if (cfg.tron_staked_energy_sun) {
+      const db = getDbClient();
+      await db.run(
+        'UPDATE tron_energy_delegations SET sweep_id = ? WHERE address = ? AND sweep_id IS NULL',
+        [sweepId, entry.address],
+      );
+    }
   }
 
   private async processTrxSweep(
@@ -359,7 +369,7 @@ export class TronSweepWorker {
       chainId: 'tron',
       assetId: TRON_TRX_ASSET_ID,
       amountRaw: '0',
-      feeRaw: null,
+      feeRaw: undefined,
       payloadFormat: 'tron_raw_tx',
       unsignedPayload,
       decisionMode: policyDecision.mode,
@@ -389,7 +399,7 @@ export class TronSweepWorker {
     amountRaw: string;
     feeRaw: string | null;
     unsignedPayload: string;
-  }): Promise<void> {
+  }): Promise<string> {
     const { tenantId, assetId, requestType, fromAddress, toAddress, amountRaw, feeRaw, unsignedPayload } = params;
 
     const sweep = await sweepsService.create(tenantId, {
@@ -414,7 +424,7 @@ export class TronSweepWorker {
       assetId,
       sweepId: sweep.id,
       amountRaw,
-      feeRaw,
+      feeRaw: feeRaw ?? undefined,
       payloadFormat: 'tron_raw_tx',
       unsignedPayload,
       decisionMode: policyDecision.mode,
@@ -455,5 +465,7 @@ export class TronSweepWorker {
       address: fromAddress, assetId, amount: amountRaw, requestType,
       decisionMode: policyDecision.mode,
     });
+
+    return sweep.id;
   }
 }

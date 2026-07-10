@@ -156,7 +156,7 @@ export class TronEnergyReclaimWorker {
       chainId: 'tron',
       assetId: TRON_TRX_ASSET_ID,
       amountRaw: '0',
-      feeRaw: null,
+      feeRaw: undefined,
       payloadFormat: 'tron_raw_tx',
       unsignedPayload,
       decisionMode: policyDecision.mode,

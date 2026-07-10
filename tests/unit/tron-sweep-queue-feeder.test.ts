@@ -81,4 +81,11 @@ describe('TronSweepWorker v2 — queue-draining assertions', () => {
   it('deletes claimed entries immediately to prevent double-processing', () => {
     expect(workerSrc).toContain('DELETE FROM tron_sweep_queue');
   });
+
+  it('links sweep_id back to tron_energy_delegations after sweep is created', () => {
+    // Ensures TronEnergyReclaimWorker can trigger on sweep.confirmed immediately
+    // instead of waiting for the 24h timeout
+    expect(workerSrc).toContain('UPDATE tron_energy_delegations SET sweep_id');
+    expect(workerSrc).toContain('sweep_id IS NULL');
+  });
 });
