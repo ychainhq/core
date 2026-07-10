@@ -248,6 +248,11 @@ CREATE TABLE tenant_configs (
   daily_withdrawal_limit_sats TEXT,        -- NULL = unlimited
   per_tx_limit_sats          TEXT,         -- NULL = unlimited
   webhook_secret             TEXT,
+  -- TRON sweep thresholds (migration 040)
+  tron_usdt_sweep_threshold_sun TEXT,      -- próg sweep dla tron:USDT (sun); NULL = wyłączony
+  tron_trx_sweep_threshold_sun  TEXT,      -- próg sweep dla tron:TRX (sun); NULL = wyłączony
+  tron_staked_energy_sun        TEXT,      -- energia zdelegowana przez Stake 2.0 (sun); NULL = brak delegacji
+  tron_sweep_threshold_sun TEXT,           -- DEPRECATED: używany jako fallback dla tron:USDT; usunięty w migracji 042
   updated_at                 TEXT NOT NULL
 );
 ```
@@ -796,6 +801,60 @@ CREATE INDEX idx_ticklers_entity_id    ON ticklers(entity_id);
 CREATE INDEX idx_ticklers_actor_login  ON ticklers(actor_login);
 ```
 
+### 5.3 Tabele TRON-specific (migration 040)
+
+#### Tabela: `tron_account_balances`
+
+Pamięć podręczna sald on-chain per adres. Wypełniana przez `tron-indexer` i `tron-balance-refresh.worker`. Engine (serwisy, workery) czyta wyłącznie przez `tronBalancesService`.
+
+```sql
+CREATE TABLE tron_account_balances (
+  address        TEXT NOT NULL,
+  tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+  asset_id       TEXT NOT NULL,            -- 'tron:USDT' | 'tron:TRX'
+  balance_raw    TEXT NOT NULL DEFAULT '0', -- saldo w sun (TEXT = BigInt safety)
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (address, asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tron_balances_tenant ON tron_account_balances(tenant_id, asset_id);
+```
+
+#### Tabela: `tron_sweep_queue` (migration 040)
+
+Event-driven kolejka sweepów TRON. Wypełniana przez `TronSweepQueueFeeder` (upsert), opróżniana przez `TronSweepWorker` (delete przy claim). Zastępuje O(all-addresses) scan w workerze sweepów.
+
+```sql
+CREATE TABLE tron_sweep_queue (
+  address              TEXT NOT NULL,
+  asset_id             TEXT NOT NULL,            -- 'tron:USDT' | 'tron:TRX'
+  tenant_id            TEXT NOT NULL REFERENCES tenants(id),
+  estimated_balance_raw TEXT NOT NULL,           -- saldo w sun (TEXT = BigInt safety)
+  priority             INTEGER NOT NULL DEFAULT 0, -- 0=normal, 1=high, 2=urgent
+  queued_at            TEXT NOT NULL,
+  PRIMARY KEY (address, asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tron_sweep_queue_priority
+  ON tron_sweep_queue(priority DESC, queued_at ASC);
+```
+
+#### Tabela: `tron_energy_delegations` (migration 040)
+
+Śledzi aktywne delegacje energii Stake 2.0 z hot wallet na adresy depozytowe. Jeden wiersz = jedna aktywna delegacja. Kasowany przez `TronEnergyReclaimWorker` po potwierdzeniu undelegacji lub po 24h timeout.
+
+```sql
+CREATE TABLE tron_energy_delegations (
+  address        TEXT PRIMARY KEY,               -- adres depozytowy (odbiorca delegacji)
+  tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+  delegated_at   TEXT NOT NULL,
+  delegation_sun TEXT NOT NULL,                  -- kwota delegowanej energii (sun)
+  sweep_id       TEXT REFERENCES sweeps(id)      -- sweep powiązany z delegacją
+);
+CREATE INDEX IF NOT EXISTS idx_tron_energy_delegations_tenant
+  ON tron_energy_delegations(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tron_energy_delegations_sweep
+  ON tron_energy_delegations(sweep_id);
+```
+
 ---
 
 ## 6. REST API v2
@@ -814,6 +873,12 @@ Auth: `X-Admin-Key` header (lub Bearer z flagą is_admin). Dostępne wyłącznie
 | PATCH | `/admin/v1/tenants/:tenantId/config` | Aktualizuj konfigurację tenanta |
 | POST | `/admin/v1/tenants/:tenantId/api-keys` | Wygeneruj API key dla tenanta |
 | POST | `/admin/v1/tenants/:tenantId/disable` | Zawieś tenanta |
+
+**TRON Operations:**
+
+| Method | Path | Opis |
+|--------|------|------|
+| GET | `/admin/v1/tron/sweep-queue-stats` | Liczba wpisów w kolejce sweep per asset/priority + statystyki aktywnych delegacji energii |
 
 ### 6.1 Health (publiczne, bez zmian)
 
@@ -1047,7 +1112,7 @@ Webhook `sweep.ready_for_signing` jest wysyłany jako backward-compatibility dla
 | Method | Path | Opis |
 |--------|------|------|
 | POST | `/v1/sweeps` | Utwórz sweep ręcznie (rzadko używane — worker to robi automatycznie) |
-| GET | `/v1/sweeps/summary?chainId=&assetId=` | Podsumowanie stanu per chain/asset: saldo vs próg, liczba UTXO (tylko BTC), oczekujący sweep. Domyślnie `chainId=bitcoin&assetId=bitcoin:BTC`. |
+| GET | `/v1/sweeps/summary?chainId=&assetId=` | Podsumowanie stanu per chain/asset: saldo vs próg, liczba UTXO (tylko BTC), oczekujący sweep. Domyślnie `chainId=bitcoin&assetId=bitcoin:BTC`. Mapowanie progów TRON: `tron:USDT` → `tron_usdt_sweep_threshold_sun ?? tron_sweep_threshold_sun` (fallback); `tron:TRX` → `tron_trx_sweep_threshold_sun`. |
 | GET | `/v1/sweeps?chainId=&assetId=&status=` | Lista sweepów tenanta (cursor pagination, filtry chainId/assetId/status) |
 | GET | `/v1/sweeps/:sweepId` | Szczegóły sweepa |
 | POST | `/v1/sweeps/:sweepId/submit-signed` | Prześlij podpisany payload ręcznie — BTC: signed PSBT hex; TRON: signed raw tx JSON (fallback bez signera) |
@@ -1885,33 +1950,114 @@ Klient wysyła USDT on-chain:
   → po N potwierdzeń (tenant_configs.tron_confirmations_required) → status='confirmed'
 ```
 
-### D.4 Sweepy TRON/USDT
+### D.4 Sweepy TRON — architektura kolejkowa (migration 040)
+
+Sweep TRON jest podzielony na trzy oddzielne workery o różnych interwałach i odpowiedzialnościach.
+
+#### D.4.1 TronSweepQueueFeeder (co 10s)
+
+Feeder skanuje `tron_account_balances` w poszukiwaniu adresów powyżej progu i upsertuje je do `tron_sweep_queue`. Zastępuje O(all-addresses) scan wewnątrz workera sweepów.
 
 ```
-TronSweepWorker (co 60s):
-  1. Pobiera wszystkich aktywnych tenantów z tron_sweep_threshold_sun ustawionym
-  2. Dla każdego tenanta: odpytuje adres tenant_hot (wallet_role='tenant_hot', chain_id='tron')
-  3. Dla każdego adresu depozytowego (wallet_role='customer_deposits', chain_id='tron'):
-     a. Sprawdza USDT balance on-chain
-     b. balance < threshold → skip
-     c. Sprawdza czy istnieje aktywny sweep dla tego adresu → skip (jeden na raz)
-     d. tronFeeService.estimateFeeForAddress() → feeLimitSun
-     e. POST /wallet/triggersmartcontract (from=adres depozytowy, to=tenant_hot)
-        ← { txID, raw_data_hex }
-     f. INSERT INTO sweeps (status='pending_signature')
-     g. INSERT INTO signing_tasks:
-            requestType: 'tron_sweep'
-            payloadFormat: 'tron_raw_tx'
-            unsignedPayload: JSON { derivationPath: "m/0/N", txID, raw_data_hex, ... }
-            signerId → signer z fingerprint = TRON_SIGNER_FINGERPRINT_HD
+TronSweepQueueFeeder (co 10s):
+  BATCH_SIZE = 500
+  Dla każdego aktywnego tenanta z skonfigurowanym tron_usdt_sweep_threshold_sun lub tron_trx_sweep_threshold_sun:
+    Odpytuje tron_account_balances WHERE tenant_id = ? AND balance_raw >= threshold
+      — osobne zapytania dla tron:USDT i tron:TRX
+    Dla każdego kwalifikującego się adresu:
+      priority = (balance >= 10× threshold) ? 2  -- urgent
+               : (balance >= 3×  threshold) ? 1  -- high
+               : 0                                -- normal
+      UPSERT INTO tron_sweep_queue (address, asset_id, tenant_id, estimated_balance_raw, priority, queued_at)
+        ON CONFLICT (address, asset_id) DO UPDATE SET priority = MAX(excluded.priority, priority),
+          estimated_balance_raw = excluded.estimated_balance_raw
+```
 
-Signer HD odbiera task:
-  → weryfikuje 3 warstwy (patrz D.6)
+Złożoność: O(aktywni tenanci × aktywne salda) — nie O(wszystkie adresy). Feeder nie tworzy sweepów — tylko wypełnia kolejkę.
+
+#### D.4.2 TronSweepWorker (co 30s, REDESIGNED)
+
+Worker drainuje `tron_sweep_queue` i tworzy signing tasks dla obu typów assetów.
+
+```
+TronSweepWorker (co 30s):
+  QUEUE_BATCH_SIZE = 20
+  SELECT ... FROM tron_sweep_queue ORDER BY priority DESC, queued_at ASC LIMIT 20
+  DELETE FROM tron_sweep_queue WHERE (address, asset_id) IN (claimed set)  -- claim atomowy
+
+  Dla każdego wpisu z kolejki:
+    Sprawdza czy istnieje aktywny sweep dla (address, asset_id) → skip (jeden na raz)
+    Odpytuje tenant_hot address (wallet_role='tenant_hot', chain_id='tron')
+
+    Jeśli asset_id = 'tron:USDT':
+      a. tronFeeService.estimateFeeForAddress() → feeLimitSun
+      b. Jeśli tron_staked_energy_sun skonfigurowany I brak aktywnej delegacji dla adresu:
+           → buduje delegację energii PRZED sweepem (patrz D.4.3)
+      c. POST /wallet/triggersmartcontract (TRC-20 transfer, from=deposit, to=hot_wallet)
+           ← { txID, raw_data_hex }
+      d. INSERT INTO sweeps (status='pending_signature', chain_id='tron', asset_id='tron:USDT')
+      e. INSERT INTO signing_tasks:
+               requestType: 'tron_sweep'       -- USDT sweep (TRC-20)
+               payloadFormat: 'tron_raw_tx'
+               unsignedPayload: { derivationPath: "m/0/N", txID, raw_data_hex, ... }
+               signerId → signer z fingerprint = TRON_SIGNER_FINGERPRINT_HD
+
+    Jeśli asset_id = 'tron:TRX':
+      a. tronFeeService.estimateFeeForAddress() → feeLimitSun (bandwidth only)
+      b. POST /wallet/createtransaction (TRX native transfer, from=deposit, to=hot_wallet)
+           ← { txID, raw_data_hex }
+      c. INSERT INTO sweeps (status='pending_signature', chain_id='tron', asset_id='tron:TRX')
+      d. INSERT INTO signing_tasks:
+               requestType: 'tron_trx_sweep'   -- TRX native sweep
+               payloadFormat: 'tron_raw_tx'
+               unsignedPayload: { derivationPath: "m/0/N", txID, raw_data_hex, type: 'trx_transfer' }
+               signerId → signer z fingerprint = TRON_SIGNER_FINGERPRINT_HD
+
+Signer HD odbiera task (tron_sweep lub tron_trx_sweep):
+  → weryfikuje 3 warstwy (patrz D.9)
   → derivuje m/0/N z HD xprv → child private key
   → signRecoverable(txID_bytes, childKey) → 65-bajtowy podpis
   → POST /v1/external-signers/:id/tasks/:taskId/submit { signedPayload }
-  → engine broadcastuje przez TRON FullNode → txHash
+  → engine broadcastuje → txHash
   → sweeps.status → 'broadcast' → 'confirmed' (po potwierdzeniu on-chain)
+```
+
+#### D.4.3 Energy Delegation (Stake 2.0) dla USDT sweep
+
+Gdy `tron_staked_energy_sun` jest skonfigurowany i adres depozytowy nie ma aktywnej delegacji:
+
+```
+Przed sweepem USDT:
+  TronRpcClient.buildDelegateEnergyTx(hotWallet, depositAddress, tron_staked_energy_sun)
+    → { txID, raw_data_hex, type: 'delegate_resource', resource: 'ENERGY', lock: false }
+  INSERT INTO tron_energy_delegations (address, tenant_id, delegated_at, delegation_sun, sweep_id=NULL)
+  INSERT INTO signing_tasks:
+    requestType: 'tron_delegate_energy'
+    payloadFormat: 'tron_raw_tx'
+    unsignedPayload: { txID, raw_data_hex, type: 'delegate_resource', resource: 'ENERGY' }
+    signerId → signer z fingerprint = TRON_SIGNER_FINGERPRINT  -- hot wallet key
+  (sweep tworzony po potwierdzeniu delegacji — lub równolegle z tolerancją na race)
+```
+
+#### D.4.4 TronEnergyReclaimWorker (co 6h)
+
+Undeleguje energię po zakończeniu sweepów lub po 24h timeout.
+
+```
+TronEnergyReclaimWorker (co 6h):
+  SELECT * FROM tron_energy_delegations
+    WHERE sweep_id IS NOT NULL AND sweeps.status IN ('confirmed', 'failed')
+       OR delegated_at < NOW() - INTERVAL '24h'
+
+  Dla każdej delegacji do odwołania:
+    TronRpcClient.buildUndelegateEnergyTx(hotWallet, depositAddress, delegation_sun)
+      → { txID, raw_data_hex, type: 'undelegate_resource' }
+    INSERT INTO signing_tasks:
+      requestType: 'tron_undelegate_energy'
+      payloadFormat: 'tron_raw_tx'
+      unsignedPayload: { txID, raw_data_hex, type: 'undelegate_resource', resource: 'ENERGY' }
+      signerId → signer z fingerprint = TRON_SIGNER_FINGERPRINT  -- hot wallet key
+    Po potwierdzeniu: DELETE FROM tron_energy_delegations WHERE address = ?
 ```
 
 ### D.5 Wypłaty TRON/USDT
@@ -1933,17 +2079,35 @@ WithdrawalBatcher (cyklicznie):
             (brak derivationPath — withdrawal key nie jest HD)
 
 Signer (withdrawal key) odbiera task:
-  → weryfikuje 3 warstwy (patrz D.6)
+  → weryfikuje 3 warstwy (patrz D.9)
   → używa bezpośredniego klucza m/1/0 (bez HD derivacji)
   → signRecoverable(txID_bytes, hotKey) → podpis
   → engine broadcastuje
 ```
 
-### D.6 Jak budowane jest `raw_data` transakcji TRON
+### D.6 Signing requestTypes TRON — kompletna mapa
+
+| requestType | Typ operacji | Klucz signer | `derivationPath` w payload | FullNode endpoint |
+|-------------|-------------|--------------|---------------------------|-------------------|
+| `tron_sweep` | TRC-20 sweep z depozytu | `TRON_SIGNER_FINGERPRINT_HD` | wymagany (`m/0/N`) | `triggersmartcontract` |
+| `tron_trx_sweep` | TRX native sweep z depozytu | `TRON_SIGNER_FINGERPRINT_HD` | wymagany (`m/0/N`) | `createtransaction` |
+| `tron_withdrawal` | TRC-20 / TRX wypłata klienta | `TRON_SIGNER_FINGERPRINT` | brak (m/1/0 wprost) | `triggersmartcontract` / `createtransaction` |
+| `tron_delegate_energy` | Stake 2.0: delegacja energii z hot wallet | `TRON_SIGNER_FINGERPRINT` | brak (m/1/0 wprost) | `delegateresource` |
+| `tron_undelegate_energy` | Stake 2.0: odwołanie delegacji energii | `TRON_SIGNER_FINGERPRINT` | brak (m/1/0 wprost) | `undelegateresource` |
+
+**HD key (`TRON_SIGNER_FINGERPRINT_HD`)** obsługuje `tron_sweep` i `tron_trx_sweep` — oba wymagają `derivationPath` w `unsignedPayload`. Klucz HD nie podpisuje operacji hot wallet (delegacje, wypłaty).
+
+**Hot wallet key (`TRON_SIGNER_FINGERPRINT`)** obsługuje `tron_withdrawal`, `tron_delegate_energy`, `tron_undelegate_energy` — brak `derivationPath`, zawsze `m/1/0`.
+
+**Nowe validator opts (migration 040):** `hotWalletAddress`, `allowedDepositAddresses`, `maxStakedEnergySun`.
+
+**Nowe signer config vars:** `TRON_DEV_HOT_ADDRESS`, `MAX_TRON_STAKED_ENERGY_SUN`.
+
+### D.7 Jak budowane jest `raw_data` transakcji TRON
 
 Engine **nie buduje `raw_data` ręcznie**. Sekwencja:
 
-1. Engine wywołuje `POST /wallet/triggersmartcontract` na lokalnym TRON FullNode.
+1. Engine wywołuje odpowiedni endpoint TRON FullNode (zależnie od typu operacji).
 2. FullNode zwraca:
    ```json
    {
@@ -1957,11 +2121,16 @@ Engine **nie buduje `raw_data` ręcznie**. Sekwencja:
 
 FullNode jest jedynym autorytatywnym budowniczym `raw_data`. Zmiana formatu `raw_data` nie wymaga żadnych zmian w engine.
 
-### D.7 Proces podpisywania w signerze
+Nowe metody `TronRpcClient` (migration 040):
+- `buildDelegateEnergyTx(fromAddress, toAddress, energySun)` — wywołuje `delegateresource`
+- `buildUndelegateEnergyTx(fromAddress, toAddress, energySun)` — wywołuje `undelegateresource`
+- `getDelegatedResource(fromAddress, toAddress)` — odpytuje aktualną delegację
+
+### D.8 Proces podpisywania w signerze
 
 ```
 Input:  txID (32 bytes = sha256 of raw_data)
-Key:    secp256k1 private key (withdrawal, m/1/0) lub HD child key (sweep, m/0/N)
+Key:    secp256k1 private key (withdrawal/delegation, m/1/0) lub HD child key (sweep, m/0/N)
 Op:     signRecoverable(txIdBytes, privKey)
 Output: 65 bytes → 130 hex chars
         [ 64 bytes signature | 1 byte recovery ID ]
@@ -1969,33 +2138,37 @@ Output: 65 bytes → 130 hex chars
 
 TRON wymaga EC recoverable signature (nie standard ECDSA DER). Recovery ID umożliwia weryfikację klucza publicznego bez osobnego jego przesyłania.
 
-### D.8 Warstwy weryfikacji w signerze
+### D.9 Warstwy weryfikacji w signerze
 
 Signer weryfikuje każde zadanie podpisania w trzech warstwach zanim użyje klucza:
 
 | # | Co weryfikuje | Metoda |
 |---|--------------|--------|
-| 1 | Polityka biznesowa | `assertTronTxTaskValid`: allowlist sieci i kontraktów TRC-20, limity kwoty i energy/bandwidth fee, poprawność ścieżki derywacji BIP32 |
+| 1 | Polityka biznesowa | `assertTronTxTaskValid`: allowlist sieci i kontraktów TRC-20, limity kwoty i energy/bandwidth fee, poprawność ścieżki derywacji BIP32; dla delegacji: `maxStakedEnergySun` i `hotWalletAddress` |
 | 2 | Integralność payloadu | `sha256(unsignedPayload) === unsignedPayloadHash` — signer recalculates, porównuje z hashem z task envelope |
 | 3 | Format txID | `txIdBytes.length === 32` — txID musi być 32-bajtowym hashem |
 
 Odrzucenie na dowolnej warstwie → task odrzucony (`reject`), brak podpisu.
 
-### D.9 TRX na gas
+### D.10 TRX na gas i Stake 2.0
 
 TRON pobiera bandwidth i energy za każdy transfer TRC-20. Tenant musi utrzymywać TRX:
-- Na adresie `m/1/0` (hot wallet) — do sweepów wychodzących i withdrawali.
-- Na adresach `m/0/N` (depozyty) — do sweepów przychodzących z tych adresów.
+- Na adresie `m/1/0` (hot wallet) — do sweepów wychodzących, withdrawali i delegacji energii.
+- Na adresach `m/0/N` (depozyty) — do sweepów przychodzących, o ile Stake 2.0 nie pokrywa energii.
 
 `tronFeeService.estimateFee()` szacuje koszt przed każdą operacją (bandwidth + energy × aktualna cena na sieci). Signer weryfikuje że `feeLimitSun` w payloadzie nie przekracza `MAX_TRON_FEE_LIMIT_SUN` skonfigurowanego w polityce.
 
-### D.10 Reguły architektoniczne
+**Stake 2.0 — redukcja kosztów sweepów USDT:** gdy `tron_staked_energy_sun` ustawiony, `TronSweepWorker` deleguje energię z hot wallet na adres depozytowy przed sweepem (patrz D.4.3). Adres depozytowy korzysta z delegowanej energii zamiast palić TRX. Po sweepie `TronEnergyReclaimWorker` odwołuje delegację. `TronRpcClient.getDelegatedResource()` weryfikuje aktualny stan delegacji przed jej tworzeniem.
+
+### D.11 Reguły architektoniczne
 
 - Engine nie przyjmuje, nie przechowuje ani nie loguje żadnego klucza prywatnego TRON.
 - SR key (localwitness) nigdy nie trafia do engine ani do external signer protocol.
 - Zmiana providera kluczy (np. z pliku lokalnego na Vault) wymaga zmiany tylko w adapterze signera — zero zmian w engine.
 - `payloadFormat=tron_raw_tx` jest częścią `packages/external-signer-protocol` — oba signery (OSS i Enterprise) obsługują go identycznie.
-- `derivationPath` jest obowiązkowy w payloadzie sweepów i musi pasować do ścieżki `m/0/N` zarejestrowanej w `addresses.metadata`. Signer odrzuca sweep bez poprawnej ścieżki.
+- `derivationPath` jest obowiązkowy w payloadzie sweepów (`tron_sweep`, `tron_trx_sweep`) i musi pasować do ścieżki `m/0/N` zarejestrowanej w `addresses.metadata`. Signer odrzuca sweep bez poprawnej ścieżki.
+- HD key (`TRON_SIGNER_FINGERPRINT_HD`) i hot wallet key (`TRON_SIGNER_FINGERPRINT`) muszą pozostać dwoma oddzielnymi wpisami signera — podział zakresów jest wymaganiem bezpieczeństwa, nie implementacyjnym detalem.
+- `tron_sweep_threshold_sun` (stary) jest deprecated od migration 040 — utrzymywany jako fallback dla `tron:USDT` przez jeden release, usunięty w migration 042. Nowy kod używa `tron_usdt_sweep_threshold_sun` i `tron_trx_sweep_threshold_sun`.
 
 ---
 

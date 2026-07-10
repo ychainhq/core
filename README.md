@@ -157,7 +157,7 @@ Per-tenant overrides live in `tenant_configs` — see [Per-tenant configuration]
 | `WEBHOOK_DELIVERY_INTERVAL_MS` | `10000` | Webhook delivery worker interval (ms) |
 | `TX_STATUS_INTERVAL_MS` | `60000` | Transaction status / sweep confirmation worker interval (ms) |
 | `SWEEP_WORKER_INTERVAL_MS` | `300000` | BTC sweep creation worker interval (ms) |
-| `TRON_SWEEP_WORKER_INTERVAL_MS` | `60000` | TRON sweep worker interval (ms) |
+| `TRON_SWEEP_WORKER_INTERVAL_MS` | `60000` | Legacy env var — `TronSweepWorker` now runs every 30 s (hardcoded). `TronSweepQueueFeeder` runs every 10 s. |
 | `TRON_BALANCE_REFRESH_INTERVAL_MS` | `300000` | TRON balance safety-net refresh worker interval (ms) |
 | `NODE_HEALTH_CHECK_INTERVAL_MS` | `30000` | Chain node health check worker interval (ms) |
 | `WEBHOOK_AUTO_PAUSE_THRESHOLD` | `10` | Consecutive failures before webhook endpoint is paused |
@@ -225,7 +225,10 @@ Per-tenant settings are stored in `tenant_configs` and managed via API. They ove
 | `btc_finality_confirmations` | `btcFinalityConfirmations` | BTC finality threshold (no reorg risk) |
 | `btc_fee_target_blocks` | `btcFeeTargetBlocks` | Fee estimation target blocks for BTC sweeps |
 | `tron_confirmations_required` | `tronConfirmationsRequired` | Confirmations for TRON deposit → `confirmed` |
-| `tron_sweep_threshold_sun` | `tronSweepThresholdSun` | Min TRON balance (in sun) that triggers sweep |
+| `tron_usdt_sweep_threshold_sun` | `tronUsdtSweepThresholdSun` | Min USDT balance (in sun) that triggers USDT sweep |
+| `tron_trx_sweep_threshold_sun` | `tronTrxSweepThresholdSun` | Min TRX balance (in sun) that triggers TRX sweep |
+| `tron_staked_energy_sun` | `tronStakedEnergySun` | TRX (in sun) to delegate as ENERGY before each USDT sweep (Stake 2.0). `null` = no delegation. |
+| `tron_sweep_threshold_sun` | `tronSweepThresholdSun` | **Deprecated** — USDT fallback only, overridden by `tron_usdt_sweep_threshold_sun`. Will be removed in a future migration. |
 | `tron_usdt_contract_address` | — | Per-tenant USDT contract override (optional) |
 | `custody_mode` | `custodyMode` | Custody model for this tenant |
 | `withdrawal_mode` | `withdrawalMode` | Withdrawal flow: `auto` or `manual` |
@@ -328,6 +331,55 @@ Set the USDT contract address in `.env`:
 # Mainnet
 TRON_USDT_CONTRACT_ADDRESS=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
 ```
+
+---
+
+## TRON Sweep Configuration
+
+Sweeps consolidate TRON deposit balances into the tenant hot wallet. The engine uses an event-driven queue — only addresses above threshold are ever queued, so the system stays O(active addresses) regardless of total customer count.
+
+### Per-tenant parameters
+
+Configure via `PATCH /v1/tenant/config` or `PATCH /admin/v1/tenants/:id/config`:
+
+| Field | Description |
+|-------|-------------|
+| `tronUsdtSweepThresholdSun` | Min USDT balance (in sun) to trigger a USDT sweep. Example: `"1000000"` = 1 USDT. |
+| `tronTrxSweepThresholdSun` | Min TRX balance (in sun) to trigger a TRX sweep. Example: `"10000000"` = 10 TRX. |
+| `tronStakedEnergySun` | TRX (in sun) to stake as ENERGY before each USDT sweep (Stake 2.0). Set to `null` to disable. Example: `"100000000"` = 100 TRX. |
+
+Example:
+
+```bash
+curl -X PATCH /v1/tenant/config \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tronUsdtSweepThresholdSun": "1000000",
+    "tronTrxSweepThresholdSun": "10000000",
+    "tronStakedEnergySun": "100000000"
+  }'
+```
+
+### How sweeps work
+
+1. **Queue feeder (every 10 s)** — reads `tron_account_balances`, computes priority for each address above threshold (normal ≥1×, high ≥2×, urgent ≥10×), upserts into `tron_sweep_queue`. Runs with a cap of 500 addresses per tick to prevent runaway scans.
+
+2. **Sweep worker (every 30 s)** — claims up to 20 entries from `tron_sweep_queue` using a `DELETE ... RETURNING` pattern (no double-processing). Routes each entry:
+   - **`tron:USDT`** → optionally delegates energy (if `tronStakedEnergySun` is set) → creates a `tron_sweep` signing task
+   - **`tron:TRX`** → creates a `tron_trx_sweep` signing task
+
+3. **Signer** — the external signer picks up the task, derives the child HD key (`m/0/N`), signs the `txID`, and submits the signed transaction.
+
+4. **Energy reclaim (every 6 h)** — scans `tron_energy_delegations` for completed or aged-out delegations and issues `tron_undelegate_energy` tasks to return staked ENERGY to the hot wallet.
+
+### Stake 2.0 energy delegation
+
+USDT TRC-20 transfers cost ~30 000 energy. Without delegation, each deposit address needs to hold enough TRX for bandwidth/energy — operationally expensive at scale.
+
+With `tronStakedEnergySun` configured, the hot wallet delegates `N` sun of ENERGY to the deposit address immediately before the sweep. The delegation uses `lock=false` (non-locking), so it can be reclaimed the same block the sweep confirms.
+
+The delegated amount is tracked in `tron_energy_delegations`. The `TronEnergyReclaimWorker` undelegates after the sweep is confirmed, or after 24 hours as a safety timeout.
 
 ---
 
@@ -634,12 +686,15 @@ POST   /v1/external-signers/:signerId/tasks/:taskId/reject
 
 **Signing task types:**
 
-| Type | Chain | Payload format | Signer action |
-|------|-------|----------------|---------------|
-| `btc_psbt` | Bitcoin | Base64 PSBT | Finalize and sign PSBT |
-| `tron_withdrawal` | TRON | `txID` + `raw_data_hex` | Sign txID → 65-byte recoverable sig |
-| `tron_sweep` | TRON | `txID` + `raw_data_hex` + `derivationPath` | HD derive `m/0/N`, sign txID |
-| `tron_raw_tx` | TRON | `txID` + `raw_data_hex` | Generic TRON sign |
+| Type | Chain | Payload format | Key | Signer action |
+|------|-------|----------------|-----|---------------|
+| `btc_psbt` | Bitcoin | Base64 PSBT | withdrawal key | Finalize and sign PSBT |
+| `tron_withdrawal` | TRON | `tron_raw_tx` | hot wallet key | Sign txID → 65-byte recoverable sig |
+| `tron_sweep` | TRON | `tron_raw_tx` + `derivationPath` | HD xprv `m/0/N` | Derive child key, sign txID (USDT TRC-20) |
+| `tron_trx_sweep` | TRON | `tron_raw_tx` + `derivationPath` | HD xprv `m/0/N` | Derive child key, sign txID (native TRX) |
+| `tron_delegate_energy` | TRON | `tron_raw_tx` | hot wallet key | Sign delegation tx — pre-sweep Stake 2.0 |
+| `tron_undelegate_energy` | TRON | `tron_raw_tx` | hot wallet key | Sign undelegation tx — post-sweep reclaim |
+| `tron_raw_tx` | TRON | `tron_raw_tx` | hot wallet key | Generic TRON sign |
 
 Each signer daemon should have its own dedicated API key to avoid shared rate limit buckets. The signer protocol endpoints use `SIGNER_RATE_LIMIT_PER_MIN` (default 600/min) — separate from the standard API limit.
 
@@ -654,14 +709,56 @@ POST /v1/signing-tasks/:taskId/reject
 
 ### Sweeps
 
-Sweeps are created automatically by `SweepWorker` (BTC) and `TronSweepWorker` (TRON). No `POST /v1/sweeps` endpoint.
+Sweeps consolidate balances from deposit addresses into the tenant hot wallet. Created automatically — no `POST /v1/sweeps` endpoint.
 
 ```bash
-GET  /v1/sweeps/summary
+GET  /v1/sweeps/summary?chainId=bitcoin&assetId=bitcoin:BTC
+GET  /v1/sweeps/summary?chainId=tron&assetId=tron:USDT
+GET  /v1/sweeps/summary?chainId=tron&assetId=tron:TRX
 GET  /v1/sweeps
+GET  /v1/sweeps?chainId=tron&assetId=tron:USDT
 GET  /v1/sweeps/:sweepId
 POST /v1/sweeps/:sweepId/submit-signed
 ```
+
+`summary` returns `threshold_raw`, `current_total_raw`, `pending_sweep_id`, and `total_utxos` (Bitcoin only; `null` for TRON). Default parameters: `chainId=bitcoin`, `assetId=bitcoin:BTC`.
+
+#### TRON sweep architecture
+
+TRON sweeps use an event-driven queue to stay O(active) — only deposit addresses with balance above threshold enter the queue:
+
+```
+TronSweepQueueFeeder (every 10 s)
+  Reads tron_account_balances (LIMIT 500 per run)
+  Computes priority per address:
+    ≥ 10× threshold → urgent (2)
+    ≥  2× threshold → high   (1)
+    ≥  1× threshold → normal (0)
+  Upserts into tron_sweep_queue (ON CONFLICT DO UPDATE — idempotent)
+
+TronSweepWorker (every 30 s)
+  DELETE-claims up to 20 entries from tron_sweep_queue (highest priority first)
+  tron:USDT → [optional: delegate energy] → create tron_sweep signing task
+  tron:TRX  → create tron_trx_sweep signing task
+
+TronEnergyReclaimWorker (every 6 h)
+  Reclaims Stake 2.0 delegations where:
+    - linked sweep is confirmed, OR
+    - delegation is older than 24 h, OR
+    - linked sweep failed
+  Creates tron_undelegate_energy signing task per delegation
+```
+
+**Stake 2.0 energy delegation** — when `tron_staked_energy_sun` is configured, the engine delegates that amount of ENERGY from the hot wallet to the deposit address before the USDT sweep. This eliminates the need to prefund every deposit address with TRX for gas. Delegations are non-locking (`lock=false`) — reclaimed by `TronEnergyReclaimWorker` after the sweep confirms.
+
+#### Admin: TRON sweep stats
+
+```bash
+GET /admin/v1/tron/sweep-queue-stats
+# X-Admin-Key: <admin-key>
+```
+
+Returns current queue depth (total + by asset + by priority) and active energy delegations count.
 
 ### Ledger
 
@@ -779,12 +876,14 @@ Background Workers (setInterval, SKIP LOCKED for parallelism)
     ├── TxStatusWorker               — BTC confirmation updates
     ├── SweepWorker                  — BTC sweep creation
     ├── SweepConfirmationWorker      — BTC sweep confirmation
-    ├── TronSweepWorker              — TRON/USDT sweep creation
+    ├── TronSweepQueueFeeder         — fills tron_sweep_queue from tron_account_balances (10 s)
+    ├── TronSweepWorker              — drains tron_sweep_queue, creates TRON sweep tasks (30 s)
+    ├── TronEnergyReclaimWorker      — reclaims Stake 2.0 energy delegations (6 h)
     ├── TronBalanceRefreshWorker     — TRON balance cache safety net (5 min)
     ├── WithdrawalBatcherWorker      — builds BTC + TRON withdrawal batches
     ├── SigningTaskExpiryWorker      — expires stale signing tasks
     ├── WebhookDeliveryWorker        — HMAC-signed webhook delivery with retry
-    └── NodeHealthCheckerWorker      — chain node health monitoring (30s)
+    └── NodeHealthCheckerWorker      — chain node health monitoring (30 s)
 
 External processes
     ├── btc-indexer  (packages/btc-indexer)  → chain_events

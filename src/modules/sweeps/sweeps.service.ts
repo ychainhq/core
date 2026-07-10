@@ -362,12 +362,21 @@ export const sweepsService = {
   async _getTronSummary(tenantId: string, assetId: string): Promise<SweepSummary> {
     const db = getDbClient();
 
-    const configRow = await db.get<{ tron_sweep_threshold_sun: string | null }>(
-      'SELECT tron_sweep_threshold_sun FROM tenant_configs WHERE tenant_id = ?',
+    const configRow = await db.get<{
+      tron_sweep_threshold_sun: string | null;
+      tron_usdt_sweep_threshold_sun: string | null;
+      tron_trx_sweep_threshold_sun: string | null;
+    }>(
+      'SELECT tron_sweep_threshold_sun, tron_usdt_sweep_threshold_sun, tron_trx_sweep_threshold_sun FROM tenant_configs WHERE tenant_id = ?',
       [tenantId]
     );
-    // threshold only for TRX; USDT has no per-tenant threshold column yet
-    const thresholdRaw = assetId === 'tron:TRX' ? (configRow?.tron_sweep_threshold_sun ?? null) : null;
+    // tron:USDT → tron_usdt_sweep_threshold_sun (fallback to legacy tron_sweep_threshold_sun for backward compat)
+    // tron:TRX  → tron_trx_sweep_threshold_sun
+    const thresholdRaw = assetId === 'tron:USDT'
+      ? (configRow?.tron_usdt_sweep_threshold_sun ?? configRow?.tron_sweep_threshold_sun ?? null)
+      : assetId === 'tron:TRX'
+        ? (configRow?.tron_trx_sweep_threshold_sun ?? null)
+        : null;
 
     const addrRow = await db.get<{ cnt: number }>(`
       SELECT COUNT(*) AS cnt

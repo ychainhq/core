@@ -540,6 +540,12 @@ Utrzymuj tę tabelę aktualną. Kolumny:
 | POST | `/v1/chain-nodes/:nodeId/set-primary` | ✅ | ❌ | ❌ |
 | POST | `/v1/chain-nodes/:nodeId/test-connection` | ✅ | ❌ | ❌ |
 
+### TRON Operations (Admin)
+
+| Method | Path | MVP | Testy | MCP |
+|--------|------|-----|-------|-----|
+| GET | `/admin/v1/tron/sweep-queue-stats` | ✅ | ✅ | ❌ |
+
 ### Engine Cluster HA (FAZA 4)
 
 | Method | Path | MVP | Testy | MCP |
@@ -786,6 +792,8 @@ Każdy serwis jest **jedynym właścicielem** swoich tabel. SQL (INSERT/UPDATE/D
 | `chain-nodes.service` (v3) | `chain_nodes`, `tenant_chain_bindings` |
 | `chain-events.service` (v3) | `chain_events` — tylko UPDATE processed=TRUE; INSERT należy do indexerów |
 | `tron-balance-refresh.worker` + `tron-indexer` | `tron_account_balances` — INSERT/UPDATE; SELECT należy wyłącznie do `tronBalancesService` |
+| `TronSweepQueueFeeder` | `tron_sweep_queue` — INSERT/UPDATE (upsert); DELETE przez `TronSweepWorker` przy claim |
+| `TronSweepWorker` | `tron_energy_delegations` — INSERT przy delegacji; DELETE przy undelegacji (przez `TronEnergyReclaimWorker`) |
 | `cluster.service` (FAZA 4) | `engine_instances` |
 
 **Reguły:**

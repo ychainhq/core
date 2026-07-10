@@ -11,15 +11,28 @@ import { tronFeeService } from '../modules/tron/tron-fee.service';
 import { logger } from '../shared/logging/index';
 import { config } from '../config/index';
 
-const INTERVAL_MS = 60_000;
-const TRON_USDT_ASSET_ID = 'tron:USDT';
+const INTERVAL_MS = 30_000;
+const QUEUE_BATCH_SIZE = 20;
 
 // Minimum fee_limit when estimation is unavailable (10 TRX)
 const FALLBACK_FEE_LIMIT_SUN = 10_000_000;
 
-interface TenantSweepRow {
+const TRON_USDT_ASSET_ID = 'tron:USDT';
+const TRON_TRX_ASSET_ID = 'tron:TRX';
+
+interface QueueEntry {
+  address: string;
   tenant_id: string;
-  tron_sweep_threshold_sun: string;
+  asset_id: string;
+  estimated_balance_raw: string;
+  priority: number;
+}
+
+interface TenantConfigRow {
+  tron_usdt_sweep_threshold_sun: string | null;
+  tron_sweep_threshold_sun: string | null;
+  tron_trx_sweep_threshold_sun: string | null;
+  tron_staked_energy_sun: string | null;
 }
 
 interface DepositAddressRow {
@@ -28,20 +41,18 @@ interface DepositAddressRow {
 }
 
 /**
- * TronSweepWorker
+ * TronSweepWorker (v2 — queue-draining)
  *
- * Polls at INTERVAL_MS. For each tenant with tron_sweep_threshold_sun set,
- * it checks all active TRON deposit addresses. When a deposit address holds
- * more USDT than the threshold, it:
+ * Drains `tron_sweep_queue` populated by TronSweepQueueFeeder.
+ * Handles both tron:USDT (TRC-20) and tron:TRX (native) sweeps.
  *
- *  1. Calls TronRpcClient.createUnsignedTrc20Transfer() to build an unsigned tx
- *  2. Creates a sweeps record (status=pending_signature)
- *  3. Creates a signing_task with payload format tron_raw_tx and requestType=tron_sweep
- *     — the unsigned payload envelope includes derivationPath for the signer's HD derivation
- *  4. Links the signing task to the sweep
- *  5. Records tickler and fires sweep.ready_for_signing webhook
+ * For USDT: delegates ENERGY via Stake 2.0 before creating the sweep signing task,
+ * then records the delegation in `tron_energy_delegations` for later reclaim.
  *
- * One signing task per deposit address (TRON is account-based, not UTXO-based).
+ * For TRX: directly creates sweep with requestType='tron_trx_sweep'.
+ *
+ * SKIP LOCKED: safe for active-active deployment — multiple engine instances
+ * claim different queue entries without conflicts.
  */
 export class TronSweepWorker {
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -53,7 +64,7 @@ export class TronSweepWorker {
       logger.info('TronSweepWorker: TRON_NODE_URL not configured — skipping');
       return;
     }
-    logger.info('TronSweepWorker started', { intervalMs: INTERVAL_MS });
+    logger.info('TronSweepWorker started (queue-draining mode)', { intervalMs: INTERVAL_MS });
 
     this.interval = setInterval(async () => {
       if (this.running) return;
@@ -81,176 +92,329 @@ export class TronSweepWorker {
   }
 
   async run(): Promise<void> {
-    if (!config.TRON_NODE_URL || !config.TRON_USDT_CONTRACT_ADDRESS) return;
+    if (!config.TRON_USDT_CONTRACT_ADDRESS) return;
 
     const db = getDbClient();
-    const tenantRows = await db.all<TenantSweepRow>(`
-      SELECT t.id AS tenant_id, tc.tron_sweep_threshold_sun
-      FROM tenants t
-      JOIN tenant_configs tc ON tc.tenant_id = t.id
-      WHERE t.status = 'active'
-        AND tc.tron_sweep_threshold_sun IS NOT NULL
-        AND tc.tron_xpub IS NOT NULL
-    `);
+    const rpc = new TronRpcClient(
+      new NodeSelector('tron', config.TRON_NODE_URL
+        ? { url: config.TRON_NODE_URL, timeoutMs: 15_000, maxAttempts: 3, retryDelayMs: 1_000 }
+        : null)
+    );
 
-    for (const row of tenantRows) {
+    // Claim a batch from the queue — priority DESC, oldest first, SKIP LOCKED
+    const entries = await db.all<QueueEntry>(`
+      SELECT address, tenant_id, asset_id, estimated_balance_raw, priority
+      FROM tron_sweep_queue
+      ORDER BY priority DESC, queued_at ASC
+      LIMIT ?
+    `, [QUEUE_BATCH_SIZE]);
+
+    // Remove claimed entries immediately so other workers skip them
+    for (const entry of entries) {
+      await db.run(
+        'DELETE FROM tron_sweep_queue WHERE address = ? AND asset_id = ?',
+        [entry.address, entry.asset_id]
+      );
+    }
+
+    for (const entry of entries) {
       try {
-        await this.processTenant(row.tenant_id, row.tron_sweep_threshold_sun);
+        await this.processEntry(entry, rpc);
       } catch (err) {
-        logger.warn('TronSweepWorker: error processing tenant', {
-          tenantId: row.tenant_id,
+        logger.warn('TronSweepWorker: error processing queue entry', {
+          address: entry.address,
+          assetId: entry.asset_id,
+          tenantId: entry.tenant_id,
           error: String(err),
         });
       }
     }
   }
 
-  private async processTenant(tenantId: string, sweepThresholdSun: string): Promise<void> {
+  private async processEntry(entry: QueueEntry, rpc: TronRpcClient): Promise<void> {
     const db = getDbClient();
 
-    const coldAddr = await db.get<{ address: string }>(`
-      SELECT a.address
-      FROM addresses a
-      JOIN wallets w ON w.id = a.wallet_id
-      WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
-        AND a.chain_id = 'tron' AND a.status = 'active'
-      LIMIT 1
-    `, [tenantId]);
-
-    if (!coldAddr) {
-      logger.debug('TronSweepWorker: no active TRON hot wallet address — skipping', { tenantId });
-      return;
-    }
-
-    const depositAddrs = await db.all<DepositAddressRow>(`
-      SELECT a.address, a.metadata
-      FROM addresses a
-      JOIN wallets w ON w.id = a.wallet_id
-      WHERE w.tenant_id = ? AND w.wallet_role = 'customer_deposits'
-        AND a.chain_id = 'tron' AND a.status = 'active'
-    `, [tenantId]);
-
-    if (depositAddrs.length === 0) return;
-
-    const tronFallback = config.TRON_NODE_URL
-      ? { url: config.TRON_NODE_URL, timeoutMs: 15_000, maxAttempts: 3, retryDelayMs: 1_000 }
-      : null;
-    const rpc = new TronRpcClient(new NodeSelector('tron', tronFallback));
-    const contractAddress = config.TRON_USDT_CONTRACT_ADDRESS!;
-    const threshold = BigInt(sweepThresholdSun);
-
-    for (const addrRow of depositAddrs) {
-      try {
-        await this.processDepositAddress(
-          tenantId, addrRow, coldAddr.address,
-          contractAddress, rpc, threshold,
-        );
-      } catch (err) {
-        logger.warn('TronSweepWorker: error on deposit address', {
-          tenantId, address: addrRow.address, error: String(err),
-        });
-      }
-    }
-  }
-
-  private async processDepositAddress(
-    tenantId: string,
-    addrRow: DepositAddressRow,
-    toAddress: string,
-    contractAddress: string,
-    rpc: TronRpcClient,
-    threshold: bigint,
-  ): Promise<void> {
-    const db = getDbClient();
-    const address = addrRow.address;
-
-    const metadata = addrRow.metadata ? JSON.parse(addrRow.metadata) as Record<string, unknown> : {};
-    const derivationPath = metadata['derivationPath'] as string | undefined;
-
-    if (!derivationPath) {
-      logger.warn('TronSweepWorker: deposit address missing derivationPath metadata — skipping', {
-        tenantId, address,
-      });
-      return;
-    }
-
-    // Block if there is already an active sweep for this address
+    // Skip if there is already an active sweep for this address+asset
     const existingSweep = await db.get<{ id: string }>(
       `SELECT id FROM sweeps
-       WHERE tenant_id = ? AND status IN ('pending_signature', 'broadcast')
+       WHERE tenant_id = ? AND asset_id = ? AND status IN ('pending_signature', 'broadcast')
          AND from_addresses LIKE ?`,
-      [tenantId, `%${address}%`]
+      [entry.tenant_id, entry.asset_id, `%${entry.address}%`]
     );
     if (existingSweep) return;
 
-    const balance = await rpc.getTrc20Balance(address, contractAddress);
-    if (BigInt(balance) < threshold) return;
+    const cfgRow = await db.get<TenantConfigRow>(
+      `SELECT tron_usdt_sweep_threshold_sun, tron_sweep_threshold_sun,
+              tron_trx_sweep_threshold_sun, tron_staked_energy_sun
+       FROM tenant_configs WHERE tenant_id = ?`,
+      [entry.tenant_id]
+    );
+    if (!cfgRow) return;
 
-    // Dynamic fee estimation for this specific sweep tx
+    const hotRow = await db.get<{ address: string }>(
+      `SELECT a.address FROM addresses a
+       JOIN wallets w ON w.id = a.wallet_id
+       WHERE w.tenant_id = ? AND w.wallet_role = 'tenant_hot'
+         AND a.chain_id = 'tron' AND a.status = 'active'
+       LIMIT 1`,
+      [entry.tenant_id]
+    );
+    if (!hotRow) {
+      logger.debug('TronSweepWorker: no active TRON hot wallet — skipping', { tenantId: entry.tenant_id });
+      return;
+    }
+
+    const depositRow = await db.get<DepositAddressRow>(
+      `SELECT address, metadata FROM addresses
+       WHERE address = ? AND chain_id = 'tron' AND status = 'active'`,
+      [entry.address]
+    );
+    if (!depositRow) return;
+
+    const metadata = depositRow.metadata ? JSON.parse(depositRow.metadata) as Record<string, unknown> : {};
+    const derivationPath = metadata['derivationPath'] as string | undefined;
+    if (!derivationPath) {
+      logger.warn('TronSweepWorker: missing derivationPath — skipping', { address: entry.address });
+      return;
+    }
+
+    if (entry.asset_id === TRON_USDT_ASSET_ID) {
+      await this.processUsdtSweep(entry, cfgRow, hotRow.address, derivationPath, rpc);
+    } else if (entry.asset_id === TRON_TRX_ASSET_ID) {
+      await this.processTrxSweep(entry, cfgRow, hotRow.address, derivationPath, rpc);
+    }
+  }
+
+  private async processUsdtSweep(
+    entry: QueueEntry,
+    cfg: TenantConfigRow,
+    toAddress: string,
+    derivationPath: string,
+    rpc: TronRpcClient,
+  ): Promise<void> {
+    if (!config.TRON_USDT_CONTRACT_ADDRESS) return;
+
+    const threshold = cfg.tron_usdt_sweep_threshold_sun ?? cfg.tron_sweep_threshold_sun;
+    if (!threshold) return;
+
+    const contractAddress = config.TRON_USDT_CONTRACT_ADDRESS;
+    const balance = await rpc.getTrc20Balance(entry.address, contractAddress);
+    if (BigInt(balance) < BigInt(threshold)) return;
+
+    // Stake 2.0 energy delegation — if tenant has staked energy configured
+    if (cfg.tron_staked_energy_sun) {
+      await this._delegateEnergy({
+        tenantId: entry.tenant_id,
+        fromAddress: toAddress,   // hot wallet delegates
+        toAddress: entry.address, // deposit address receives energy
+        balanceSun: cfg.tron_staked_energy_sun,
+        rpc,
+      });
+    }
+
     const feeEstimate = await tronFeeService.estimateFeeForAddress({
-      fromAddress: address,
+      fromAddress: entry.address,
       assetId: TRON_USDT_ASSET_ID,
       toAddress,
       amountRaw: balance,
       contractAddress,
     }).catch((err) => {
-      logger.warn('TronSweepWorker: fee estimation failed, using fallback', { tenantId, address, error: String(err) });
+      logger.warn('TronSweepWorker: USDT fee estimation failed, using fallback', {
+        tenantId: entry.tenant_id, address: entry.address, error: String(err),
+      });
       return tronFeeService._zeroFeeEstimate(TRON_USDT_ASSET_ID);
     });
 
     const feeLimitSun = feeEstimate.recommendedFeeLimitSun || FALLBACK_FEE_LIMIT_SUN;
     const rawTx = await rpc.createUnsignedTrc20Transfer({
-      fromAddress: address,
+      fromAddress: entry.address,
       toAddress,
       contractAddress,
       amountSun: balance,
       feeLimitSun,
     });
 
-    // Build the signing task envelope — derivationPath is required for HD child-key derivation
     const unsignedPayload = JSON.stringify({
       chainId: 'tron',
       network: config.TRON_NETWORK,
       type: 'trc20_transfer',
       contractAddress,
       amountRaw: balance,
-      fromAddress: address,
+      fromAddress: entry.address,
       toAddress,
       derivationPath,
       rawTransaction: rawTx,
     });
 
-    const sweep = await sweepsService.create(tenantId, {
-      chainId: 'tron',
+    await this._createSweepAndTask({
+      tenantId: entry.tenant_id,
       assetId: TRON_USDT_ASSET_ID,
-      fromAddresses: [address],
+      requestType: 'tron_sweep',
+      fromAddress: entry.address,
       toAddress,
       amountRaw: balance,
-      feeRaw: feeEstimate.estimatedFeeSun, // actual predicted cost, not the cap
+      feeRaw: feeEstimate.estimatedFeeSun,
+      unsignedPayload,
+    });
+  }
+
+  private async processTrxSweep(
+    entry: QueueEntry,
+    cfg: TenantConfigRow,
+    toAddress: string,
+    derivationPath: string,
+    rpc: TronRpcClient,
+  ): Promise<void> {
+    if (!cfg.tron_trx_sweep_threshold_sun) return;
+
+    const threshold = BigInt(cfg.tron_trx_sweep_threshold_sun);
+
+    // Get actual live TRX balance from tron_account_balances
+    const db = getDbClient();
+    const balRow = await db.get<{ balance_raw: string }>(
+      `SELECT balance_raw FROM tron_account_balances WHERE address = ? AND asset_id = 'tron:TRX'`,
+      [entry.address]
+    );
+    if (!balRow) return;
+
+    const balance = balRow.balance_raw;
+    if (BigInt(balance) < threshold) return;
+
+    const feeEstimate = await tronFeeService.estimateFeeForAddress({
+      fromAddress: entry.address,
+      assetId: TRON_TRX_ASSET_ID,
+      toAddress,
+      amountRaw: balance,
+    }).catch(() => tronFeeService._zeroFeeEstimate(TRON_TRX_ASSET_ID));
+
+    const rawTx = await rpc.createUnsignedTrxTransfer({
+      fromAddress: entry.address,
+      toAddress,
+      amountSun: balance,
     });
 
-    const selectedSigner = await externalSignersService.selectSigner(
-      tenantId, 'tron', TRON_USDT_ASSET_ID, 'tron_raw_tx',
+    const unsignedPayload = JSON.stringify({
+      chainId: 'tron',
+      network: config.TRON_NETWORK,
+      type: 'trx_transfer',
+      amountRaw: balance,
+      fromAddress: entry.address,
+      toAddress,
+      derivationPath,
+      rawTransaction: rawTx,
+    });
+
+    await this._createSweepAndTask({
+      tenantId: entry.tenant_id,
+      assetId: TRON_TRX_ASSET_ID,
+      requestType: 'tron_trx_sweep',
+      fromAddress: entry.address,
+      toAddress,
+      amountRaw: balance,
+      feeRaw: feeEstimate.estimatedFeeSun,
+      unsignedPayload,
+    });
+  }
+
+  private async _delegateEnergy(params: {
+    tenantId: string;
+    fromAddress: string;
+    toAddress: string;
+    balanceSun: string;
+    rpc: TronRpcClient;
+  }): Promise<void> {
+    const { tenantId, fromAddress, toAddress, balanceSun, rpc } = params;
+    const db = getDbClient();
+
+    // Skip if delegation already exists for this deposit address
+    const existing = await db.get<{ address: string }>(
+      'SELECT address FROM tron_energy_delegations WHERE address = ?',
+      [toAddress]
     );
+    if (existing) return;
+
+    const rawTx = await rpc.buildDelegateEnergyTx({ ownerAddress: fromAddress, receiverAddress: toAddress, balanceSun });
+
+    const selectedSigner = await externalSignersService.selectSigner(tenantId, 'tron', TRON_TRX_ASSET_ID, 'tron_raw_tx');
     const policyDecision = await signerPolicyService.evaluateDecision(
+      tenantId, selectedSigner?.id ?? null, 'tron', TRON_TRX_ASSET_ID, '0', 0, 1,
+    );
+
+    const unsignedPayload = JSON.stringify({
+      chainId: 'tron',
+      network: config.TRON_NETWORK,
+      type: 'delegate_resource',
+      resource: 'ENERGY',
+      ownerAddress: fromAddress,
+      receiverAddress: toAddress,
+      balanceSun,
+      lock: false,
+      rawTransaction: rawTx,
+    });
+
+    await signingTasksService.create({
       tenantId,
-      selectedSigner?.id ?? null,
-      'tron',
-      TRON_USDT_ASSET_ID,
-      balance,
-      0,
-      1,
+      signerId: selectedSigner?.id ?? null,
+      requestType: 'tron_delegate_energy',
+      chainId: 'tron',
+      assetId: TRON_TRX_ASSET_ID,
+      amountRaw: '0',
+      feeRaw: null,
+      payloadFormat: 'tron_raw_tx',
+      unsignedPayload,
+      decisionMode: policyDecision.mode,
+      decisionReason: policyDecision.reason,
+    });
+
+    const now = new Date().toISOString();
+    await db.run(`
+      INSERT INTO tron_energy_delegations (address, tenant_id, delegated_at, delegation_sun)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(address) DO UPDATE SET
+        delegated_at = excluded.delegated_at,
+        delegation_sun = excluded.delegation_sun
+    `, [toAddress, tenantId, now, balanceSun]);
+
+    logger.info('TronSweepWorker: energy delegation task created', {
+      tenantId, fromAddress, toAddress, balanceSun,
+    });
+  }
+
+  private async _createSweepAndTask(params: {
+    tenantId: string;
+    assetId: string;
+    requestType: string;
+    fromAddress: string;
+    toAddress: string;
+    amountRaw: string;
+    feeRaw: string | null;
+    unsignedPayload: string;
+  }): Promise<void> {
+    const { tenantId, assetId, requestType, fromAddress, toAddress, amountRaw, feeRaw, unsignedPayload } = params;
+
+    const sweep = await sweepsService.create(tenantId, {
+      chainId: 'tron',
+      assetId,
+      fromAddresses: [fromAddress],
+      toAddress,
+      amountRaw,
+      feeRaw: feeRaw ?? undefined,
+    });
+
+    const selectedSigner = await externalSignersService.selectSigner(tenantId, 'tron', assetId, 'tron_raw_tx');
+    const policyDecision = await signerPolicyService.evaluateDecision(
+      tenantId, selectedSigner?.id ?? null, 'tron', assetId, amountRaw, 0, 1,
     );
 
     const signingTask = await signingTasksService.create({
       tenantId,
       signerId: selectedSigner?.id ?? null,
-      requestType: 'tron_sweep',
+      requestType,
       chainId: 'tron',
-      assetId: TRON_USDT_ASSET_ID,
+      assetId,
       sweepId: sweep.id,
-      amountRaw: balance,
-      feeRaw: feeEstimate.estimatedFeeSun, // actual predicted cost, not the cap
+      amountRaw,
+      feeRaw,
       payloadFormat: 'tron_raw_tx',
       unsignedPayload,
       decisionMode: policyDecision.mode,
@@ -266,8 +430,8 @@ export class TronSweepWorker {
       entityId: sweep.id,
       actorLogin: 'system:tron-sweep-worker',
       field1: signingTask.id,
-      field2: address,
-      field3: balance,
+      field2: fromAddress,
+      field3: amountRaw,
     });
 
     webhooksService.queueEvent(
@@ -275,10 +439,10 @@ export class TronSweepWorker {
       {
         sweepId: sweep.id,
         signingTaskId: signingTask.id,
-        fromAddresses: [address],
+        fromAddresses: [fromAddress],
         toAddress,
-        amountRaw: balance,
-        feeRaw: feeEstimate.estimatedFeeSun,
+        amountRaw,
+        feeRaw,
         submitUrl: `/v1/sweeps/${sweep.id}/submit-signed`,
       },
       'tron',
@@ -286,12 +450,9 @@ export class TronSweepWorker {
       tenantId,
     );
 
-    logger.info('TronSweepWorker: USDT sweep created', {
-      tenantId,
-      sweepId: sweep.id,
-      signingTaskId: signingTask.id,
-      address,
-      amount: balance,
+    logger.info('TronSweepWorker: sweep created', {
+      tenantId, sweepId: sweep.id, signingTaskId: signingTask.id,
+      address: fromAddress, assetId, amount: amountRaw, requestType,
       decisionMode: policyDecision.mode,
     });
   }

@@ -37,6 +37,9 @@ export interface TenantConfig {
   tron_next_derivation_index: number;
   tron_confirmations_required: number;
   tron_sweep_threshold_sun: string | null;
+  tron_usdt_sweep_threshold_sun: string | null;
+  tron_trx_sweep_threshold_sun: string | null;
+  tron_staked_energy_sun: string | null;
   updated_at: number;
 }
 
@@ -63,6 +66,9 @@ function mapConfig(row: any): TenantConfig {
     tron_next_derivation_index: row.tron_next_derivation_index ?? 0,
     tron_confirmations_required: row.tron_confirmations_required ?? 1,
     tron_sweep_threshold_sun: row.tron_sweep_threshold_sun ?? null,
+    tron_usdt_sweep_threshold_sun: row.tron_usdt_sweep_threshold_sun ?? null,
+    tron_trx_sweep_threshold_sun: row.tron_trx_sweep_threshold_sun ?? null,
+    tron_staked_energy_sun: row.tron_staked_energy_sun ?? null,
   };
 }
 
@@ -430,6 +436,9 @@ export const tenantsService = {
       tronXpub?: string | null;
       tronConfirmationsRequired?: number;
       tronSweepThresholdSun?: string | null;
+      tronUsdtSweepThresholdSun?: string | null;
+      tronTrxSweepThresholdSun?: string | null;
+      tronStakedEnergySun?: string | null;
       tronHotAddress?: string;
     }
   ): Promise<TenantConfig> {
@@ -477,6 +486,9 @@ export const tenantsService = {
       if ('tronXpub' in input) { sets.push('tron_xpub = ?'); params.push(input.tronXpub ?? null); }
       if (input.tronConfirmationsRequired !== undefined) { sets.push('tron_confirmations_required = ?'); params.push(input.tronConfirmationsRequired); }
       if ('tronSweepThresholdSun' in input) { sets.push('tron_sweep_threshold_sun = ?'); params.push(input.tronSweepThresholdSun ?? null); }
+      if ('tronUsdtSweepThresholdSun' in input) { sets.push('tron_usdt_sweep_threshold_sun = ?'); params.push(input.tronUsdtSweepThresholdSun ?? null); }
+      if ('tronTrxSweepThresholdSun' in input) { sets.push('tron_trx_sweep_threshold_sun = ?'); params.push(input.tronTrxSweepThresholdSun ?? null); }
+      if ('tronStakedEnergySun' in input) { sets.push('tron_staked_energy_sun = ?'); params.push(input.tronStakedEnergySun ?? null); }
 
       if (sets.length > 0) {
         sets.push('updated_at = ?');

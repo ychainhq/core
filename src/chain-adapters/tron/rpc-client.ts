@@ -297,6 +297,79 @@ export class TronRpcClient {
 
     return result;
   }
+
+  /**
+   * Stake 2.0 — delegate ENERGY from ownerAddress to receiverAddress.
+   * lock=false so the delegation can be undelegated immediately after sweep confirms.
+   */
+  async buildDelegateEnergyTx(params: {
+    ownerAddress: string;
+    receiverAddress: string;
+    balanceSun: string;
+  }): Promise<TronUnsignedTransaction> {
+    const { ownerAddress, receiverAddress, balanceSun } = params;
+
+    const result = await this.post<TronUnsignedTransaction & { Error?: string }>('/wallet/delegateresource', {
+      owner_address: ownerAddress,
+      receiver_address: receiverAddress,
+      balance: Number(balanceSun),
+      resource: 'ENERGY',
+      lock: false,
+      visible: true,
+    });
+
+    if (result.Error) {
+      throw new Error(`TRON delegateresource failed: ${result.Error}`);
+    }
+    if (!result.txID) {
+      throw new Error('TRON delegateresource: missing txID in response');
+    }
+
+    return result;
+  }
+
+  /**
+   * Stake 2.0 — undelegate ENERGY from ownerAddress back from receiverAddress.
+   * Called by TronEnergyReclaimWorker after sweep confirms.
+   */
+  async buildUndelegateEnergyTx(params: {
+    ownerAddress: string;
+    receiverAddress: string;
+    balanceSun: string;
+  }): Promise<TronUnsignedTransaction> {
+    const { ownerAddress, receiverAddress, balanceSun } = params;
+
+    const result = await this.post<TronUnsignedTransaction & { Error?: string }>('/wallet/undelegateresource', {
+      owner_address: ownerAddress,
+      receiver_address: receiverAddress,
+      balance: Number(balanceSun),
+      resource: 'ENERGY',
+      visible: true,
+    });
+
+    if (result.Error) {
+      throw new Error(`TRON undelegateresource failed: ${result.Error}`);
+    }
+    if (!result.txID) {
+      throw new Error('TRON undelegateresource: missing txID in response');
+    }
+
+    return result;
+  }
+
+  /**
+   * Get delegated resource info: how much energy ownerAddress has delegated to receiverAddress.
+   * Returns delegated_balance in SUN (0 if no delegation).
+   */
+  async getDelegatedResource(ownerAddress: string, receiverAddress: string): Promise<string> {
+    const result = await this.post<{ delegatedResource?: Array<{ delegated_amount?: number }> }>(
+      '/wallet/getdelegatedresource',
+      { fromAddress: ownerAddress, toAddress: receiverAddress, visible: true },
+    );
+
+    const delegated = result.delegatedResource?.[0]?.delegated_amount ?? 0;
+    return delegated.toString();
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

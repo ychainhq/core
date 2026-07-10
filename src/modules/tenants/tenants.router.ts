@@ -45,6 +45,9 @@ const configSchema = z.object({
   tronXpub: z.string().min(1).nullable().optional(),
   tronConfirmationsRequired: z.coerce.number().int().min(0).optional(),
   tronSweepThresholdSun: z.string().regex(/^\d+$/, 'Must be a numeric string').nullable().optional(),
+  tronUsdtSweepThresholdSun: z.string().regex(/^\d+$/, 'Must be a numeric string').nullable().optional(),
+  tronTrxSweepThresholdSun: z.string().regex(/^\d+$/, 'Must be a numeric string').nullable().optional(),
+  tronStakedEnergySun: z.string().regex(/^\d+$/, 'Must be a numeric string').nullable().optional(),
   tronHotAddress: z.string().min(1).optional(),
 });
 

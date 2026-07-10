@@ -161,9 +161,9 @@ describe('GET /v1/sweeps/summary — tron:TRX', () => {
     expect(totalRaw).toBeGreaterThanOrEqual(1500000000n);
   });
 
-  test('threshold_raw from tron_sweep_threshold_sun', async () => {
+  test('threshold_raw from tron_trx_sweep_threshold_sun', async () => {
     const db = getDb();
-    db.prepare("UPDATE tenant_configs SET tron_sweep_threshold_sun = '200000000' WHERE tenant_id = 'tenant_default'").run();
+    db.prepare("UPDATE tenant_configs SET tron_trx_sweep_threshold_sun = '200000000' WHERE tenant_id = 'tenant_default'").run();
 
     const res = await request(app)
       .get('/v1/sweeps/summary?chainId=tron&assetId=tron:TRX')
@@ -171,7 +171,7 @@ describe('GET /v1/sweeps/summary — tron:TRX', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.threshold_raw).toBe('200000000');
 
-    db.prepare("UPDATE tenant_configs SET tron_sweep_threshold_sun = '0' WHERE tenant_id = 'tenant_default'").run();
+    db.prepare("UPDATE tenant_configs SET tron_trx_sweep_threshold_sun = NULL WHERE tenant_id = 'tenant_default'").run();
   });
 });
 
@@ -186,12 +186,17 @@ describe('GET /v1/sweeps/summary — tron:USDT', () => {
     expect(res.body.data.asset_id).toBe('tron:USDT');
   });
 
-  test('threshold_raw is null for USDT (no per-tenant threshold column)', async () => {
+  test('threshold_raw from tron_usdt_sweep_threshold_sun', async () => {
+    const db = getDb();
+    db.prepare("UPDATE tenant_configs SET tron_usdt_sweep_threshold_sun = '500000' WHERE tenant_id = 'tenant_default'").run();
+
     const res = await request(app)
       .get('/v1/sweeps/summary?chainId=tron&assetId=tron:USDT')
       .set(AUTH);
     expect(res.status).toBe(200);
-    expect(res.body.data.threshold_raw).toBeNull();
+    expect(res.body.data.threshold_raw).toBe('500000');
+
+    db.prepare("UPDATE tenant_configs SET tron_usdt_sweep_threshold_sun = NULL WHERE tenant_id = 'tenant_default'").run();
   });
 
   test('current_total_raw sums tron_account_balances for USDT', async () => {

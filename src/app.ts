@@ -36,6 +36,7 @@ import { signingTasksRouter } from './modules/signing-tasks/signing-tasks.router
 import { withdrawalBatchesRouter, withdrawalBatchConfigRouter } from './modules/withdrawal-batches/withdrawal-batches.router';
 import { signerSignaturesRouter } from './modules/external-signers/signer-signatures.router';
 import { tenantTicklersRouter, adminTicklersRouter } from './modules/ticklers/ticklers.router';
+import { tronAdminRouter } from './modules/tron/tron-admin.router';
 import { assetsService } from './modules/assets/assets.service';
 import { registerMcpRoutes } from './mcp/register';
 
@@ -85,6 +86,7 @@ export function createApp(): express.Application {
   app.use('/admin/v1/chain-nodes', chainNodesAdminRouter);
   app.use('/admin/v1/cluster', clusterAdminRouter);
   app.use('/admin/v1', adminTicklersRouter);
+  app.use('/admin/v1', tronAdminRouter);
 
   // ---- Customer self-service — must be registered BEFORE the tenant authMiddleware
   //      so that customer JWTs are handled by customerAuthMiddleware, not rejected
